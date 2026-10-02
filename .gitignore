@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+._*
+
+# Xcode and Swift build output
+build/
+DerivedData/
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Local settings, credentials and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.key
+*.mobileprovision
+*.provisionprofile
+*.ipa
+*.xcarchive
+
+# Runtime dependencies and generated files
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# Optional local checkout of the upstream project
+upstream/deepseek-harness/

@@ -9,12 +9,12 @@ enum HarnessEndpoint {
               url.user == nil, url.password == nil,
               let tokens = url.queryItems?.filter({ $0.name == "token" }),
               tokens.count == 1, let token = tokens[0].value, !token.isEmpty else { return nil }
-        url.port = 18080
+        url.port = 28080
         return url.url
     }
 
     static func isLocalPage(_ url: URL) -> Bool {
-        url.scheme == "http" && url.host == "127.0.0.1" && url.port == 18080 && url.user == nil && url.password == nil
+        url.scheme == "http" && url.host == "127.0.0.1" && url.port == 28080 && url.user == nil && url.password == nil
     }
 
     static func isReady(status: Int, body: Data) -> Bool {

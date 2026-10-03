@@ -1,6 +1,6 @@
 # Harness iPad 正式应用入口
 
-对应 [正式应用实现任务](https://github.com/lvivvde/deepseek-harness-ipad/issues/16) 与 [适配 Spec](../../docs/design/ipad-app-spec.md)。当前包含独立 Xcode 工程、应用级运行环境、真实 QEMU 桥接和全屏官方页面宿主；完整 guest 镜像由 [内置运行时任务](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) 交付。本工程不伪造 Linux 或 Harness 页面。
+对应 [正式应用实现任务](https://github.com/lvivvde/deepseek-harness-ipad/issues/16) 与 [适配 Spec](../../docs/design/ipad-app-spec.md)。当前包含独立 Xcode 工程、应用级运行环境、真实 QEMU 桥接和全屏官方页面宿主；完整 guest 的构建、打包和验收记录见 [内置运行时](../../runtime/README.md)。
 
 Bundle ID 为 `org.lvivvde.harness.ipad`，与技术原型不同。项目和凭据只属于此 App 自己的用户盘；不读取或升级原型 App 数据。
 
@@ -17,7 +17,7 @@ make test-app
 
 Debug 缺少完整运行时输入时允许编译，App 显示明确的缺少运行时状态。设备 Release 构建缺少任一输入会失败，避免把不含运行时的包当作可用产品。模拟器只可检查原生状态界面，不能运行 iOS device QEMU。
 
-个人签名身份写入忽略的 `Signing.local.xcconfig`，或在 Xcode 中配置。不要提交 Team、设备标识、描述文件或 Key。本任务未提供签名 IPA，也没有以无签名编译替代真机验收。
+个人签名身份写入忽略的 `Signing.local.xcconfig`，或在 Xcode 中配置。不要提交 Team、设备标识、描述文件或 Key。带完整运行时的本地开发签名 IPA 已生成；真机各项验收与未完成项目见运行时记录。
 
 ## 给运行时构建的接入契约
 
@@ -51,7 +51,7 @@ Guest 输入目录放 `runtime.json` 与四个命名资源。格式见 [runtime.
 - `systemDisk`：第一张 virtio raw ext4 盘，QEMU 以只读方式打开；guest init 完成系统挂载与运行目录准备。
 - `userDiskSeed`：第二张 virtio raw ext4 盘的全新种子。原生首次复制到应用的 `Application Support/HarnessRuntime/user.raw`；后续沿用，不替换。guest init 必须完成 `/root` 挂载、布局版本检查与异常盘救援，不能在失败时退回 RAM home 冒充持久化成功。
 
-Guest 保留原型已验证的网络关系：官方 dsh 监听 guest loopback `3001`，guest relay 从网卡端口 `3000` 转接；设备 `127.0.0.1:18080` 转发到 guest `3000`。官方完整启动行 `dsh web: http://127.0.0.1:3001/?token=…` 从串口发出，应用只替换端口，不重写官方鉴权。init 可打印 `HARNESS_INIT_READY` 更新启动阶段。
+Guest 保留原型已验证的网络关系：官方 dsh 监听 guest loopback `3001`，guest relay 从网卡端口 `3000` 转接；设备 `127.0.0.1:28080` 转发到 guest `3000`。官方完整启动行 `dsh web: http://127.0.0.1:3001/?token=…` 从串口发出，应用只替换端口，不重写官方鉴权。init 可打印 `HARNESS_INIT_READY` 更新启动阶段。
 
 ## 生命周期与诊断
 

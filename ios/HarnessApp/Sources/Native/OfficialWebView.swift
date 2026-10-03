@@ -80,6 +80,7 @@ struct OfficialWebView: UIViewRepresentable {
                   message.body as? String == "ready", !painted else { return }
             painted = true
             paintTimeout?.cancel()
+            print("HARNESS_APP_PAGE_PAINTED")
             owner.onPaint()
         }
 

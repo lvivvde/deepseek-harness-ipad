@@ -69,6 +69,20 @@ final class RuntimeControllerTests: XCTestCase {
         XCTAssertEqual(runtime.pageRevision, 1)
         XCTAssertEqual(runtime.phase, .ready)
     }
+
+    func testIncompatibleUserDiskRemainsFailedWithoutRestartOrStaleReadiness() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.bootFailed(.userLayout))
+        driver.onEvent?(.ready(driver.endpoint))
+        await runtime.retry()
+
+        XCTAssertEqual(driver.starts, 1)
+        XCTAssertEqual(driver.reconnects, 0)
+        XCTAssertNil(runtime.destination)
+        XCTAssertEqual(runtime.phase, .failed(RuntimeBootFailure.userLayout.message, requiresRelaunch: true))
+    }
 }
 
 @MainActor
@@ -80,7 +94,7 @@ private final class RecordingDriver: RuntimeDriving {
     var pauseReconnect = false
     var onReconnectStarted: (() -> Void)?
     private var reconnectResult: CheckedContinuation<URL, Never>?
-    let endpoint = URL(string: "http://127.0.0.1:18080/?token=test-only")!
+    let endpoint = URL(string: "http://127.0.0.1:28080/?token=test-only")!
 
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws {
         starts += 1

@@ -4,6 +4,8 @@ import Network
 /// Real embedded QEMU. Build inputs are supplied independently of the App UI.
 @MainActor
 final class EmbeddedRuntime: RuntimeDriving {
+    private var bootStartedAt: Date?
+    private var receiptDirectory: URL?
     private(set) var hasLaunched = false
     private var exited = false
     private var onEvent: (@MainActor (RuntimeEvent) -> Void)?
@@ -27,6 +29,7 @@ final class EmbeddedRuntime: RuntimeDriving {
 
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws {
         guard !hasLaunched else { return }
+        bootStartedAt = Date()
         #if targetEnvironment(simulator)
         throw RuntimeConfigurationError.missingRuntime
         #else
@@ -41,8 +44,9 @@ final class EmbeddedRuntime: RuntimeDriving {
         }.value
         let arguments = configuration.qemuArguments(firmwareDirectory: Bundle.main.bundleURL.appendingPathComponent("qemu"))
         self.onEvent = onEvent
+        receiptDirectory = userData
         hasLaunched = true
-        onEvent(.booting)
+        publish(.booting)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = HarnessQemuBridge.runLibrary(library.path, arguments: arguments)
             Task { @MainActor in self?.didExit(code: result) }
@@ -53,13 +57,13 @@ final class EmbeddedRuntime: RuntimeDriving {
             while !Task.isCancelled, Date() < deadline {
                 guard let self, !exited else { return }
                 if let url = launchURL, await pageIsReady(url), !exited {
-                    onEvent(.ready(url))
+                    publish(.ready(url))
                     return
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
             guard let self, !exited, !Task.isCancelled else { return }
-            self.onEvent?(.connectionUnavailable)
+            self.publish(.connectionUnavailable)
         }
         #endif
     }
@@ -93,7 +97,7 @@ final class EmbeddedRuntime: RuntimeDriving {
         serial?.cancel()
         serialReady = false
         // Only a fixed event reaches diagnostics, never loader errors or auth URLs.
-        onEvent?(.exited)
+        publish(.exited)
     }
 
     private func pageIsReady(_ url: URL) async -> Bool {
@@ -111,7 +115,7 @@ final class EmbeddedRuntime: RuntimeDriving {
         serialAttempts += 1
         serial?.cancel()
         serialBuffer.removeAll(keepingCapacity: true)
-        let connection = NWConnection(host: "127.0.0.1", port: 18081, using: .tcp)
+        let connection = NWConnection(host: "127.0.0.1", port: 28081, using: .tcp)
         serial = connection
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             Task { @MainActor [weak self, weak connection] in
@@ -161,13 +165,38 @@ final class EmbeddedRuntime: RuntimeDriving {
     }
 
     private func handleLine(_ line: String) {
+        if let failure = RuntimeBootFailure.fromSerialLine(line) {
+            startupProbe?.cancel()
+            publish(.bootFailed(failure))
+            return
+        }
         if line == syncMarker { acknowledgedSync = line }
-        if launchURL == nil, line.contains("HARNESS_INIT_READY") { onEvent?(.loadingHarness) }
+        if launchURL == nil, line.contains("HARNESS_INIT_READY") { publish(.loadingHarness) }
         if let url = HarnessEndpoint.fromSerialLine(line) { launchURL = url }
     }
 
     private func send(_ command: String) {
         serial?.send(content: Data((command + "\n").utf8), completion: .contentProcessed { _ in })
+    }
+
+    /// Fixed stages only. This receipt contains no URLs, console text or credentials.
+    private func publish(_ event: RuntimeEvent) {
+        let stage: String
+        switch event {
+        case .booting: stage = "booting"
+        case .loadingHarness: stage = "loadingHarness"
+        case .ready: stage = "ready"
+        case .exited: stage = "exited"
+        case .connectionUnavailable: stage = "connectionUnavailable"
+        case .bootFailed(let failure): stage = "bootFailed:" + failure.rawValue
+        }
+        let elapsed = Int(Date().timeIntervalSince(bootStartedAt ?? Date()) * 1000)
+        if let directory = receiptDirectory,
+           let data = try? JSONSerialization.data(withJSONObject: ["stage": stage, "elapsedMilliseconds": elapsed]) {
+            try? data.write(to: directory.appendingPathComponent("RuntimeStatus.json"), options: .atomic)
+        }
+        print("HARNESS_APP_STAGE:\(stage) elapsed_ms=\(elapsed)")
+        onEvent?(event)
     }
 
     private enum ConnectionFailure: Error { case unavailable }

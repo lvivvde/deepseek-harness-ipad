@@ -1,0 +1,21 @@
+#!/bin/busybox sh
+bb=/bin/busybox
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+$bb mkdir -p /dev /proc /sys /system
+$bb mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+$bb mount -t proc proc /proc
+$bb mount -t sysfs sysfs /sys
+rescue() {
+    echo "HARNESS_BOOT_ERROR:$1"
+    while :; do $bb setsid $bb cttyhack $bb sh -i; $bb sleep 1; done
+}
+for module in virtio_mmio virtio_pci virtio_net virtio_blk af_packet ext4; do
+    $bb modprobe "$module" || : # Built-in drivers need no module.
+done
+# No writable system overlay: the first device is the signed bundle system disk.
+$bb mount -t ext4 -o ro,noload /dev/vda /system || rescue SYSTEM_MOUNT
+$bb mount --move /dev /system/dev || rescue SYSTEM_MOUNT
+$bb mount --move /proc /system/proc || rescue SYSTEM_MOUNT
+$bb mount --move /sys /system/sys || rescue SYSTEM_MOUNT
+exec $bb switch_root /system /sbin/harness-init

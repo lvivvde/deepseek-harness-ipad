@@ -5,7 +5,8 @@ import XCTest
 final class HarnessEndpointTests: XCTestCase {
     func testOnlyOfficialLoopbackLaunchURLIsRemappedAndTokenIsPreserved() {
         let url = HarnessEndpoint.fromSerialLine("dsh web: http://127.0.0.1:3001/?token=test-only%2Bvalue")
-        XCTAssertEqual(url?.absoluteString, "http://127.0.0.1:18080/?token=test-only%2Bvalue")
+        XCTAssertEqual(url?.absoluteString, "http://127.0.0.1:28080/?token=test-only%2Bvalue")
+        XCTAssertFalse(HarnessEndpoint.isLocalPage(URL(string: "http://127.0.0.1:18080/")!))
         for line in ["dsh web: https://example.com/?token=x",
                      "dsh web: http://127.0.0.1:3001/?token=",
                      "dsh web: http://127.0.0.1:3001/?token=a&token=b",

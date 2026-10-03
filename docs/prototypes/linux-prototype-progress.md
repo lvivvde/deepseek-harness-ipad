@@ -22,6 +22,14 @@
 
 已实际调用官方 LocalSandboxProvider（默认 5 秒 probe timeout）：选中 Landlock/full；workspace-write 允许写入测试目录、拒绝写入 `/root`，read-only 拒绝写入测试目录。通过 provider 的诊断 hook 指向故意缺失的 launcher，得到 `SANDBOX_UNAVAILABLE` 且命令未执行；这是明确注入的失效测试，不是本机 launcher 失败。Node 子进程 SIGTERM 处理及正常退出也已通过。guest 对官方平台公开主页 HTTPS GET 返回 200，未提交账户信息。
 
-待验收：官方账号/模型、会话、流式响应、真实工具调用与重连、持久化 POSIX 根文件系统和生产性能。本票保持开放；启动与可见界面不能替代完整闭环。
+用户已通过 API Key 入口配置成功；官方网页登录、手机号验证和 PKCE 流程仍未验收。进入后提示没有工作区，用户随后通过官方目录选择界面新建 `QQ` 目录并成功进入工作区。这是交互反馈，尚未证明模型工具执行。此前向串口诊断 mailbox 发送的 `/root/ipad-proof` 文件准备命令未被消费，不把该目录或测试基线计为已创建。
+
+在 `QQ` 中提交创建加法模块、两条断言并运行 `node test.cjs` 的请求后，用户反馈“执行成功了，但是有一个红色的操作”。红色条目的工具名称与错误、末次命令退出码及实际输出仍待核对；暂不把模型与本地工具的完整闭环记为通过。
+
+最小 Linux 缺少 `xdg-user-dir`；官方 workspace controller 的默认工作区查询依赖它，也支持 `documentsDirectory` 部署覆盖。构造脚本已追加 `/root/Documents` 目录和官方 `--patch` 配置覆盖，供下次镜像构造使用。用隔离的临时 Harness home 在 Mac 上执行官方 `--profile web --patch … --dump-config`，组合结果包含目标 row 的目录覆盖；这是配置组合检查，未启动 Linux 二进制。尚未替换当前真机镜像，避免中断已配置的 API 会话。当前根文件系统仍在 RAM 中，`QQ` 项目、会话及 API 配置的跨 VM 重启恢复均未验收。
+
+带上述覆盖的新镜像已在独立临时输出目录构造，压缩 initramfs 为 195,738,729 字节。检查生成 cpio 内的 init、patch 与 launcher，目录创建和 CLI 参数均存在；生成的 shell/JavaScript 语法检查与 `make check` 通过。这些检查不替代下次真机启动验收。
+
+待验收：模型响应、会话、流式响应、真实工具调用与重连、持久化 POSIX 根文件系统和生产性能。本票保持开放；启动与可见界面不能替代完整闭环。
 
 构建资料见[执行器来源](linux-executor-build-sources.md)和[最小 guest 来源](miniguest-build-sources.md)，代码与运行方式见[原型说明](../../ios/LinuxPrototype/README.md)。Working Copy 工作区参考已记录到[工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7#issuecomment-5965757506)。

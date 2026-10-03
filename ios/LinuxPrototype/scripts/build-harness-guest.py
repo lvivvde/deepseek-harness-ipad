@@ -79,6 +79,7 @@ while raw[offset:offset + 6] == b"070701":
 if init is None or b"/node-probe.cjs" not in init:
     raise SystemExit("Expected known Node guest init")
 init = init.replace(b"export HOME=/root\n", b"export HOME=/root\nexport TERM=xterm-256color\n")
+init = init.replace(b"export TERM=xterm-256color\n", b"export TERM=xterm-256color\n$bb mkdir -p /root/Documents\n")
 init = init.replace(b"MINIGUEST_INIT_READY", b"HARNESS_INIT_READY")
 if (source / "persistence-probe.raw").exists():
     init = init.replace(b"echo HARNESS_INIT_READY", b'''$bb modprobe vfat
@@ -98,6 +99,12 @@ echo HARNESS_INIT_READY''')
 init = init.replace(b"$bb httpd -f -p 0.0.0.0:3000 -h /www &", b"$bb httpd -f -p 0.0.0.0:3002 -h /www &")
 init = init.replace(b"(node /node-probe.cjs 2>&1; echo NODE_PROBE_EXIT:$?) | $bb tee /www/node.txt &", b"(cd /opt/harness; node native-probe.cjs; echo NATIVE_PROBE_EXIT:$?; node harness-start.cjs; echo HARNESS_EXIT:$?) 2>&1 | $bb tee /www/harness.txt &")
 entries["init"] = (stat.S_IFREG | 0o755, init)
+# The minimal headless guest has no xdg-user-dir. Use the official controller's
+# supported deployment override instead of changing Harness workspace code.
+entries["opt/harness/ipad.patch.yml"] = (stat.S_IFREG | 0o644, b'''- id: workspace-controller
+  config:
+    documentsDirectory: /root/Documents
+''')
 entries["opt/harness/native-probe.cjs"] = (stat.S_IFREG | 0o644, b'''const fs = require('node:fs');
 const assert = require('node:assert/strict');
 (async () => {
@@ -135,7 +142,7 @@ const relay = net.createServer(client => {
   upstream.on('close',()=>client.destroy());
 });
 relay.listen(3000,'10.0.2.15',()=>console.log('HARNESS_RELAY_READY'));
-const child = spawn(process.execPath,['node_modules/@deepseek-ai/dsh/lib/bin.js','web','--no-open','--port','3001','--trusted-host','127.0.0.1:18080'], {stdio:'inherit',env:process.env});
+const child = spawn(process.execPath,['node_modules/@deepseek-ai/dsh/lib/bin.js','--profile','web','--patch','/opt/harness/ipad.patch.yml','--no-open','--port','3001','--trusted-host','127.0.0.1:18080'], {stdio:'inherit',env:process.env});
 child.on('error',e=>{console.error('HARNESS_SPAWN_FAIL',e);relay.close();process.exitCode=1;});
 child.on('exit',(code,signal)=>{console.log('HARNESS_CHILD_EXIT',code,signal);relay.close();process.exitCode=code??1;});
 ''')

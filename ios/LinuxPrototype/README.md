@@ -81,3 +81,7 @@ python3 ios/LinuxPrototype/scripts/build-harness-guest.py \
 Harness 探针使用 2048 MiB guest RAM。首次 1536 MiB 配置在 initramfs 解包时触及临时根文件系统容量，出现 `Initramfs unpacking failed: write error` / `No space left on device`；缺失模块不能视作兼容性结论。镜像的未压缩归档合计约 679 MiB，还有文件页和目录开销。正式运行时需使用持久化 POSIX 根文件系统，避免以大 initramfs 装载整套 npm 树。
 
 可选磁盘恢复探针：准备一个全新的 64 MiB 空白文件 `persistence-probe.raw`，用 macOS `newfs_msdos -F 16 -S 512 -s 131072 -h 16 -u 63 -b 4096 -o 0 -v PROBE` 格式化此文件，放入下载目录。构造脚本在输出目录首次复制为 `persistence.raw`，以后不覆盖。guest 挂载它并写入 `proof.txt`，后续应用重启应输出 `PERSISTENCE_RESTORED:persistence-file-ok`。此 FAT 磁盘只验证持久化 I/O，不是 POSIX 工程工作区；重启测试不要重新覆盖设备上的磁盘。
+
+仅 `--prototype-autostart` 诊断模式启用命令信箱：向应用的 `Documents/PrototypeCommand.txt` 写入不超过 16 KiB 的 UTF-8 命令，原型在真实串口就绪时读取一次、删除文件并发送到 guest。结果留在串口日志。它用于真机探针，不是正式应用接口；当前 serialReady 只表示串口连接，需要另行确认 guest shell 已就绪再投递。
+
+WebView 的原型 popup delegate 在应用内创建授权子窗口，保持 Linux 回调仍在前台；官方 OAuth URL、PKCE、回调和 token 交换都由上游执行。返回按钮只关闭浏览器子窗口，取消授权仍由官方页面处理。本镜像的 Harness home 仍在 RAM 根文件系统内，账号和会话的重启持久化尚未验证。

@@ -28,6 +28,7 @@ final class PrototypeVM: ObservableObject {
     private var serial: NWConnection?
     private var attempts = 0
     private var probeSent = false
+    private var commandPoller: Task<Void, Never>?
     private let ioQueue = DispatchQueue(label: "prototype.serial")
 
     var guestFolder: URL {
@@ -109,6 +110,24 @@ final class PrototypeVM: ObservableObject {
             }
             attempts = 0
             connectSerial()
+            if ProcessInfo.processInfo.arguments.contains("--prototype-autostart") {
+                // Local diagnostic mailbox for this throwaway test only. It
+                // sends real guest serial commands; it is not a product API.
+                commandPoller = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        guard let self else { return }
+                        if !self.serialReady { continue }
+                        let file = self.guestFolder.deletingLastPathComponent().appendingPathComponent("PrototypeCommand.txt")
+                        if let data = try? Data(contentsOf: file), data.count <= 16_384,
+                           let command = String(data: data, encoding: .utf8) {
+                            do { try FileManager.default.removeItem(at: file) }
+                            catch { continue }
+                            self.send(command.trimmingCharacters(in: .newlines))
+                        }
+                    }
+                }
+            }
         } catch { status = "尚未启动：\(error.localizedDescription)" }
     }
 
@@ -146,8 +165,9 @@ final class PrototypeVM: ObservableObject {
                     if self.console.count > 100_000 { self.console = String(self.console.suffix(100_000)) }
                     // Only remap the guest's own authenticated launch URL. Keep
                     // its token exchange and signed browser cookie unchanged.
-                    if let line = self.console.components(separatedBy: "\n").dropLast().last(where: { $0.hasPrefix("dsh web: http://127.0.0.1:3001/") }),
-                       let text = line.dropFirst("dsh web: ".count).split(whereSeparator: { $0.isWhitespace }).first,
+                    if let line = self.console.components(separatedBy: "\n").dropLast().last(where: { $0.contains("dsh web: http://127.0.0.1:3001/") }),
+                       let marker = line.range(of: "dsh web: "),
+                       let text = line[marker.upperBound...].split(whereSeparator: { $0.isWhitespace }).first,
                        var url = URLComponents(string: String(text)),
                        url.scheme == "http", url.host == "127.0.0.1", url.port == 3001,
                        url.queryItems?.filter({ $0.name == "token" }).count == 1 {
@@ -204,12 +224,48 @@ enum PrototypeError: LocalizedError {
 
 struct HarnessWebView: UIViewRepresentable {
     let destination: URL
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
+        view.uiDelegate = context.coordinator
         view.load(URLRequest(url: destination))
         return view
     }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKUIDelegate {
+        private var panels: [UIView] = []
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            guard navigationAction.targetFrame == nil else { return nil }
+            // Keep the official browser authorization in this foreground app,
+            // so switching to Safari cannot suspend the local Linux callback.
+            let panel = UIView(frame: webView.bounds)
+            panel.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            panel.backgroundColor = .systemBackground
+            let child = WKWebView(frame: panel.bounds.inset(by: UIEdgeInsets(top: 44, left: 0, bottom: 0, right: 0)), configuration: configuration)
+            child.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            child.uiDelegate = self
+            panel.addSubview(child)
+            let close = UIButton(type: .system)
+            close.frame = CGRect(x: 12, y: 0, width: 160, height: 44)
+            close.setTitle("返回 Harness", for: .normal)
+            close.addAction(UIAction { [weak self, weak panel, weak child] _ in
+                child?.stopLoading()
+                panel?.removeFromSuperview()
+                self?.panels.removeAll { $0 === panel }
+            }, for: .touchUpInside)
+            panel.addSubview(close)
+            webView.addSubview(panel)
+            panels.append(panel)
+            return child
+        }
+        func webViewDidClose(_ webView: WKWebView) {
+            let panel = webView.superview
+            panel?.removeFromSuperview()
+            panels.removeAll { $0 === panel }
+        }
+    }
 }
 
 struct PrototypeView: View {

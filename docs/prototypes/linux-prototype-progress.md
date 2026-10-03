@@ -14,6 +14,14 @@
 
 本地已打包一个约 47 MiB 的个人签名原型 IPA（不含 guest 镜像）；它不是可发布的 Harness IPA，其他人重新签名的安装链仍未验证。二进制和签名资料不公开。
 
-官方 Harness、原生扩展、PTY、sandbox、持久化根文件系统和生产性能尚未验收。本票保持开放，继续验证；Linux 和 Node 成功不能替代完整闭环。
+第三阶段使用 2048 MiB guest RAM 通过完整镜像解包。koffi 的 libc 调用、sharp 生成 PNG、node-addon-system 文件锁和 node-pty 的 bash 子进程均通过，`NATIVE_PROBE_EXIT:0`；Landlock 功能探针返回 `full`。1536 MiB 的第一次实验出现 initramfs 写满、依赖不完整；该失败不作为模块不兼容证据。
+
+固定官方 `@deepseek-ai/dsh@0.2.0-rc.2` 的原版 Web profile 成功打印启动 URL。用户最初反馈鉴权错误或空白，等待后确认看到了官方 Harness 界面及预览说明。此反馈验证可见界面，尚不能替代 API、会话、流式模型和工具调用验收。旧的 `PrototypeHostBridge.txt` 仍含 BusyBox 探针的 `200` 响应，不把它归因于 Harness。
+
+独立 FAT 磁盘先写入文件，随后保留磁盘重启应用，得到 `PERSISTENCE_RESTORED:persistence-file-ok`。这是持久化块 I/O 和单文件恢复证据，不是 POSIX 根文件系统或工程工作区。此次强制退出也触发 FAT 未正常卸载提示，尚无优雅关机或异常退出一致性结论。
+
+已实际调用官方 LocalSandboxProvider（默认 5 秒 probe timeout）：选中 Landlock/full；workspace-write 允许写入测试目录、拒绝写入 `/root`，read-only 拒绝写入测试目录。通过 provider 的诊断 hook 指向故意缺失的 launcher，得到 `SANDBOX_UNAVAILABLE` 且命令未执行；这是明确注入的失效测试，不是本机 launcher 失败。Node 子进程 SIGTERM 处理及正常退出也已通过。guest 对官方平台公开主页 HTTPS GET 返回 200，未提交账户信息。
+
+待验收：官方账号/模型、会话、流式响应、真实工具调用与重连、持久化 POSIX 根文件系统和生产性能。本票保持开放；启动与可见界面不能替代完整闭环。
 
 构建资料见[执行器来源](linux-executor-build-sources.md)和[最小 guest 来源](miniguest-build-sources.md)，代码与运行方式见[原型说明](../../ios/LinuxPrototype/README.md)。Working Copy 工作区参考已记录到[工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7#issuecomment-5965757506)。

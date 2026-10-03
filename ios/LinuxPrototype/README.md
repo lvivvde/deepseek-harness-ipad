@@ -108,3 +108,9 @@ python3 ios/LinuxPrototype/scripts/build-state-guest.py \
 `stop-harness.cjs` 查找官方 CLI，发送 SIGTERM 并等待退出，再 sync；串口中确认 `HARNESS_STOPPED` 后才卸载 `/root` 和 `/persist`。它不是 VM 电源管理或异常断电恢复机制。
 
 外壳每秒读取自身 `task_info(TASK_VM_INFO)`，在 `PrototypeMetrics.json` 保存当前 phys_footprint、采样峰值及内核报告的峰值，记录从 QEMU 调用到官方启动 URL/HTTP 就绪的耗时及前后台事件。HTTP 探测使用无缓存的 ephemeral session，只有带 token 的启动入口得到 200 且正文含官方 `__DSH_BOOT__` 时才计为就绪，避免同一 loopback 地址以前的 BusyBox 页面缓存误报。范围仅为宿主应用进程，不含 WKWebView 独立辅助进程；采样峰值也不能代替完整生产工作负载预算。
+
+## 异常退出探针
+
+先在 Harness 停止时把当前 `/root` 归档为 FAT 盘上的新文件（不覆盖原 `root-backup.tgz`），`gzip -t` 并核对关键条目后 sync；随后重启 Harness，卸载 `/persist`，避免强杀时备份盘处于挂载写状态。`abnormal-writer.cjs` 在 `/root/.abnormal-exit` 每 100 ms 追加一行序号、一个 64 KiB 定值块和一条 `synchronous=FULL` 的 SQLite WAL 记录，每 10 次 fsync 并原子更新 `last-fsynced.txt`。写入进行中用 `devicectl device process terminate --kill` 向宿主应用发 SIGKILL，再以 `--prototype-autostart` 重启。`abnormal-verify.cjs` 只输出计数：fsync 检查点之前的行和块必须完整、SQLite `integrity_check` 为 ok；检查点之后未同步的追加允许丢失，也可能留下 NUL 尾部，单独计数。`writer.log` 已存在时写入器拒绝运行，避免混淆两次实验。
+
+这模拟宿主进程被杀，不模拟 iPad 断电：QEMU 未指定 `cache=`，已交给宿主的写入在 iOS 页缓存中仍会落盘。

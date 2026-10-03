@@ -61,3 +61,18 @@
 用户按要求短暂返回主屏幕再打开原型，确认不需要重新启动 Linux，原会话仍能运行测试并得到正确输出。外壳 lifecycle 记录可见约 8.98 秒、1.50 秒和 13.83 秒的 background→active 间隔，QEMU 计时与采样保持同一轮运行。没有在后台持续运行模型任务，不能据此判断长期后台执行、锁屏保活或暂停期间的流式连接行为。后续交互至 QEMU 调用后约 516.35 秒，共 498 次采样、0 次失败；宿主内核峰值增至 2,073,627,360 字节（约 1977.6 MiB / 1.93 GiB），仍不含 WebView 辅助进程。
 
 本轮 Xcode 真机签名构建、Python/Node/生成 init 语法检查、`make check` 和实际 ext4 跨重启集成探针均通过。结论限定为两次正常停服务/卸载后的 HOME 恢复与短暂前后台恢复；没有制作正式迁移器、备份产品或通过强制退出一致性验收。
+
+## 2026-10-03：写入中强杀宿主应用
+
+强杀前先正常停止官方 CLI，把当前 ext4 `/root` 归档为设备 FAT 盘上的 `root-backup-current-20261003.tgz`：46 个条目、67,129 字节，`gzip -t` 与工作区、计数、SQLite 关键条目检查通过，SHA256 前缀 `cb86acbacc3e0758`。原 `root-backup.tgz` 未覆盖；两份备份都只在 iPad 应用容器内。随后重启 Harness，集成探针计数 2→3 并 sync，卸载 `/persist`，再启动 `abnormal-writer.cjs`。
+
+写入器超过 150 次后，用 `devicectl` 向宿主应用发 SIGKILL（QEMU 与 Linux 同时被杀，无正常关机）。两块 raw 磁盘文件仍在，随后以 autostart 重启。实测：
+
+- guest 内核输出 `EXT4-fs (vdb): recovery complete`，以 ordered data mode 读写挂载；init 得到 `STATE_HOME_EXISTING`、`STATE_HOME_READY`，没有触发备份恢复，原生探针 `NATIVE_PROBE_EXIT:0`。
+- 最后 fsync 检查点为 220：日志 1–220 连续无坏行，220 个 64 KiB 块全部正确；SQLite `integrity_check` 为 ok，224 行连续，提交后但未到下一个检查点的 4 行事务也保留。
+- 普通文件 `writer.log` 末尾有 16 字节 NUL，正好对应未 fsync 的 221–224 四行：文件长度已进日志、数据页未写入。首版校验把它误判为 `ABX_MISMATCH`；改为单独统计未同步尾部后设备复跑 `ABX_OK`。这说明不 fsync 的普通文件写入在宿主被杀后可能留下 NUL 尾部，Harness 自身配置/会话文件是否 fsync 仍未审计。
+- 集成探针计数 3→4，原 `node test.cjs` 得到 `ipad-local-test-ok`；`/persist` 两份备份 `gzip -t` 通过，当前备份哈希不变。
+- FAT 盘挂载时内核报告 `Volume was not properly unmounted`；该警告在本次实验之前的多次启动日志中已存在，不是本次强杀引入。FAT 盘仅作迁移备份。
+- 本次从 QEMU 调用到启动 URL 293.44 秒、到官方 HTTP 就绪 300.46 秒，比上次 251.30 秒慢，期间并发执行核对命令；约 302 秒时宿主内核峰值 1,954,728,312 字节（约 1.82 GiB），不含 WebView 进程。
+
+结论限定为一次写入中宿主进程 SIGKILL：ext4 日志恢复正常，fsync 过的数据和 SQLite 已提交事务完好。未测 iPad 断电/系统崩溃、长时间后台被系统回收、流式回答进行中的强杀，以及 Harness 自身写文件的持久化语义。

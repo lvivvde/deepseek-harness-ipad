@@ -135,3 +135,5 @@
 部署：本机 `HarnessGuest/` 早于 BusyBox 安装那次提交，不是设备当前的 base；按 `state-receipts.json` 的 `baseSHA256` 从已部署的 `initramfs-state.cpio.gz` 中切出原 base（尾部 overlay 539,085 字节）重建，新旧 init 只差 Harness 启动这一行。新 initramfs 以新文件名上传并回读核对 SHA256，`boot.json` 只改 `initrd`，旧镜像保留作回退；没有触碰 `persistence.raw` 和 `state.raw`。切换前确认没有进行中的 turn，经 mailbox 正常停止官方 CLI 并 sync。
 
 新镜像第一次启动（17:19，缓存已由上述实验预热，探针标记尚不存在所以探针照常运行）：官方 CLI 从 relay 就绪到打印 URL 129.4 秒（上次 144 秒），启动 URL 228.9 秒、HTTP 就绪 236.3 秒（上次 243.5/250.8 秒）。定时刷新生效：运行约 5 分钟后 guest 内缓存从 1320 个文件增加到 1351 个，探针标记已写入。
+
+第二次启动（17:28，没有先停止官方 CLI，只经 mailbox sync 后由宿主应用直接重启，与平常关应用的路径一致）：串口为 `NATIVE_PROBE_CACHED`，relay 在 91.7 秒就绪（原 99.5 秒），官方 CLI 129.3 秒后打印 URL，启动 URL 221.0 秒、HTTP 就绪 228.2 秒。与优化前的 250.8 秒相比快 22.6 秒（约 9%）：省下的约 15 秒来自编译缓存，约 8 秒来自跳过探针。剩余大头是内核解包 initramfs 约 88 秒，以及官方 CLI 在 TCG 下即使有编译缓存仍需约 129 秒 CPU。进一步方案（均未实施）：把 `/opt/harness` 从 initramfs 移到只读磁盘镜像以缩短解包；前端静态资源加缓存头或压缩；QEMU 内存快照可接近秒开，但快照后状态盘继续变化，恢复时会与内存中的 ext4 状态不一致，必须先解决磁盘一致性才能考虑。

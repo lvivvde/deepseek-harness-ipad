@@ -2,6 +2,15 @@
 
 依据：[适配 Spec](ipad-app-spec.md)。2026-10-03 创建；下列任务均待实现。当前已交付的是技术原型，本文不把待办标为完成。
 
+GitHub 追踪入口：[适配规格](https://github.com/lvivvde/deepseek-harness-ipad/issues/15)。四项子任务已建立：
+
+| 实现任务 | 对应本表 | 当前条件 |
+| --- | --- | --- |
+| [正式应用入口、全屏官方界面与运行环境管理](https://github.com/lvivvde/deepseek-harness-ipad/issues/16) | T1、T4、T5 | `ready-for-agent`；可以开始工程和代码，不以假页面代替运行时接入。 |
+| [内置运行时、持久化用户盘与首个开发签名 IPA](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | T2、T3、T6 | `ready-for-agent`；镜像构建可先行，安装包最终整合前一项。正式工具/容量值接入范围决策。 |
+| [Git 项目工作区与本地开发闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | T7、T8 | `needs-triage`；依赖两项基础实现、首版范围与工作区决策。 |
+| [前后台恢复、数据救援与重签验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | T9–T11 | `needs-triage`；依赖两项基础实现与首版恢复要求；公开发布另满足分发、归档与许可条件。 |
+
 ## 第一个交付：打开就是官方 Harness 的自签 IPA
 
 这个版本的用途是让用户直接试用完整 App 体验：安装、自动启动、配置 API Key、打开持久化工作区、运行小型 Node 测试、重开后恢复。它不要求用户自行导入 guest，也不把可关闭的网页弹窗作为主界面。
@@ -34,7 +43,7 @@ T1 可以立即开始；T2 与 T1 可独立实施。T4 再整合。首个版本�
 | T10 备份恢复与救援 | 用户数据管理及宿主设置入口 | T3、T4；已定的交付机制与工作区交换约束 | 一致的 tar 导出、校验、恢复；磁盘失败保留原盘；备份/恢复过程失败不会覆盖有效数据。A10。 |
 | T11 发布与回归 | 构建/许可资料、安装与真机验收记录 | T8–T10；归档与许可证票；分发决策 | 他人重签验证、同身份覆盖升级、换身份导出/恢复、固定回归、性能测量；公开分发时附对应源码与许可资料。A11。 |
 
-实现时按职责建 GitHub 任务，附 Spec 条款、前置条件与验收结果。此表目前是仓库内任务拆分，尚未创建新的 GitHub issue；不关闭其他会话的决策票。
+GitHub 任务按上述职责追踪，正文包含 Spec 条款与验收结果要求，并以原生子议题和依赖关系连接。实施时把真实结果回写对应任务；不以本文代替完成状态，也不关闭其他会话的决策票。
 
 ## 验证纪律
 

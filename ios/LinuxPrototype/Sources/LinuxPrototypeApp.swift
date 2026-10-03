@@ -9,6 +9,7 @@ struct GuestSpec: Decodable {
     var kernel: String?
     var initrd: String?
     var disk: String?
+    var diskFormat: String?
     var append: String?
     var memoryMiB: Int?
 }
@@ -23,6 +24,7 @@ final class PrototypeVM: ObservableObject {
     }
     @Published var launched = false
     @Published var serialReady = false
+    @Published var webURL = URL(string: "http://127.0.0.1:18080/")!
     private var serial: NWConnection?
     private var attempts = 0
     private var probeSent = false
@@ -90,7 +92,11 @@ final class PrototypeVM: ObservableObject {
                 guard FileManager.default.fileExists(atPath: firmware.path) else { throw PrototypeError.missingImage("edk2-aarch64-code.fd") }
                 args += ["-bios", firmware.path]
             } else { throw PrototypeError.invalidMode }
-            if let disk = spec.disk { args += ["-drive", "file=\(try image(disk)),if=none,id=root,format=qcow2", "-device", "virtio-blk-pci,drive=root"] }
+            if let disk = spec.disk {
+                let format = spec.diskFormat ?? "qcow2"
+                guard ["raw", "qcow2"].contains(format) else { throw PrototypeError.invalidMode }
+                args += ["-drive", "file=\(try image(disk)),if=none,id=root,format=\(format)", "-device", "virtio-blk-pci,drive=root"]
+            }
             console = "真实 QEMU 参数：\n" + args.joined(separator: " ") + "\n"
             launched = true
             status = "已调用 QEMU；等待串口。启动成功仍待日志确认"
@@ -138,6 +144,19 @@ final class PrototypeVM: ObservableObject {
                 if let data {
                     self.console += String(decoding: data, as: UTF8.self)
                     if self.console.count > 100_000 { self.console = String(self.console.suffix(100_000)) }
+                    // Only remap the guest's own authenticated launch URL. Keep
+                    // its token exchange and signed browser cookie unchanged.
+                    if let line = self.console.components(separatedBy: "\n").dropLast().last(where: { $0.hasPrefix("dsh web: http://127.0.0.1:3001/") }),
+                       let text = line.dropFirst("dsh web: ".count).split(whereSeparator: { $0.isWhitespace }).first,
+                       var url = URLComponents(string: String(text)),
+                       url.scheme == "http", url.host == "127.0.0.1", url.port == 3001,
+                       url.queryItems?.filter({ $0.name == "token" }).count == 1 {
+                        url.port = 18080
+                        if let destination = url.url, self.webURL != destination {
+                            self.webURL = destination
+                            self.probeHostBridge()
+                        }
+                    }
                     if !self.probeSent && self.console.contains("MINIGUEST_INIT_READY") &&
                         ProcessInfo.processInfo.arguments.contains("--prototype-autostart") {
                         self.probeSent = true
@@ -159,7 +178,7 @@ final class PrototypeVM: ObservableObject {
 
     private func probeHostBridge() {
         Task {
-            let destination = URL(string: "http://127.0.0.1:18080/")!
+            let destination = webURL
             do {
                 let (data, response) = try await URLSession.shared.data(from: destination)
                 let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -184,9 +203,10 @@ enum PrototypeError: LocalizedError {
 }
 
 struct HarnessWebView: UIViewRepresentable {
+    let destination: URL
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
-        view.load(URLRequest(url: URL(string: "http://127.0.0.1:18080")!))
+        view.load(URLRequest(url: destination))
         return view
     }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
@@ -222,7 +242,7 @@ struct PrototypeView: View {
                 if case .success(let folder) = result { vm.importGuest(folder) }
                 else if case .failure(let error) = result { vm.status = error.localizedDescription }
             }
-            .sheet(isPresented: $showingWeb) { HarnessWebView() }
+            .sheet(isPresented: $showingWeb) { HarnessWebView(destination: vm.webURL) }
         }
     }
 }

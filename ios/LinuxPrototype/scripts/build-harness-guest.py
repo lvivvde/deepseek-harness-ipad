@@ -79,7 +79,7 @@ while raw[offset:offset + 6] == b"070701":
 if init is None or b"/node-probe.cjs" not in init:
     raise SystemExit("Expected known Node guest init")
 init = init.replace(b"export HOME=/root\n", b"export HOME=/root\nexport TERM=xterm-256color\n")
-init = init.replace(b"export TERM=xterm-256color\n", b"export TERM=xterm-256color\n$bb mkdir -p /root/Documents\n")
+init = init.replace(b"bb=/bin/busybox\n", b"bb=/bin/busybox\n$bb --install -s /bin\n$bb mkdir -p /root/Documents\n")
 init = init.replace(b"MINIGUEST_INIT_READY", b"HARNESS_INIT_READY")
 if (source / "persistence-probe.raw").exists():
     init = init.replace(b"echo HARNESS_INIT_READY", b'''$bb modprobe vfat

@@ -24,11 +24,15 @@
 
 用户已通过 API Key 入口配置成功；官方网页登录、手机号验证和 PKCE 流程仍未验收。进入后提示没有工作区，用户随后通过官方目录选择界面新建 `QQ` 目录并成功进入工作区。这是交互反馈，尚未证明模型工具执行。此前向串口诊断 mailbox 发送的 `/root/ipad-proof` 文件准备命令未被消费，不把该目录或测试基线计为已创建。
 
-在 `QQ` 中提交创建加法模块、两条断言并运行 `node test.cjs` 的请求后，用户反馈“执行成功了，但是有一个红色的操作”。红色条目的工具名称与错误、末次命令退出码及实际输出仍待核对；暂不把模型与本地工具的完整闭环记为通过。
+在 `QQ` 中提交创建加法模块、两条断言并运行 `node test.cjs` 的请求后，用户确认末次测试输出 `ipad-local-test-ok`、退出码 0。检查工作区和 Node 版本的早期操作曾显示 `/root/qq` 及 `bash: line 1: ls: command not found`；最小镜像尚未安装 BusyBox 的独立 applet 命令入口。这次交互确认了一个小型 Node 请求的模型与本地文件/测试执行闭环；测试文件内容尚未通过独立串口复核，不扩大为完整工具链兼容结论。
+
+构造脚本追加 `$bb --install -s /bin`，并在 `bb` 变量赋值后创建 Documents，修正新镜像的初始化顺序。用户在当前真机原型串口直接执行入口安装、`ls /root/qq` 和已有测试。用户反馈及随后采集的原型串口日志均包含 `hello.cjs  test.cjs`、`ipad-local-test-ok` 和 `IPAD_TEST_EXIT:0`；本地串口复测已通过。
 
 最小 Linux 缺少 `xdg-user-dir`；官方 workspace controller 的默认工作区查询依赖它，也支持 `documentsDirectory` 部署覆盖。构造脚本已追加 `/root/Documents` 目录和官方 `--patch` 配置覆盖，供下次镜像构造使用。用隔离的临时 Harness home 在 Mac 上执行官方 `--profile web --patch … --dump-config`，组合结果包含目标 row 的目录覆盖；这是配置组合检查，未启动 Linux 二进制。尚未替换当前真机镜像，避免中断已配置的 API 会话。当前根文件系统仍在 RAM 中，`QQ` 项目、会话及 API 配置的跨 VM 重启恢复均未验收。
 
-带上述覆盖的新镜像已在独立临时输出目录构造，压缩 initramfs 为 195,738,729 字节。检查生成 cpio 内的 init、patch 与 launcher，目录创建和 CLI 参数均存在；生成的 shell/JavaScript 语法检查与 `make check` 通过。这些检查不替代下次真机启动验收。
+带上述覆盖和 BusyBox 命令入口的新镜像已在独立临时输出目录构造，压缩 initramfs 为 195,738,663 字节。检查生成 cpio 内的 init、patch 与 launcher，`bb` 赋值、命令入口安装和目录创建顺序正确；生成的 shell/JavaScript 语法检查与 `make check` 通过。这些检查不替代下次真机启动验收。
+
+使用当前原型实际 PID 再次尝试短时 Activity Monitor 采样，Instruments 返回找不到目标进程，未生成有效采样；不报告 native 峰值内存。guest RAM 配置和 guest 内存统计不能替代应用进程的峰值占用。
 
 待验收：模型响应、会话、流式响应、真实工具调用与重连、持久化 POSIX 根文件系统和生产性能。本票保持开放；启动与可见界面不能替代完整闭环。
 

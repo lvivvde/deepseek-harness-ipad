@@ -74,7 +74,7 @@ python3 ios/LinuxPrototype/scripts/build-harness-guest.py \
 
 另外下载 `bash.deb`（[Debian bash 5.2.37-2+b10 arm64](https://packages.debian.org/trixie/arm64/bash/download)）和 `libtinfo6.deb`（[Debian libtinfo6 6.5+20250216-2 arm64](https://packages.debian.org/trixie/arm64/libtinfo6/download)）。脚本检查摘要，保存本次依赖锁及其摘要；CLI 版本固定，传递依赖以该次锁文件为准。
 
-启动时实际探测 koffi、sharp、flock、Landlock 和 node-pty，再运行原版 `dsh --profile web --patch /opt/harness/ipad.patch.yml --no-open --port 3001 --trusted-host 127.0.0.1:18080`。patch 只给官方 `workspace-controller` 设置 `documentsDirectory: /root/Documents`，该目录在 init 中创建；避免最小 Linux 缺少 `xdg-user-dir` 导致默认工作区初始化失败。已有目录也可以通过官方“添加工作区”界面登记。Harness 保留 guest loopback 监听；guest 内 TCP relay 从 SLIRP 网卡端口 3000 转接到 3001。设备侧端口仍只绑定 loopback。外壳从完整串口行读取官方启动 URL，只替换转发端口，保留官方 token 交换与 cookie 鉴权。
+启动时安装 BusyBox 的独立 applet 命令入口到 `/bin`，补齐 `ls` 等最小工具；这不是 GNU 工具链兼容承诺。实际探测 koffi、sharp、flock、Landlock 和 node-pty，再运行原版 `dsh --profile web --patch /opt/harness/ipad.patch.yml --no-open --port 3001 --trusted-host 127.0.0.1:18080`。patch 只给官方 `workspace-controller` 设置 `documentsDirectory: /root/Documents`，该目录在 init 中创建；避免最小 Linux 缺少 `xdg-user-dir` 导致默认工作区初始化失败。已有目录也可以通过官方“添加工作区”界面登记。Harness 保留 guest loopback 监听；guest 内 TCP relay 从 SLIRP 网卡端口 3000 转接到 3001。设备侧端口仍只绑定 loopback。外壳从完整串口行读取官方启动 URL，只替换转发端口，保留官方 token 交换与 cookie 鉴权。
 
 这是带 RAM-only 文件系统的兼容实验。原始启动 URL、token、cookie 和可能包含配置的日志只留本地；不会发布。本探针不等于已验证插件、模型调用、Git 或持久化项目闭环。
 

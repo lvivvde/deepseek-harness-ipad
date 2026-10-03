@@ -39,3 +39,25 @@
 已验收的小范围是 API Key 模型响应、工作区登记、文件/Node 测试工具、独立串口复测和网页重开后的会话恢复。待验收：流式传输细节、连接中途故障恢复、持久化 POSIX 根文件系统、IPA 重签交付链、native 峰值内存、冷启动和代表命令性能。本票保持开放；小型 Node 任务不能替代整个原型的全部验收条件或首版生产闭环。
 
 构建资料见[执行器来源](linux-executor-build-sources.md)和[最小 guest 来源](miniguest-build-sources.md)，代码与运行方式见[原型说明](../../ios/LinuxPrototype/README.md)。Working Copy 工作区参考已记录到[工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7#issuecomment-5965757506)。
+
+## 2026-10-03：持久化 HOME 与启动采样
+
+以下记录更新前述待验收状态。先用 Node 枚举 `/proc`，向官方 CLI 发送 SIGTERM；确认退出后将 `/root` 归档到原 FAT 盘的 `/persist/root-backup.tgz`，检查 tar 可读取、sync 并正常卸载。用户反馈和设备串口均确认 `STATE_BACKUP_OK`；再次卸载得到 Invalid argument 是已卸载后的重复操作。包含 API 配置的备份仅留在 iPad 应用容器，没有导出到 Mac 或仓库。
+
+新增第二块 512 MiB ext4 raw 状态盘，只挂载 `/root`；`/opt/harness`、系统库及其他 runtime 根目录仍为 RAM initramfs。匹配模块来自固定 Alpine 3.23.6 modloop，构造脚本核对内容收据、模块 vermagic 和依赖闭包。生成 initramfs 为 196,277,748 字节，SHA256 `fed80dace589d3d40382e5bbe4b5dbe84a801e241b1f222cb6a94edbd8e67449`。新盘离线 `e2fsck -fn` 通过；已有设备磁盘没有覆盖或重新格式化。
+
+第一次状态盘启动出现 `STATE_RESTORED_FROM_BACKUP`、`STATE_HOME_READY`、`NATIVE_PROBE_EXIT:0`。独立串口探针导入原 `hello.cjs` 复核两个 add 断言，运行原 `test.cjs`，得到 `ipad-local-test-ok`。ext4 上 0640 权限、相对符号链接、硬链接 inode 和 SQLite WAL 写入检查通过；计数从 0 写到 1。原测试子进程耗时约 1.64 秒，整个探针约 1.88 秒，均不计 Node 自身启动。用户未重新填 Key，通过官方左侧“会话恢复”找回原会话，并再次让模型运行测试成功。这是实际跨 Linux 重启的项目、会话及 API 配置恢复证据。
+
+外壳改用自身 Mach `TASK_VM_INFO` 采样。第一次状态盘启动从 QEMU 调用到官方启动 URL 为 237.67 秒；约 315 秒时内核报告宿主进程峰值 1,885,653,344 字节（约 1798.3 MiB）。它包括 QEMU、Swift 外壳与采样器，不含 WKWebView 独立进程，也不是生产工作负载总峰值或整个安装启动耗时。
+
+发现第一版 HTTP 就绪采样仍命中旧的 BusyBox 缓存：虽然响应为 200，正文只有 29 字节，不能作为 Harness 就绪证据；该版约 244 秒的 HTTP 数值作废。独立 guest HTTP 请求按官方启动 token 换 cookie，再获取首页，实际得到 200、34,846 字节及 `__DSH_BOOT__`。外壳随后改为无缓存 ephemeral URLSession，并同时核对官方页面标记；更新后的第二次启动正在验收。
+
+第二次启动前，仓库中的 `stop-harness.cjs` 正常停止官方 CLI，串口确认 `HARNESS_STOPPED` 与 `STATE_DISKS_UNMOUNTED`。仅更新同一签名应用，没有复制或覆盖设备已有两块磁盘。第二次启动得到 `STATE_HOME_EXISTING` 与 `STATE_HOME_READY`，没有再次从备份恢复；集成探针读回计数 1 和 SQLite 原行，写到 2，权限/符号链接/硬链接及原测试全部通过，`STATE_PROBE_EXIT:0`。此次原测试子进程约 4.30 秒、整个探针约 4.75 秒，探针与 Harness 冷启动并发，不能与第一次 1.64 秒直接作为稳定性能比较。
+
+更新后的实际签名仍没有 allow-jit、hypervisor、increased-memory-limit 或 extended-virtual-addressing；普通开发签名的 get-task-allow 存在。完整持久化 OS 根文件系统、异常退出恢复、流式中断/取消、IPA 他人重签链等仍未验收，原型票保持开放。
+
+修正后的第二次启动，原生无缓存探测得到 HTTP 200、34,846 字节及官方 `__DSH_BOOT__`。从 QEMU 调用到启动 URL 为 244.12 秒，到实际官方 HTTP 页面就绪为 251.30 秒（约 4 分 11 秒）；约 279.50 秒时宿主内核峰值 1,890,978,120 字节（约 1803.4 MiB / 1.76 GiB），274 次采样无失败。两次启动都包含镜像解压、系统与原生探针、Harness 启动；第二次还并发执行了状态盘探针。它们是本原型两次观测，不是统计性能承诺。用户随后确认第二次重启仍可恢复 QQ 原会话，无需重新填写 Key，再次模型执行 `node test.cjs` 成功，输出和退出码均符合预期。
+
+用户按要求短暂返回主屏幕再打开原型，确认不需要重新启动 Linux，原会话仍能运行测试并得到正确输出。外壳 lifecycle 记录可见约 8.98 秒、1.50 秒和 13.83 秒的 background→active 间隔，QEMU 计时与采样保持同一轮运行。没有在后台持续运行模型任务，不能据此判断长期后台执行、锁屏保活或暂停期间的流式连接行为。后续交互至 QEMU 调用后约 516.35 秒，共 498 次采样、0 次失败；宿主内核峰值增至 2,073,627,360 字节（约 1977.6 MiB / 1.93 GiB），仍不含 WebView 辅助进程。
+
+本轮 Xcode 真机签名构建、Python/Node/生成 init 语法检查、`make check` 和实际 ext4 跨重启集成探针均通过。结论限定为两次正常停服务/卸载后的 HOME 恢复与短暂前后台恢复；没有制作正式迁移器、备份产品或通过强制退出一致性验收。

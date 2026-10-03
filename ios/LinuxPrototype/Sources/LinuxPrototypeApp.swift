@@ -27,6 +27,21 @@ final class PrototypeVM: ObservableObject {
     @Published var serialReady = false
     @Published var webURL = URL(string: "http://127.0.0.1:18080/")!
     @Published var performance = "尚未采样"
+    @Published var harnessReady = false
+    private(set) var startDate: Date?
+    /// Last observed cold start to official HTTP readiness; only an estimate.
+    static let readyEstimateKey = "lastHarnessReadySeconds"
+    var readyEstimate: Double {
+        let saved = UserDefaults.standard.double(forKey: Self.readyEstimateKey)
+        return saved > 0 ? saved : 290
+    }
+    var bootPhase: String {
+        if harnessReady { return "Harness 已就绪" }
+        if urlSeenSeconds != nil { return "Harness 已启动，正在等待页面响应" }
+        if console.contains("HARNESS_INIT_READY") { return "Linux 已启动，正在加载 Harness（最慢的一步）" }
+        if serialReady { return "Linux 正在启动并挂载数据盘" }
+        return launched ? "正在启动虚拟机" : "未启动"
+    }
     private var serial: NWConnection?
     private var attempts = 0
     private var probeSent = false
@@ -39,6 +54,12 @@ final class PrototypeVM: ObservableObject {
     private var sampleFailures = 0
     private var sampledPeak: UInt64 = 0
     private var lifecycle: [[String: Any]] = []
+    private var webOpens: [[String: Any]] = []
+    /// First time each boot marker reaches the serial log; splits the cold
+    /// start into kernel/initramfs, init, native probe and Harness phases.
+    private static let bootMarkers = ["virtio_blk", "STATE_HOME_READY", "HARNESS_INIT_READY",
+                                      "NATIVE_PROBE_EXIT", "HARNESS_RELAY_READY", "dsh web: "]
+    private var markerSeconds: [String: Double] = [:]
     private let ioQueue = DispatchQueue(label: "prototype.serial")
 
     var guestFolder: URL {
@@ -57,7 +78,7 @@ final class PrototypeVM: ObservableObject {
         var report: [String: Any] = ["secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt,
                                     "sampleCount": sampleCount, "sampleFailures": sampleFailures,
                                     "scope": "Host app process only; excludes WKWebView helper processes",
-                                    "lifecycle": lifecycle]
+                                    "lifecycle": lifecycle, "webOpens": webOpens, "bootMarkers": markerSeconds]
         if let bytes = values["physFootprintBytes"]?.uint64Value {
             sampleCount += 1
             sampledPeak = max(sampledPeak, bytes)
@@ -81,6 +102,16 @@ final class PrototypeVM: ObservableObject {
     func recordLifecycle(_ event: String) {
         guard let startedAt else { return }
         lifecycle.append(["event": event, "secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt])
+        samplePerformance()
+    }
+
+    /// Web view timings and a pixel check, so the white-screen phase is
+    /// measured on device instead of reported by eye. Numbers only.
+    func recordWeb(_ entry: [String: Any]) {
+        guard let startedAt else { return }
+        var entry = entry
+        entry["secondsSinceQemuCall"] = ProcessInfo.processInfo.systemUptime - startedAt
+        webOpens.append(entry)
         samplePerformance()
     }
 
@@ -149,6 +180,7 @@ final class PrototypeVM: ObservableObject {
             launched = true
             status = "已调用 QEMU；等待串口。启动成功仍待日志确认"
             startedAt = ProcessInfo.processInfo.systemUptime
+            startDate = Date()
             samplePerformance()
             performancePoller = Task { [weak self] in
                 while !Task.isCancelled {
@@ -219,6 +251,13 @@ final class PrototypeVM: ObservableObject {
                 if let data {
                     self.console += String(decoding: data, as: UTF8.self)
                     if self.console.count > 100_000 { self.console = String(self.console.suffix(100_000)) }
+                    if let start = self.startedAt {
+                        let now = ProcessInfo.processInfo.systemUptime - start
+                        if self.markerSeconds["firstSerialBytes"] == nil { self.markerSeconds["firstSerialBytes"] = now }
+                        for marker in Self.bootMarkers where self.markerSeconds[marker] == nil && self.console.contains(marker) {
+                            self.markerSeconds[marker] = now
+                        }
+                    }
                     // Only remap the guest's own authenticated launch URL. Keep
                     // its token exchange and signed browser cookie unchanged.
                     if let line = self.console.components(separatedBy: "\n").dropLast().last(where: { $0.contains("dsh web: http://127.0.0.1:3001/") }),
@@ -272,11 +311,19 @@ final class PrototypeVM: ObservableObject {
                 if code == 200, destination.query?.contains("token=") == true, let start = startedAt,
                    body.contains("__DSH_BOOT__"), httpReadySeconds == nil {
                     httpReadySeconds = ProcessInfo.processInfo.systemUptime - start
+                    UserDefaults.standard.set(httpReadySeconds, forKey: Self.readyEstimateKey)
                     samplePerformance()
                 }
+                if code == 200, body.contains("__DSH_BOOT__") { harnessReady = true }
                 saveDiagnostic("HTTP \(code)\n" + body, name: "PrototypeHostBridge.txt")
             } catch {
                 saveDiagnostic("Host bridge failed: \(error.localizedDescription)", name: "PrototypeHostBridge.txt")
+            }
+            // The launch URL is printed before the official page answers;
+            // keep probing so the web view only opens on a real page.
+            if !harnessReady, destination.query?.contains("token=") == true {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if webURL == destination { probeHostBridge() }
             }
         }
     }
@@ -296,24 +343,149 @@ enum PrototypeError: LocalizedError {
 
 struct HarnessWebView: UIViewRepresentable {
     let destination: URL
+    var onMetrics: ([String: Any]) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIView(context: Context) -> WKWebView {
-        let view = WKWebView()
+    /// The official stop button refocuses the draft on mousedown. On iPad that
+    /// raises the keyboard and WebKit drops the click, so the turn never stops.
+    /// Deliver a still tap on that button as a plain click instead.
+    static let stopTapScript = """
+    (() => {
+      const stop = t => t instanceof Element && t.closest('button[aria-label="停止生成"],button[aria-label="Stop generating"]');
+      let start = null;
+      document.addEventListener('touchstart', e => {
+        const b = stop(e.target); const p = e.changedTouches[0];
+        start = b && p ? {b, x: p.clientX, y: p.clientY} : null;
+      }, {capture: true, passive: true});
+      document.addEventListener('touchend', e => {
+        const s = start; start = null; const p = e.changedTouches[0];
+        if (!s || !p || s.b.disabled || stop(e.target) !== s.b) return;
+        if (Math.hypot(p.clientX - s.x, p.clientY - s.y) > 10) return;
+        e.preventDefault();
+        s.b.click();
+      }, {capture: true, passive: false});
+    })();
+    """
+    /// The official page is an empty #root until about 1.5 MB of scripts
+    /// arrive from the emulated guest and run; report when real text paints.
+    static let paintScript = """
+    (() => {
+      const now = () => Math.round(performance.now());
+      const marks = {};
+      document.addEventListener('DOMContentLoaded', () => { marks.domContentLoadedMs = now(); });
+      let done = false;
+      const observer = new MutationObserver(() => {
+        const root = document.getElementById('root');
+        if (done || !root) return;
+        if (marks.rootChildMs == null && root.firstElementChild) marks.rootChildMs = now();
+        if (!(root.innerText || '').trim()) return;
+        done = true; observer.disconnect(); marks.rootTextMs = now();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const nav = performance.getEntriesByType('navigation')[0];
+          const res = performance.getEntriesByType('resource');
+          const end = list => Math.round(list.reduce((m, r) => Math.max(m, r.responseEnd), 0));
+          window.webkit.messageHandlers.harnessPaint.postMessage(Object.assign(marks, {
+            paintedMs: now(), htmlResponseEndMs: nav ? Math.round(nav.responseEnd) : -1,
+            resources: res.length, resourceBytes: res.reduce((s, r) => s + (r.encodedBodySize || 0), 0),
+            scriptsEndMs: end(res.filter(r => /\\.js$/.test(new URL(r.name).pathname))),
+            stylesEndMs: end(res.filter(r => /\\.css$/.test(new URL(r.name).pathname)))
+          }));
+        }));
+      });
+      observer.observe(document, {childList: true, subtree: true, characterData: true});
+    })();
+    """
+    func makeUIView(context: Context) -> UIView {
+        let configuration = WKWebViewConfiguration()
+        let scripts = configuration.userContentController
+        scripts.addUserScript(WKUserScript(source: Self.stopTapScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        scripts.addUserScript(WKUserScript(source: Self.paintScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        scripts.add(PaintMessageProxy(context.coordinator), name: "harnessPaint")
+        let container = UIView()
+        container.backgroundColor = .systemBackground
+        let view = WKWebView(frame: container.bounds, configuration: configuration)
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.uiDelegate = context.coordinator
+        container.addSubview(view)
+        let cover = LoadingCover(frame: container.bounds)
+        cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(cover)
+        context.coordinator.attach(webView: view, cover: cover, onMetrics: onMetrics)
         context.coordinator.lastDestination = destination
         view.load(URLRequest(url: destination))
-        return view
+        return container
     }
-    func updateUIView(_ uiView: WKWebView, context: Context) {
+    func updateUIView(_ uiView: UIView, context: Context) {
         if context.coordinator.lastDestination != destination {
             context.coordinator.lastDestination = destination
-            uiView.load(URLRequest(url: destination))
+            context.coordinator.webView?.load(URLRequest(url: destination))
         }
+    }
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "harnessPaint")
     }
 
     final class Coordinator: NSObject, WKUIDelegate {
         var lastDestination: URL?
+        private(set) weak var webView: WKWebView?
+        private weak var cover: LoadingCover?
+        private var onMetrics: ([String: Any]) -> Void = { _ in }
+        private var openedAt = Date()
         private var panels: [UIView] = []
+
+        func attach(webView: WKWebView, cover: LoadingCover, onMetrics: @escaping ([String: Any]) -> Void) {
+            self.webView = webView
+            self.cover = cover
+            self.onMetrics = onMetrics
+            openedAt = Date()
+            // Never trap the user behind the cover if detection misses.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in
+                guard let self, self.cover != nil else { return }
+                self.reveal(["event": "paintTimeout"])
+            }
+        }
+
+        func painted(_ marks: [String: Any]) {
+            guard cover != nil else { return }
+            var entry = marks.filter { $0.value is NSNumber }
+            entry["event"] = "painted"
+            reveal(entry)
+        }
+
+        private func reveal(_ entry: [String: Any]) {
+            var entry = entry
+            entry["nativeOpenToRevealSeconds"] = Date().timeIntervalSince(openedAt)
+            let cover = self.cover
+            self.cover = nil
+            UIView.animate(withDuration: 0.2, animations: { cover?.alpha = 0 }) { _ in cover?.removeFromSuperview() }
+            guard let webView else { onMetrics(entry); return }
+            webView.takeSnapshot(with: nil) { [onMetrics] image, _ in
+                if let image { entry["contentPixelFraction"] = Self.contentFraction(image) }
+                onMetrics(entry)
+            }
+        }
+
+        /// Share of pixels that differ from the page background (top-left).
+        /// Point-sampled at 256×256 without smoothing, so thin text is not
+        /// averaged away: about 0 means a blank page, whatever the theme.
+        static func contentFraction(_ image: UIImage) -> Double {
+            guard let cg = image.cgImage else { return -1 }
+            let side = 256
+            var pixels = [UInt8](repeating: 0, count: side * side * 4)
+            let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                              bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                context.interpolationQuality = .none
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+                return true
+            }
+            guard drawn else { return -1 }
+            let base = Array(pixels[0..<3])
+            var differing = 0
+            for i in stride(from: 0, to: pixels.count, by: 4)
+            where (0..<3).contains(where: { abs(Int(pixels[i + $0]) - Int(base[$0])) > 24 }) { differing += 1 }
+            return Double(differing) / Double(side * side)
+        }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             guard navigationAction.targetFrame == nil else { return nil }
@@ -347,6 +519,39 @@ struct HarnessWebView: UIViewRepresentable {
     }
 }
 
+/// WKUserContentController retains its handlers; keep the coordinator weak.
+final class PaintMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var target: HarnessWebView.Coordinator?
+    init(_ target: HarnessWebView.Coordinator) { self.target = target }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let marks = message.body as? [String: Any] { target?.painted(marks) }
+    }
+}
+
+/// Native cover over the web view until the official UI has painted text.
+final class LoadingCover: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .systemBackground
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.startAnimating()
+        let label = UILabel()
+        label.text = "正在加载 Harness 界面…\n需要从虚拟机下载约 1.5 MB 页面脚本"
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.textColor = .secondaryLabel
+        let stack = UIStackView(arrangedSubviews: [spinner, label])
+        stack.axis = .vertical
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                                     stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+                                     stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -32)])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+}
+
 struct PrototypeView: View {
     @StateObject private var vm = PrototypeVM()
     @State private var importing = false
@@ -361,8 +566,10 @@ struct PrototypeView: View {
                 HStack {
                     Button("导入测试 guest 目录") { importing = true }.disabled(vm.launched)
                     Button("启动一次 Linux") { vm.start() }.disabled(vm.launched)
-                    Button("打开 guest 网页") { showingWeb = true }.disabled(!vm.serialReady)
+                    Button(vm.harnessReady ? "打开 Harness" : "Harness 启动中…") { showingWeb = true }
+                        .disabled(!(vm.harnessReady || vm.console.contains("MINIGUEST_INIT_READY")))
                 }
+                if vm.launched && !vm.harnessReady { BootProgress(vm: vm) }
                 ScrollView { Text(vm.console).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 HStack {
                     TextField("guest 串口命令", text: $command).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -380,8 +587,38 @@ struct PrototypeView: View {
                 if case .success(let folder) = result { vm.importGuest(folder) }
                 else if case .failure(let error) = result { vm.status = error.localizedDescription }
             }
-            .sheet(isPresented: $showingWeb) { HarnessWebView(destination: vm.webURL) }
+            .onChange(of: vm.harnessReady) { ready in if ready { showingWeb = true } }
+            .sheet(isPresented: $showingWeb) {
+                HarnessWebView(destination: vm.webURL) { vm.recordWeb($0) }.onAppear { vm.recordWeb(["event": "opened"]) }
+            }
         }
+    }
+}
+
+/// Cold-start progress. The remaining time is the last run's measurement,
+/// not a promise: TCG start time varies with concurrent guest work.
+struct BootProgress: View {
+    @ObservedObject var vm: PrototypeVM
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = vm.startDate.map { context.date.timeIntervalSince($0) } ?? 0
+            let estimate = vm.readyEstimate
+            let remaining = estimate - elapsed
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: min(elapsed / estimate, 0.99))
+                Text(vm.bootPhase).font(.headline)
+                Text(remaining > 0
+                     ? "已用 \(Self.clock(elapsed))，预计还需约 \(Self.clock(remaining))（按上次启动估算）"
+                     : "已用 \(Self.clock(elapsed))，比上次慢，仍在启动；就绪后会自动打开")
+                    .font(.callout).monospacedDigit()
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+    static func clock(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 }
 

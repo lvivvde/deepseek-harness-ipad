@@ -84,7 +84,11 @@ Harness 探针使用 2048 MiB guest RAM。首次 1536 MiB 配置在 initramfs �
 
 仅 `--prototype-autostart` 诊断模式启用命令信箱：向应用的 `Documents/PrototypeCommand.txt` 写入不超过 16 KiB 的 UTF-8 命令，原型在真实串口连接且 guest 初始化标记出现后读取一次、删除文件并发送到 guest。结果留在串口日志。它用于真机探针，不是正式应用接口。
 
-WebView 的原型 popup delegate 在应用内创建授权子窗口，保持 Linux 回调仍在前台；官方 OAuth URL、PKCE、回调和 token 交换都由上游执行。返回按钮只关闭浏览器子窗口，取消授权仍由官方页面处理。基础 Harness guest 的 home 在 RAM 中；以下状态盘实验用于验证重启持久化。
+WebView 的原型 popup delegate 在应用内创建授权子窗口，保持 Linux 回调仍在前台；官方 OAuth URL、PKCE、回调和 token 交换都由上游执行。返回按钮只关闭浏览器子窗口，取消授权仍由官方页面处理。
+
+冷启动时，外壳轮询启动 URL，直到官方页面返回 200 且含 `__DSH_BOOT__` 才自动打开 WebView；等待期间显示阶段和按上次实测时长估算的剩余时间。WebView 打开后，原生遮罩保持到官方 `#root` 出现文字并经过两帧绘制。外壳把各阶段耗时、串口启动标记首次出现时间和一次截图像素检查写入 `PrototypeMetrics.json`，只含数字。官方停止按钮在 mousedown 时把焦点移回输入框，iPad 上会弹出键盘并丢掉这次点击。外壳注入一段只匹配官方停止按钮标签（“停止生成”/“Stop generating”）的触摸脚本：不移动的单击直接触发按钮 `click()`，不修改上游代码。上游改标签后该脚本会失效，这是候选上游问题。
+
+基础 Harness guest 的 home 在 RAM 中；以下状态盘实验用于验证重启持久化。
 
 ## 持久化 HOME 实验
 

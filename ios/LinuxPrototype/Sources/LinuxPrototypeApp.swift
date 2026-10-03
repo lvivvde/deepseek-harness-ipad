@@ -228,12 +228,19 @@ struct HarnessWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
         view.uiDelegate = context.coordinator
+        context.coordinator.lastDestination = destination
         view.load(URLRequest(url: destination))
         return view
     }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        if context.coordinator.lastDestination != destination {
+            context.coordinator.lastDestination = destination
+            uiView.load(URLRequest(url: destination))
+        }
+    }
 
     final class Coordinator: NSObject, WKUIDelegate {
+        var lastDestination: URL?
         private var panels: [UIView] = []
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {

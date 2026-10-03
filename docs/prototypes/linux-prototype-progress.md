@@ -78,3 +78,15 @@
 重启后用户确认：通过“会话恢复”找回 QQ 原会话，无需重新填 Key，模型再次运行 `node test.cjs` 输出正确。
 
 结论限定为一次写入中宿主进程 SIGKILL：ext4 日志恢复正常，fsync 过的数据和 SQLite 已提交事务完好。未测 iPad 断电/系统崩溃、长时间后台被系统回收、流式回答进行中的强杀，以及 Harness 自身写文件的持久化语义。
+
+## 2026-10-03：官方 Harness 写文件持久化审计
+
+针对上节“未 fsync 的普通文件追加可能留下 NUL 尾部”，阅读本次部署的官方 `@deepseek-ai/dsh@0.2.0-rc.2` 依赖源码（仅读取，不修改上游），并在设备 guest 内只读核对：
+
+- 会话日志（`dsh-session-persistence-jsonl`，默认 zstd 压缩）每批事件追加后立即 `fsync`，新建/改名后 fsync 父目录。读取时能截断不完整的最后一帧，但帧扫描先检查 zstd 魔数：如果被杀后尾部留下 ≥4 字节 NUL，会抛出 `invalid frame magic`，该会话会被判为损坏；列表跳过这条会话，打开时报 `SessionQueryError`，不会走截断修复。触发窗口仅限追加写入后、fsync 完成前，并且同时有其他日志提交把新文件长度写入 ext4 日志；上节实验已在同一 ext4 上实际观察到这种 NUL 尾部。会话日志本身尚未观察到。
+- `dsh-storage-json` 与本地附件写入同样 fsync 文件和父目录。
+- 凭据（`dsh-credentials-local`）、配置编辑、插件管理、app boot 和 `dsh-llm-deepseek` 使用 `dsh-atomic-write`：临时文件加 rename 替换，源码注明 “Crash durability (fsync) is out of scope”。guest 中 `/root` 以默认选项挂载（含 `auto_da_alloc`），rename 覆盖已有文件时 ext4 会先分配并提交新数据块，被杀后应得到旧内容或新内容；首次创建的文件没有这层保护。
+- `withFileLock` 在 `<file>.lock` 中记录持有者 PID，只有 PID 不存在时才接管；源码注明 PID 被其他活进程复用时锁会一直保留，需要人工删除，超时 2 秒后写入失败。guest 每次冷启动都是新的 PID 空间：强杀前官方 CLI 的 PID 是 452，重启后是 465，数值很接近，强杀时残留的锁在重启后可能被误判为仍有持有者。这种锁只在凭据/配置的一次改写期间存在，读取不需要锁。
+- 会话租约 `session.lock` 使用 `flock(2)`，进程死亡后由内核释放，不受上述 PID 问题影响。强杀重启后设备上有 4 个会话 `session.lock`，没有 PID 记录锁或残留 `.tmp`，4 个会话日志末尾都不是 NUL。
+
+候选缓解（未实施，需先观察到实际故障或在首版决策中定案）：guest init 在启动 Harness 前删除内容为 `PID\n` 格式的残留 `withFileLock` 锁，此时 guest 内没有官方进程，这类锁必然已过期；会话日志 NUL 尾部的修复属于上游持久化行为，应作为上游问题或首版风险处理，不在原型里私自截断用户会话。下一步“流式回答进行中强杀”应在重启后同样核对会话日志尾部和损坏报错。

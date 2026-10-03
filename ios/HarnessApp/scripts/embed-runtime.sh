@@ -24,6 +24,7 @@ if [[ ! -f "$executor/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-sof
 fi
 
 python3 "$SRCROOT/scripts/validate-runtime.py" "$guest"
+rm -rf "$frameworks"
 mkdir -p "$frameworks"
 for framework in "$executor"/Frameworks/*.framework; do
     target="$frameworks/$(basename "$framework")"

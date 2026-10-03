@@ -48,6 +48,27 @@ final class RuntimeControllerTests: XCTestCase {
             return XCTFail("Exited VM must require an App relaunch")
         }
     }
+
+    func testPageTerminationDuringForegroundProbeStillReloadsThePage() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        driver.pauseReconnect = true
+
+        let probe = Task { await runtime.resume() }
+        await withCheckedContinuation { started in
+            driver.onReconnectStarted = { started.resume() }
+        }
+        await runtime.recoverPage()
+        driver.finishReconnect()
+        await probe.value
+
+        XCTAssertEqual(driver.starts, 1)
+        XCTAssertEqual(driver.reconnects, 1)
+        XCTAssertEqual(runtime.pageRevision, 1)
+        XCTAssertEqual(runtime.phase, .ready)
+    }
 }
 
 @MainActor
@@ -56,6 +77,9 @@ private final class RecordingDriver: RuntimeDriving {
     private(set) var starts = 0
     private(set) var reconnects = 0
     var onEvent: (@MainActor (RuntimeEvent) -> Void)?
+    var pauseReconnect = false
+    var onReconnectStarted: (() -> Void)?
+    private var reconnectResult: CheckedContinuation<URL, Never>?
     let endpoint = URL(string: "http://127.0.0.1:18080/?token=test-only")!
 
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws {
@@ -68,7 +92,18 @@ private final class RecordingDriver: RuntimeDriving {
 
     func reconnect() async throws -> URL {
         reconnects += 1
+        if pauseReconnect {
+            return await withCheckedContinuation { result in
+                reconnectResult = result
+                onReconnectStarted?()
+            }
+        }
         return endpoint
+    }
+
+    func finishReconnect() {
+        reconnectResult?.resume(returning: endpoint)
+        reconnectResult = nil
     }
 
     func flush() async {}

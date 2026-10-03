@@ -36,6 +36,7 @@ final class RuntimeController: ObservableObject {
     private let driver: RuntimeDriving
     private var startup: Task<Void, Never>?
     private var checkingConnection = false
+    private var reloadRequested = false
     private var runtimeExited = false
     @Published private(set) var diagnostics: [String] = []
 
@@ -85,15 +86,20 @@ final class RuntimeController: ObservableObject {
     }
 
     private func checkConnection(reload: Bool) async {
-        guard driver.hasLaunched, !runtimeExited, !checkingConnection else { return }
+        guard driver.hasLaunched, !runtimeExited else { return }
+        reloadRequested = reloadRequested || reload
+        guard !checkingConnection else { return }
         checkingConnection = true
         phase = .reconnecting
-        defer { checkingConnection = false }
+        defer {
+            checkingConnection = false
+            reloadRequested = false
+        }
         do {
             let url = try await driver.reconnect()
             guard !runtimeExited else { return }
             destination = url
-            if reload { pageRevision += 1 }
+            if reloadRequested { pageRevision += 1 }
             phase = .ready
         } catch {
             guard !runtimeExited else { return }

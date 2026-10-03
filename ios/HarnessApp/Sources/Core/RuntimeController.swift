@@ -8,6 +8,17 @@ enum RuntimeEvent {
     case exited
     case connectionUnavailable
     case bootFailed(RuntimeBootFailure)
+
+    var diagnosticStage: String {
+        switch self {
+        case .booting: return "booting"
+        case .loadingHarness: return "loadingHarness"
+        case .ready: return "ready"
+        case .exited: return "runtimeExited"
+        case .connectionUnavailable: return "connectionUnavailable"
+        case .bootFailed(let failure): return "bootFailed:" + failure.rawValue
+        }
+    }
 }
 
 enum RuntimeBootFailure: String {
@@ -16,6 +27,7 @@ enum RuntimeBootFailure: String {
     case userMount = "USER_MOUNT"
     case userLayout = "USER_LAYOUT"
     case userReadonly = "USER_READONLY"
+    case userSpace = "USER_SPACE"
     case network = "NETWORK"
     case userLocks = "USER_LOCKS"
     case harnessExit = "HARNESS_EXIT"
@@ -33,6 +45,7 @@ enum RuntimeBootFailure: String {
         case .userMount: return "用户盘无法挂载，原盘已保留，运行环境停在救援模式"
         case .userLayout: return "用户盘布局不兼容或无法读取，原盘未改写，请使用匹配版本或救援"
         case .userReadonly: return "用户盘不可写或空间不足，原盘已保留"
+        case .userSpace: return "用户盘空间不足或写入失败，原盘已保留，运行环境停在救援模式"
         case .network: return "运行环境网络初始化失败，请关闭并重新打开应用"
         case .userLocks: return "Harness 状态锁无法恢复，用户盘已保留"
         case .harnessExit: return "Harness 已退出，请关闭并重新打开应用"
@@ -141,21 +154,19 @@ final class RuntimeController: ObservableObject {
 
     private func receive(_ event: RuntimeEvent) {
         guard !terminalFailure else { return }
+        record(event.diagnosticStage)
         switch event {
-        case .booting: phase = .booting; record("booting")
-        case .loadingHarness: phase = .loadingHarness; record("loadingHarness")
-        case .ready(let url): destination = url; phase = .ready; record("ready")
+        case .booting: phase = .booting
+        case .loadingHarness: phase = .loadingHarness
+        case .ready(let url): destination = url; phase = .ready
         case .exited:
             terminalFailure = true
             phase = .failed("运行环境已退出，请关闭并重新打开应用", requiresRelaunch: true)
-            record("runtimeExited")
         case .connectionUnavailable:
             phase = .failed("Harness 尚未就绪，请重试连接", requiresRelaunch: false)
-            record("connectionUnavailable")
         case .bootFailed(let failure):
             terminalFailure = true
             phase = .failed(failure.message, requiresRelaunch: true)
-            record("bootFailed:" + failure.rawValue)
         }
     }
 

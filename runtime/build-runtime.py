@@ -13,7 +13,6 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-import zlib
 
 HERE = Path(__file__).resolve().parent
 

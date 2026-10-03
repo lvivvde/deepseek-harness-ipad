@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+if (process.argv[2] !== '--cold-boot') throw new Error('Cleanup is only valid before Harness starts after a fresh VM boot');
 // dsh withFileLock stores PID + newline, not arbitrary application state.
 const root = process.env.DSH_HOME || '/root/.dsh';
 function visit(directory) {
@@ -12,8 +13,9 @@ function visit(directory) {
       if (info.size > 16) continue;
       const value = fs.readFileSync(name, 'utf8');
       if (!/^[1-9][0-9]*\n$/.test(value)) continue;
-      try { process.kill(Number(value.trim()), 0); }
-      catch (error) { if (error.code === 'ESRCH') fs.unlinkSync(name); else throw error; }
+      // No previous-boot process can survive this boundary. A reused PID belongs
+      // to the new VM, not the old holder. Never run this after starting dsh.
+      fs.unlinkSync(name);
     }
   }
 }

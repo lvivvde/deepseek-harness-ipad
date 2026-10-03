@@ -115,7 +115,7 @@ final class EmbeddedRuntime: RuntimeDriving {
         serialAttempts += 1
         serial?.cancel()
         serialBuffer.removeAll(keepingCapacity: true)
-        let connection = NWConnection(host: "127.0.0.1", port: 28081, using: .tcp)
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: RuntimePorts.serial)!, using: .tcp)
         serial = connection
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             Task { @MainActor [weak self, weak connection] in
@@ -181,15 +181,7 @@ final class EmbeddedRuntime: RuntimeDriving {
 
     /// Fixed stages only. This receipt contains no URLs, console text or credentials.
     private func publish(_ event: RuntimeEvent) {
-        let stage: String
-        switch event {
-        case .booting: stage = "booting"
-        case .loadingHarness: stage = "loadingHarness"
-        case .ready: stage = "ready"
-        case .exited: stage = "exited"
-        case .connectionUnavailable: stage = "connectionUnavailable"
-        case .bootFailed(let failure): stage = "bootFailed:" + failure.rawValue
-        }
+        let stage = event.diagnosticStage
         let elapsed = Int(Date().timeIntervalSince(bootStartedAt ?? Date()) * 1000)
         if let directory = receiptDirectory,
            let data = try? JSONSerialization.data(withJSONObject: ["stage": stage, "elapsedMilliseconds": elapsed]) {

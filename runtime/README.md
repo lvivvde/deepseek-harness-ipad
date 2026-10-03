@@ -38,11 +38,11 @@ python3 runtime/build-runtime.py \
 
 用户盘先用默认只读的 debugfs 检查布局，再在未挂载状态运行 e2fsck -p；只有 clean/repaired 状态继续挂载。布局不是 v1 或无法读取时先保留原盘，避免对未知/未来格式修复写入。错误进入串口救援并向原生层发出固定故障码，不回退到 RAM home。镜像构建与设备启动都不格式化已有用户盘。
 
-陈旧锁清理仅限官方 `~/.dsh` 内 `.lock` 文件，必须是 PID 加换行且进程已不存在；其他锁、会话日志和尾部 NUL 不修改。尚不提供完整的原生备份/恢复 UI，继续由恢复任务处理。
+陈旧锁清理仅在新 VM 冷启动、官方 dsh 尚未启动时执行，显式要求 `--cold-boot`。仅清除官方 `~/.dsh` 内严格 PID 加换行格式的 `.lock` 文件，不以新进程中的同号 PID 判断旧锁仍有效；其他锁、会话日志和尾部 NUL 不修改。尚不提供完整的原生备份/恢复 UI，继续由恢复任务处理。
 
 ## 构建与打包
 
-QEMU 执行器复用已验证输入；正式 App 使用独立 28080/28081/28082 端口，与原型 18080/18081/18082 分开。guest 内仍为官方 loopback 3001 与原有网卡 3000 relay，官方 trusted-host 为 127.0.0.1:28080，鉴权不变。
+QEMU 执行器复用已验证输入；正式 App 使用独立 28080/28081/28082 端口，与原型 18080/18081/18082 分开。Swift 端口集中在 `RuntimePorts`；guest 内仍为官方 loopback 3001 与原有网卡 3000 relay，官方 trusted-host 为 127.0.0.1:28080，鉴权不变。修改端口时必须同步 guest trusted-host 并重建运行时；这项跨语言契约仍是非阻塞的维护限制。
 
 ```sh
 xcodebuild -project ios/HarnessApp/HarnessApp.xcodeproj -scheme HarnessApp \
@@ -56,7 +56,7 @@ python3 runtime/package-ipa.py \
 
 签名配置仍在忽略的 `ios/HarnessApp/Signing.local.xcconfig`，不要提交签名身份、描述文件或设备标识。打包器检查资源完整性、开发描述文件和签名；拒绝覆盖已有 IPA，保留符号链接。当前个人开发签名只覆盖配置中的设备，其他用户的重签安装链路尚未验收。
 
-本次本地 IPA 实测 **311,340,361 字节**；未压缩的两个 raw 文件分别为 1 GiB 和 512 MiB，内核 10,387,968 字节、小 initramfs 1,673,827 字节。App bundle 的本机磁盘占用约 1.5 GiB，不等于设备安装占用；设备实际占用、冷启动和内存需要真机另测。构建默认不能当作之前包体/性能估计的验收结果。
+本次本地 IPA 实测约 **311 MB**，最终字节数和 SHA256 随本机包的 sidecar 记录；未压缩的两个 raw 文件分别为 1 GiB 和 512 MiB，内核 10,387,968 字节、小 initramfs 1,673,827 字节。App bundle 的本机磁盘占用约 1.5 GiB，不等于设备安装占用；设备实际占用、冷启动和内存需要真机另测。构建默认不能当作之前包体/性能估计的验收结果。
 
 个人开发包在本机保留；没有公开发布二进制 Release。正式发布前仍需完成执行器归档、完整对应源码包和许可证发布条件。
 
@@ -64,8 +64,10 @@ python3 runtime/package-ipa.py \
 
 `make test-runtime` 检查锁定输入损坏和既有输出/种子盘保留。Swift 状态测试覆盖磁盘故障不得被旧 ready 事件或重试变成成功。`runtime/guest/runtime-check.cjs` 在真实 guest 验证只读系统盘、可写用户盘、npm test、Git 本地提交、SQLite 和计数持久化；第一次参数 0，成功后第二次应传 1，不能重置计数让测试通过。
 
-Linux 测试 VM 中真实 QEMU 已启动新镜像，按官方 token/cookie 流程获得 HTTP 200 和 `__DSH_BOOT__`；Node/npm/Git/SQLite 与只读检查已通过。这不代替 iPad 上的无 JIT 性能与界面验收。
+Linux 测试 VM 中真实 QEMU 已启动新镜像，按官方 token/cookie 流程获得 HTTP 200 和 `__DSH_BOOT__`；Node/npm/Git/SQLite 与只读检查已通过，重启后 Git 和 SQLite 保留、计数由 1 继续到 2。这不代替 iPad 上的无 JIT 性能与界面验收。
 
-签名 App 已安装到独立 `org.lvivvde.harness.ipad` 容器，启动验证正在进行。新容器没有复制原型配置，API Key/模型操作需在新 App 独立验收。键盘/触控、工作区操作、后台恢复与备份尚未完整验收；相关 issue 保持开放。
+故障验收可在 Linux 执行 `python3 runtime/check-boot.py /path/to/new-guest`，需要 QEMU、mke2fs、debugfs。它只创建自有临时盘：未来布局 v2 必须进入 USER_LAYOUT 救援且完整 raw 哈希不变；数据块满但 inode/目录尚可用时，必须进入 USER_SPACE 救援，不能尝试启动 Harness。两项真实 QEMU 验收已通过。正常启动还执行非空同步写入探测，空间不足或 I/O 失败有明确故障码。
+
+签名 App 已安装到独立 `org.lvivvde.harness.ipad` 容器；首次启动请求被设备锁屏拒绝，等待解锁后继续真机验收。新容器没有复制原型配置，API Key/模型操作需在新 App 独立验收。键盘/触控、工作区操作、后台恢复与备份尚未完整验收；相关 issue 保持开放。
 
 原生仅把固定阶段和启动时长写到自己的 `Library/Application Support/HarnessRuntime/RuntimeStatus.json`，页面绘制打印固定标记。原始串口、完整启动 URL、凭据和设备标识不写入该记录或公开收据。

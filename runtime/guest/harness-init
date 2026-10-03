@@ -25,7 +25,10 @@ result=$?
 [ "$result" -le 1 ] || rescue USER_FSCK
 $bb mount -t ext4 -o errors=remount-ro /dev/vdb /root || rescue USER_MOUNT
 probe=/root/.write-check-$$
-(umask 077; : >"$probe") || rescue USER_READONLY
+available=$($bb stat -f -c %a /root) || rescue USER_SPACE
+[ "$available" -ge 1024 ] || rescue USER_SPACE
+# A nonempty, synchronized write also checks actual block allocation and I/O.
+(umask 077; $bb dd if=/dev/zero of="$probe" bs=4096 count=1 conv=fsync >/dev/null 2>&1) || rescue USER_SPACE
 $bb rm "$probe"
 $bb mkdir -p /root/Documents/Projects /root/.cache/node-compile-cache || rescue USER_READONLY
 echo HARNESS_USER_READY
@@ -35,7 +38,7 @@ $bb cat /etc/harness-runtime.json
 export NODE_COMPILE_CACHE=/root/.cache/node-compile-cache
 export NODE_OPTIONS="--require /opt/harness/compile-cache-flush.cjs"
 cd /opt/harness || rescue SYSTEM_MOUNT
-node clean-locks.cjs || rescue USER_LOCKS
+node clean-locks.cjs --cold-boot || rescue USER_LOCKS
 echo HARNESS_INIT_READY
 node harness-start.cjs &
 # Serial shell is a recovery channel, separate from the official browser session.

@@ -1,0 +1,2 @@
+// Signing identity stays local.
+#include? "Signing.local.xcconfig"

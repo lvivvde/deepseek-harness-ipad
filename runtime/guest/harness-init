@@ -1,0 +1,45 @@
+#!/bin/busybox sh
+bb=/bin/busybox
+export PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
+export HOME=/root TERM=xterm-256color LANG=C.UTF-8
+rescue() {
+    echo "HARNESS_BOOT_ERROR:$1"
+    while :; do $bb setsid $bb cttyhack $bb sh -i; $bb sleep 1; done
+}
+$bb mount -t tmpfs -o mode=1777,size=128m tmpfs /tmp || rescue SYSTEM_MOUNT
+$bb mount -t tmpfs -o mode=755,size=32m tmpfs /run || rescue SYSTEM_MOUNT
+$bb mount -t tmpfs -o mode=755,size=32m tmpfs /var || rescue SYSTEM_MOUNT
+$bb mkdir -p /dev/pts /run/lock /var/tmp
+$bb mount -t devpts -o mode=620 devpts /dev/pts || rescue SYSTEM_MOUNT
+$bb hostname harness-ipad
+echo HARNESS_SYSTEM_READY
+# debugfs defaults to read-only and reads the layout before journal repair.
+# A newer or unreadable layout is preserved for rescue, without fsck writes.
+layout=$(/usr/sbin/debugfs -R 'cat /.harness-layout-version' /dev/vdb 2>/dev/null)
+if [ "$layout" != 1 ]; then rescue USER_LAYOUT; fi
+# fsck runs only while unmounted and after the layout was accepted.
+# 0=clean, 1=repaired.
+/usr/sbin/e2fsck -p /dev/vdb
+result=$?
+[ "$result" -le 1 ] || rescue USER_FSCK
+$bb mount -t ext4 -o errors=remount-ro /dev/vdb /root || rescue USER_MOUNT
+probe=/root/.write-check-$$
+available=$($bb stat -f -c %a /root) || rescue USER_SPACE
+[ "$available" -ge 1024 ] || rescue USER_SPACE
+# A nonempty, synchronized write also checks actual block allocation and I/O.
+(umask 077; $bb dd if=/dev/zero of="$probe" bs=4096 count=1 conv=fsync >/dev/null 2>&1) || rescue USER_SPACE
+$bb rm "$probe"
+$bb mkdir -p /root/Documents/Projects /root/.cache/node-compile-cache || rescue USER_READONLY
+echo HARNESS_USER_READY
+$bb ifconfig lo 127.0.0.1 up
+$bb udhcpc -q -n -t 5 -T 1 -i eth0 -s /etc/udhcpc/default.script || rescue NETWORK
+$bb cat /etc/harness-runtime.json
+export NODE_COMPILE_CACHE=/root/.cache/node-compile-cache
+export NODE_OPTIONS="--require /opt/harness/compile-cache-flush.cjs"
+cd /opt/harness || rescue SYSTEM_MOUNT
+node clean-locks.cjs --cold-boot || rescue USER_LOCKS
+echo HARNESS_INIT_READY
+node harness-start.cjs &
+# Serial shell is a recovery channel, separate from the official browser session.
+while :; do $bb setsid $bb cttyhack $bb sh -i; $bb sleep 1; done

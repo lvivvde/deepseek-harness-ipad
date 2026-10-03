@@ -107,6 +107,8 @@ python3 ios/LinuxPrototype/scripts/build-state-guest.py \
 
 生成 `initramfs-state.cpio.gz`、`boot.json` 和模块/镜像收据。部署时只新增 initramfs 和首次使用的 `state.raw`，更新 boot.json；不要复制或覆盖设备已有的 `persistence.raw` 或已经使用的 `state.raw`。首次挂载核对版本标记并从设备备份恢复 `/root`，恢复成功后才写 `.state-restored-v1`；后续启动直接沿用状态盘。挂载、版本或恢复失败时保留救援串口，不启动 Harness，避免以 RAM 状态误报持久化成功。
 
+init 为官方 CLI 设置 `NODE_COMPILE_CACHE=/root/.cache/node-compile-cache`，把 [Node 编译缓存](https://nodejs.org/api/module.html#module-compile-cache)放在状态盘上。Node 只在进程退出时写缓存，而 guest 通常随宿主应用被杀，因此 `compile-cache-flush.cjs` 经 `NODE_OPTIONS=--require` 在启动后 180、300、600 秒调用 `module.flushCompileCache()`。原生探针在该状态盘上对每个 base initramfs 只运行一次，通过后写入含 base SHA256 前缀的标记文件，之后启动输出 `NATIVE_PROBE_CACHED` 直接拉起 Harness。部署时用新文件名上传 initramfs 再改 `boot.json` 的 `initrd`，旧镜像保留作回退。
+
 `state-probe.cjs WORKSPACE EXPECTED_COUNT` 用原有加法模块与测试复核工作区，检查 ext4 上的权限、符号链接、硬链接和 SQLite WAL，写入可跨重启核对的计数。探针源码在宿主仓库，由诊断 mailbox 送入真实 guest 后运行；这是集成实验，不是正式迁移工具。
 
 `stop-harness.cjs` 查找官方 CLI，发送 SIGTERM 并等待退出，再 sync；串口中确认 `HARNESS_STOPPED` 后才卸载 `/root` 和 `/persist`。它不是 VM 电源管理或异常断电恢复机制。

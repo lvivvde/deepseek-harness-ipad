@@ -122,7 +122,22 @@ init = init.replace(b"echo HARNESS_INIT_READY", setup)
 startup = b"(cd /opt/harness; node native-probe.cjs; echo NATIVE_PROBE_EXIT:$?; node harness-start.cjs; echo HARNESS_EXIT:$?) 2>&1 | $bb tee /www/harness.txt &"
 if init.count(startup) != 1:
     raise SystemExit("Expected known Harness startup")
-init = init.replace(startup, b'if [ "$homeReady" = 1 ]; then\n' + startup + b'\nelse\n    echo HARNESS_SKIPPED_NO_STATE_HOME\nfi')
+# The compile cache lives on the ext4 HOME so later boots skip most of dsh's JavaScript compile.
+# The guest is normally killed with the iPad app rather than exiting, so a preload flushes it on a timer.
+# The native probe runs once per Harness image and is skipped after it has passed on this state disk.
+probe_ok = b"/root/.cache/native-probe-ok-" + receipt["initramfsSHA256"][:16].encode()
+cached = (b'(cd /opt/harness; export NODE_COMPILE_CACHE=/root/.cache/node-compile-cache '
+          b'NODE_OPTIONS="--require /opt/harness/compile-cache-flush.cjs"; '
+          b'if [ -f ' + probe_ok + b' ]; then echo NATIVE_PROBE_CACHED; '
+          b'else node native-probe.cjs; probe=$?; echo NATIVE_PROBE_EXIT:$probe; '
+          b'if [ "$probe" = 0 ]; then $bb mkdir -p /root/.cache && $bb touch ' + probe_ok + b'; fi; fi; '
+          b'node harness-start.cjs; echo HARNESS_EXIT:$?) 2>&1 | $bb tee /www/harness.txt &')
+init = init.replace(startup, b'if [ "$homeReady" = 1 ]; then\n' + cached + b'\nelse\n    echo HARNESS_SKIPPED_NO_STATE_HOME\nfi')
+entries["opt/harness/compile-cache-flush.cjs"] = (stat.S_IFREG | 0o644, b"""const { flushCompileCache } = require("node:module");
+if (process.env.NODE_COMPILE_CACHE && flushCompileCache) {
+  for (const seconds of [180, 300, 600]) setTimeout(flushCompileCache, seconds * 1000).unref();
+}
+""")
 entries["init"] = (stat.S_IFREG | 0o755, init)
 for name in list(entries):
     for parent in PurePosixPath(name).parents:
@@ -154,6 +169,6 @@ spec.update(initrd="initramfs-state.cpio.gz", stateDisk="state.raw")
     "baseSHA256": hashlib.sha256(image).hexdigest(),
     "initramfsSHA256": hashlib.sha256(result).hexdigest(),
     "modulesSHA256": module_receipts,
-    "scope": "Persistent ext4 /root only; runtime rootfs remains RAM-only. Backup archive stays on device.",
+    "scope": "Persistent ext4 /root only, including the Node compile cache; runtime rootfs remains RAM-only. Backup archive stays on device.",
 }, indent=2) + "\n")
 print("Prepared ext4 HOME experiment; modules:", ", ".join(sorted(module_receipts)))

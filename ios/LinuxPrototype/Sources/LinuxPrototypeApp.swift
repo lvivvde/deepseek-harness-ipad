@@ -61,6 +61,27 @@ final class PrototypeVM: ObservableObject {
                                       "NATIVE_PROBE_EXIT", "HARNESS_RELAY_READY", "dsh web: "]
     private var markerSeconds: [String: Double] = [:]
     private let ioQueue = DispatchQueue(label: "prototype.serial")
+    /// Short random ID so the append-only lifecycle log separates launches.
+    private let launchID = String(UUID().uuidString.prefix(8))
+    private var backgroundedAt: Date?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    init() {
+        // The previous launch's last metrics snapshot is overwritten once this
+        // launch starts sampling; keep how and when it ended first.
+        let previous = (try? Data(contentsOf: documents.appendingPathComponent("PrototypeMetrics.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        var extra: [String: Any] = ["autostart": ProcessInfo.processInfo.arguments.contains("--prototype-autostart")]
+        if let previous {
+            extra["previousLastSampleWallClock"] = previous["wallClock"]
+            extra["previousSecondsSinceQemuCall"] = previous["secondsSinceQemuCall"]
+            extra["previousHarnessReady"] = previous["harnessHTTPReadySeconds"] != nil
+            extra["previousLastLifecycleEvent"] = (previous["lifecycle"] as? [[String: Any]])?.last?["event"]
+        }
+        appendLifecycle("launch", extra)
+    }
+
+    private var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 
     var guestFolder: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -68,14 +89,36 @@ final class PrototypeVM: ObservableObject {
     }
 
     private func saveDiagnostic(_ text: String, name: String) {
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        try? text.data(using: .utf8)?.write(to: directory.appendingPathComponent(name), options: .atomic)
+        try? text.data(using: .utf8)?.write(to: documents.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// Append-only across launches (events, wall clock and numbers only), so a
+    /// background kill by iPadOS is visible from the next launch.
+    private func appendLifecycle(_ event: String, _ extra: [String: Any] = [:]) {
+        var entry = extra
+        entry["event"] = event
+        entry["launch"] = launchID
+        entry["wallClock"] = Date().timeIntervalSince1970
+        if let startedAt { entry["secondsSinceQemuCall"] = ProcessInfo.processInfo.systemUptime - startedAt }
+        if let bytes = PrototypeQemuBridge.memoryFootprint()["physFootprintBytes"]?.uint64Value { entry["hostProcessFootprintBytes"] = bytes }
+        guard JSONSerialization.isValidJSONObject(entry),
+              var line = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else { return }
+        line.append(0x0A)
+        let file = documents.appendingPathComponent("PrototypeLifecycle.jsonl")
+        if let handle = try? FileHandle(forWritingTo: file) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: line)
+        } else {
+            try? line.write(to: file)
+        }
     }
 
     private func samplePerformance() {
         guard let startedAt else { return }
         let values = PrototypeQemuBridge.memoryFootprint()
         var report: [String: Any] = ["secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt,
+                                    "wallClock": Date().timeIntervalSince1970,
                                     "sampleCount": sampleCount, "sampleFailures": sampleFailures,
                                     "scope": "Host app process only; excludes WKWebView helper processes",
                                     "lifecycle": lifecycle, "webOpens": webOpens, "bootMarkers": markerSeconds]
@@ -100,9 +143,97 @@ final class PrototypeVM: ObservableObject {
     }
 
     func recordLifecycle(_ event: String) {
-        guard let startedAt else { return }
-        lifecycle.append(["event": event, "secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt])
-        samplePerformance()
+        var extra: [String: Any] = ["serialReady": serialReady, "harnessReady": harnessReady]
+        if event == "active", let backgroundedAt { extra["wallSecondsInBackground"] = Date().timeIntervalSince(backgroundedAt) }
+        appendLifecycle(event, extra)
+        if let startedAt {
+            lifecycle.append(["event": event, "secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt])
+            samplePerformance()
+        }
+        if event == "background" { backgroundedAt = Date(); syncGuestBeforeSuspend() }
+        if event == "active", backgroundedAt != nil { backgroundedAt = nil; checkAfterResume() }
+    }
+
+    private var probeNonce = 0
+    /// A per-probe marker suffix. Probes quote the marker so the shell echo of
+    /// the command line never matches; only the guest's output does.
+    private func nextNonce() -> String { probeNonce += 1; return "\(launchID)_\(probeNonce)" }
+
+    private func serialOutput(matching pattern: String, timeout: Double) async -> String? {
+        let regex = try? NSRegularExpression(pattern: pattern)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let text = console
+            if let regex, let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let range = Range(match.range(at: 1), in: text) { return String(text[range]) }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return nil
+    }
+
+    /// iPadOS suspends the app (and the whole VM with it) a few seconds after
+    /// it leaves the screen, and may later kill it without warning. Flush the
+    /// guest page cache to the disk images first, inside a background task.
+    private func syncGuestBeforeSuspend() {
+        guard serialReady, console.contains("HARNESS_INIT_READY"), backgroundTask == .invalid else { return }
+        let began = Date()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "guest-sync") { [weak self] in
+            Task { @MainActor in self?.finishBackgroundSync("bgSyncExpired", began: began, guestUptime: nil) }
+        }
+        let n = nextNonce()
+        send("echo BG_SYNC_\"UPTIME\"_\(n):$(/bin/busybox cut -d' ' -f1 /proc/uptime); sync; echo BG_SYNC_\"DONE\"_\(n)")
+        Task {
+            let uptime = await serialOutput(matching: "BG_SYNC_UPTIME_\(n):([0-9.]+)", timeout: 5)
+            let done = await serialOutput(matching: "(BG_SYNC_DONE_\(n))", timeout: 25)
+            finishBackgroundSync(done == nil ? "bgSyncTimeout" : "bgSyncDone", began: began, guestUptime: uptime.flatMap(Double.init))
+        }
+    }
+
+    private func finishBackgroundSync(_ event: String, began: Date, guestUptime: Double?) {
+        guard backgroundTask != .invalid else { return }
+        var extra: [String: Any] = ["seconds": Date().timeIntervalSince(began)]
+        if let guestUptime { extra["guestUptime"] = guestUptime }
+        appendLifecycle(event, extra)
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    /// After a suspension: does the serial console answer, how far did the
+    /// guest clock move, and does the loopback port bridge still serve HTTP?
+    private func checkAfterResume() {
+        let n = nextNonce()
+        let asked = Date()
+        if serialReady { send("echo RESUME_\"UPTIME\"_\(n):$(/bin/busybox cut -d' ' -f1 /proc/uptime)") }
+        Task {
+            var extra: [String: Any] = ["serialReady": serialReady]
+            if serialReady, let uptime = await serialOutput(matching: "RESUME_UPTIME_\(n):([0-9.]+)", timeout: 15).flatMap(Double.init) {
+                extra["guestUptime"] = uptime
+                extra["serialReplySeconds"] = Date().timeIntervalSince(asked)
+            }
+            appendLifecycle("resumeSerial", extra)
+        }
+        guard harnessReady else { return }
+        Task {
+            let destination = webURL
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            configuration.timeoutIntervalForRequest = 30
+            let session = URLSession(configuration: configuration)
+            defer { session.finishTasksAndInvalidate() }
+            let began = Date()
+            var extra: [String: Any] = [:]
+            do {
+                let (data, response) = try await session.data(from: destination)
+                extra["httpStatus"] = (response as? HTTPURLResponse)?.statusCode ?? 0
+                extra["officialPage"] = String(decoding: data, as: UTF8.self).contains("__DSH_BOOT__")
+            } catch {
+                let error = error as NSError
+                extra["errorDomain"] = error.domain
+                extra["errorCode"] = error.code
+            }
+            extra["seconds"] = Date().timeIntervalSince(began)
+            appendLifecycle("resumeHTTP", extra)
+        }
     }
 
     /// Web view timings and a pixel check, so the white-screen phase is
@@ -112,6 +243,7 @@ final class PrototypeVM: ObservableObject {
         var entry = entry
         entry["secondsSinceQemuCall"] = ProcessInfo.processInfo.systemUptime - startedAt
         webOpens.append(entry)
+        appendLifecycle("web", entry.filter { $0.value is NSNumber || $0.key == "event" })
         samplePerformance()
     }
 
@@ -405,6 +537,7 @@ struct HarnessWebView: UIViewRepresentable {
         let view = WKWebView(frame: container.bounds, configuration: configuration)
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.uiDelegate = context.coordinator
+        view.navigationDelegate = context.coordinator
         container.addSubview(view)
         let cover = LoadingCover(frame: container.bounds)
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -424,7 +557,7 @@ struct HarnessWebView: UIViewRepresentable {
         coordinator.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "harnessPaint")
     }
 
-    final class Coordinator: NSObject, WKUIDelegate {
+    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
         var lastDestination: URL?
         private(set) weak var webView: WKWebView?
         private weak var cover: LoadingCover?
@@ -437,10 +570,33 @@ struct HarnessWebView: UIViewRepresentable {
             self.cover = cover
             self.onMetrics = onMetrics
             openedAt = Date()
+            NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
+                                                   name: UIApplication.didBecomeActiveNotification, object: nil)
             // Never trap the user behind the cover if detection misses.
             DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in
                 guard let self, self.cover != nil else { return }
                 self.reveal(["event": "paintTimeout"])
+            }
+        }
+
+        /// iPadOS may kill the separate WebKit content process while the app
+        /// is in the background; the page then goes blank. Record and reload.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            onMetrics(["event": "webContentTerminated"])
+            if let lastDestination { webView.load(URLRequest(url: lastDestination)) }
+        }
+
+        /// Whether the official page still shows text after returning.
+        @objc private func becameActive() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, self.cover == nil, let webView = self.webView else { return }
+                webView.evaluateJavaScript("((document.getElementById('root') || {}).innerText || '').trim().length") { [weak self] value, _ in
+                    var entry: [String: Any] = ["event": "resumePage", "rootTextLength": (value as? NSNumber) ?? -1]
+                    webView.takeSnapshot(with: nil) { image, _ in
+                        if let image { entry["contentPixelFraction"] = Self.contentFraction(image) }
+                        self?.onMetrics(entry)
+                    }
+                }
             }
         }
 
@@ -583,6 +739,9 @@ struct PrototypeView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in vm.recordLifecycle("background") }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in vm.recordLifecycle("active") }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in vm.recordLifecycle("resignActive") }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in vm.recordLifecycle("memoryWarning") }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in vm.recordLifecycle("willTerminate") }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
                 if case .success(let folder) = result { vm.importGuest(folder) }
                 else if case .failure(let error) = result { vm.status = error.localizedDescription }

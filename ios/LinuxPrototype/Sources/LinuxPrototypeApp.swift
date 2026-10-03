@@ -10,6 +10,7 @@ struct GuestSpec: Decodable {
     var initrd: String?
     var disk: String?
     var diskFormat: String?
+    var stateDisk: String?
     var append: String?
     var memoryMiB: Int?
 }
@@ -25,10 +26,19 @@ final class PrototypeVM: ObservableObject {
     @Published var launched = false
     @Published var serialReady = false
     @Published var webURL = URL(string: "http://127.0.0.1:18080/")!
+    @Published var performance = "尚未采样"
     private var serial: NWConnection?
     private var attempts = 0
     private var probeSent = false
     private var commandPoller: Task<Void, Never>?
+    private var performancePoller: Task<Void, Never>?
+    private var startedAt: TimeInterval?
+    private var urlSeenSeconds: Double?
+    private var httpReadySeconds: Double?
+    private var sampleCount = 0
+    private var sampleFailures = 0
+    private var sampledPeak: UInt64 = 0
+    private var lifecycle: [[String: Any]] = []
     private let ioQueue = DispatchQueue(label: "prototype.serial")
 
     var guestFolder: URL {
@@ -41,6 +51,39 @@ final class PrototypeVM: ObservableObject {
         try? text.data(using: .utf8)?.write(to: directory.appendingPathComponent(name), options: .atomic)
     }
 
+    private func samplePerformance() {
+        guard let startedAt else { return }
+        let values = PrototypeQemuBridge.memoryFootprint()
+        var report: [String: Any] = ["secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt,
+                                    "sampleCount": sampleCount, "sampleFailures": sampleFailures,
+                                    "scope": "Host app process only; excludes WKWebView helper processes",
+                                    "lifecycle": lifecycle]
+        if let bytes = values["physFootprintBytes"]?.uint64Value {
+            sampleCount += 1
+            sampledPeak = max(sampledPeak, bytes)
+            report["sampleCount"] = sampleCount
+            report["hostProcessFootprintBytes"] = bytes
+            report["hostProcessSampledPeakBytes"] = sampledPeak
+            performance = String(format: "宿主占用 %.1f MiB；采样峰值 %.1f MiB", Double(bytes) / 1_048_576, Double(sampledPeak) / 1_048_576)
+        } else {
+            sampleFailures += 1
+            report["sampleFailures"] = sampleFailures
+        }
+        if let peak = values["kernelPeakBytes"]?.uint64Value { report["hostProcessKernelPeakBytes"] = peak }
+        if let urlSeenSeconds { report["harnessLaunchURLSeconds"] = urlSeenSeconds }
+        if let httpReadySeconds { report["harnessHTTPReadySeconds"] = httpReadySeconds }
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            saveDiagnostic(text, name: "PrototypeMetrics.json")
+        }
+    }
+
+    func recordLifecycle(_ event: String) {
+        guard let startedAt else { return }
+        lifecycle.append(["event": event, "secondsSinceQemuCall": ProcessInfo.processInfo.systemUptime - startedAt])
+        samplePerformance()
+    }
+
     func importGuest(_ folder: URL) {
         guard !launched else { status = "先关闭并重新打开应用，再更换 guest"; return }
         guard folder.startAccessingSecurityScopedResource() else { status = "未获得所选目录访问权限"; return }
@@ -50,9 +93,10 @@ final class PrototypeVM: ObservableObject {
             let spec = try JSONDecoder().decode(GuestSpec.self, from: specData)
             // Only named image files are copied, never the user's project tree.
             try FileManager.default.createDirectory(at: guestFolder, withIntermediateDirectories: true)
-            for name in ["boot.json", spec.kernel, spec.initrd, spec.disk].compactMap({ $0 }) {
+            for name in ["boot.json", spec.kernel, spec.initrd, spec.disk, spec.stateDisk].compactMap({ $0 }) {
                 guard !name.contains("/"), name != ".", name != ".." else { throw PrototypeError.invalidName }
                 let target = guestFolder.appendingPathComponent(name)
+                if name == spec.stateDisk && FileManager.default.fileExists(atPath: target.path) { continue }
                 if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
                 try FileManager.default.copyItem(at: folder.appendingPathComponent(name), to: target)
             }
@@ -98,9 +142,21 @@ final class PrototypeVM: ObservableObject {
                 guard ["raw", "qcow2"].contains(format) else { throw PrototypeError.invalidMode }
                 args += ["-drive", "file=\(try image(disk)),if=none,id=root,format=\(format)", "-device", "virtio-blk-pci,drive=root"]
             }
+            if let disk = spec.stateDisk {
+                args += ["-drive", "file=\(try image(disk)),if=none,id=state,format=raw", "-device", "virtio-blk-pci,drive=state"]
+            }
             console = "真实 QEMU 参数：\n" + args.joined(separator: " ") + "\n"
             launched = true
             status = "已调用 QEMU；等待串口。启动成功仍待日志确认"
+            startedAt = ProcessInfo.processInfo.systemUptime
+            samplePerformance()
+            performancePoller = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard let self else { return }
+                    self.samplePerformance()
+                }
+            }
             let immutableArgs = args
             DispatchQueue.global(qos: .userInitiated).async {
                 var message: NSString?
@@ -117,7 +173,7 @@ final class PrototypeVM: ObservableObject {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         guard let self else { return }
-                        if !self.serialReady { continue }
+                        if !self.serialReady || !(self.console.contains("HARNESS_INIT_READY") || self.console.contains("MINIGUEST_INIT_READY")) { continue }
                         let file = self.guestFolder.deletingLastPathComponent().appendingPathComponent("PrototypeCommand.txt")
                         if let data = try? Data(contentsOf: file), data.count <= 16_384,
                            let command = String(data: data, encoding: .utf8) {
@@ -174,6 +230,9 @@ final class PrototypeVM: ObservableObject {
                         url.port = 18080
                         if let destination = url.url, self.webURL != destination {
                             self.webURL = destination
+                            if self.urlSeenSeconds == nil, let start = self.startedAt {
+                                self.urlSeenSeconds = ProcessInfo.processInfo.systemUptime - start
+                            }
                             self.probeHostBridge()
                         }
                     }
@@ -200,9 +259,22 @@ final class PrototypeVM: ObservableObject {
         Task {
             let destination = webURL
             do {
-                let (data, response) = try await URLSession.shared.data(from: destination)
+                // A previous BusyBox response at the same loopback origin can
+                // otherwise survive in URLCache across prototype upgrades.
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.urlCache = nil
+                configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+                let session = URLSession(configuration: configuration)
+                defer { session.finishTasksAndInvalidate() }
+                let (data, response) = try await session.data(from: destination)
                 let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                saveDiagnostic("HTTP \(code)\n" + String(decoding: data, as: UTF8.self), name: "PrototypeHostBridge.txt")
+                let body = String(decoding: data, as: UTF8.self)
+                if code == 200, destination.query?.contains("token=") == true, let start = startedAt,
+                   body.contains("__DSH_BOOT__"), httpReadySeconds == nil {
+                    httpReadySeconds = ProcessInfo.processInfo.systemUptime - start
+                    samplePerformance()
+                }
+                saveDiagnostic("HTTP \(code)\n" + body, name: "PrototypeHostBridge.txt")
             } catch {
                 saveDiagnostic("Host bridge failed: \(error.localizedDescription)", name: "PrototypeHostBridge.txt")
             }
@@ -285,6 +357,7 @@ struct PrototypeView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("验证真实 Linux 与本机网页桥；此应用尚未通过 Harness 验收。")
                 Text(vm.status).font(.callout).textSelection(.enabled)
+                Text(vm.performance).font(.caption).textSelection(.enabled)
                 HStack {
                     Button("导入测试 guest 目录") { importing = true }.disabled(vm.launched)
                     Button("启动一次 Linux") { vm.start() }.disabled(vm.launched)
@@ -301,6 +374,8 @@ struct PrototypeView: View {
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("--prototype-autostart") { vm.start() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in vm.recordLifecycle("background") }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in vm.recordLifecycle("active") }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
                 if case .success(let folder) = result { vm.importGuest(folder) }
                 else if case .failure(let error) = result { vm.status = error.localizedDescription }

@@ -82,6 +82,29 @@ Harness 探针使用 2048 MiB guest RAM。首次 1536 MiB 配置在 initramfs �
 
 可选磁盘恢复探针：准备一个全新的 64 MiB 空白文件 `persistence-probe.raw`，用 macOS `newfs_msdos -F 16 -S 512 -s 131072 -h 16 -u 63 -b 4096 -o 0 -v PROBE` 格式化此文件，放入下载目录。构造脚本在输出目录首次复制为 `persistence.raw`，以后不覆盖。guest 挂载它并写入 `proof.txt`，后续应用重启应输出 `PERSISTENCE_RESTORED:persistence-file-ok`。此 FAT 磁盘只验证持久化 I/O，不是 POSIX 工程工作区；重启测试不要重新覆盖设备上的磁盘。
 
-仅 `--prototype-autostart` 诊断模式启用命令信箱：向应用的 `Documents/PrototypeCommand.txt` 写入不超过 16 KiB 的 UTF-8 命令，原型在真实串口就绪时读取一次、删除文件并发送到 guest。结果留在串口日志。它用于真机探针，不是正式应用接口；当前 serialReady 只表示串口连接，需要另行确认 guest shell 已就绪再投递。
+仅 `--prototype-autostart` 诊断模式启用命令信箱：向应用的 `Documents/PrototypeCommand.txt` 写入不超过 16 KiB 的 UTF-8 命令，原型在真实串口连接且 guest 初始化标记出现后读取一次、删除文件并发送到 guest。结果留在串口日志。它用于真机探针，不是正式应用接口。
 
-WebView 的原型 popup delegate 在应用内创建授权子窗口，保持 Linux 回调仍在前台；官方 OAuth URL、PKCE、回调和 token 交换都由上游执行。返回按钮只关闭浏览器子窗口，取消授权仍由官方页面处理。本镜像的 Harness home 仍在 RAM 根文件系统内，账号和会话的重启持久化尚未验证。
+WebView 的原型 popup delegate 在应用内创建授权子窗口，保持 Linux 回调仍在前台；官方 OAuth URL、PKCE、回调和 token 交换都由上游执行。返回按钮只关闭浏览器子窗口，取消授权仍由官方页面处理。基础 Harness guest 的 home 在 RAM 中；以下状态盘实验用于验证重启持久化。
+
+## 持久化 HOME 实验
+
+`build-state-guest.py` 在 Harness guest 上追加与 Linux `6.18.52-0-virt` 匹配的 ext4、jbd2、mbcache 和 crc16 模块；runtime 根文件系统仍在 RAM 中，新增 ext4 磁盘仅挂载到 `/root`。它保留第一块 `persistence.raw` FAT 盘作为迁移备份，`boot.json` 的 `stateDisk` 指定第二块 raw 磁盘。普通签名外壳支持这一可选字段，不申请额外权限。
+
+模块输入来自[固定 Alpine 3.23.6 modloop](https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/netboot-3.23.6/modloop-virt)，SHA256 `e96d6f26f7bc7ce64946deb60dae5e3728d73ecd4f37bc59d974a2027cba825b` 是本次 HTTPS 下载的内容收据，不冒充上游签名校验。脚本读取 `modules.dep` 的依赖闭包并逐个核对 vermagic；用 `unsquashfs -cat` 读取目标条目，避免 macOS 常见大小写不敏感文件系统解包整棵 Linux 模块树时产生名称冲突。格式化与挂载方式参考[Linux ext4 文档](https://www.kernel.org/doc/html/latest/admin-guide/ext4.html)。
+
+先在 guest 正常停止 Harness，使用 BusyBox tar 将 `/root` 归档为 `/persist/root-backup.tgz`，检查归档后 sync 并卸载 `/persist`。备份包含登录配置，只保存在设备的应用数据容器，不复制到仓库或构建目录。
+
+在全新的输出目录准备 512 MiB 的空白普通文件，使用 `mke2fs -t ext4 -F -b 4096 -m 0 -E lazy_itable_init=0,lazy_journal_init=0 -d SEED_DIRECTORY STATE_IMAGE` 格式化；seed 目录只含 `.prototype-state-version`，正文 `v1\n`。本次 Mac 临时工具为 e2fsprogs 1.47.4、unsquashfs 4.7.5；它们仅解包使用，未安装到系统。新文件用 exclusive-create 创建，已有文件不得重格式化。随后运行：
+
+```sh
+python3 ios/LinuxPrototype/scripts/build-state-guest.py \
+  /下载目录 /HarnessGuest目录 /全新StateGuest目录 /unsquashfs可执行文件
+```
+
+生成 `initramfs-state.cpio.gz`、`boot.json` 和模块/镜像收据。部署时只新增 initramfs 和首次使用的 `state.raw`，更新 boot.json；不要复制或覆盖设备已有的 `persistence.raw` 或已经使用的 `state.raw`。首次挂载核对版本标记并从设备备份恢复 `/root`，恢复成功后才写 `.state-restored-v1`；后续启动直接沿用状态盘。挂载、版本或恢复失败时保留救援串口，不启动 Harness，避免以 RAM 状态误报持久化成功。
+
+`state-probe.cjs WORKSPACE EXPECTED_COUNT` 用原有加法模块与测试复核工作区，检查 ext4 上的权限、符号链接、硬链接和 SQLite WAL，写入可跨重启核对的计数。探针源码在宿主仓库，由诊断 mailbox 送入真实 guest 后运行；这是集成实验，不是正式迁移工具。
+
+`stop-harness.cjs` 查找官方 CLI，发送 SIGTERM 并等待退出，再 sync；串口中确认 `HARNESS_STOPPED` 后才卸载 `/root` 和 `/persist`。它不是 VM 电源管理或异常断电恢复机制。
+
+外壳每秒读取自身 `task_info(TASK_VM_INFO)`，在 `PrototypeMetrics.json` 保存当前 phys_footprint、采样峰值及内核报告的峰值，记录从 QEMU 调用到官方启动 URL/HTTP 就绪的耗时及前后台事件。HTTP 探测使用无缓存的 ephemeral session，只有带 token 的启动入口得到 200 且正文含官方 `__DSH_BOOT__` 时才计为就绪，避免同一 loopback 地址以前的 BusyBox 页面缓存误报。范围仅为宿主应用进程，不含 WKWebView 独立辅助进程；采样峰值也不能代替完整生产工作负载预算。

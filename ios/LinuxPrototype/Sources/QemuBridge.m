@@ -2,8 +2,21 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mach/mach.h>
 
 @implementation PrototypeQemuBridge
++ (NSDictionary<NSString *, NSNumber *> *)memoryFootprint {
+    task_vm_info_data_t info = {0};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count);
+    if (result != KERN_SUCCESS || count < TASK_VM_INFO_REV1_COUNT) return @{};
+    NSMutableDictionary *values = [@{@"physFootprintBytes": @(info.phys_footprint)} mutableCopy];
+    if (count >= TASK_VM_INFO_REV3_COUNT && info.ledger_phys_footprint_peak > 0) {
+        values[@"kernelPeakBytes"] = @(info.ledger_phys_footprint_peak);
+    }
+    return values;
+}
+
 + (int)runLibrary:(NSString *)path arguments:(NSArray<NSString *> *)arguments message:(NSString **)message {
     void *library = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
     if (!library) {

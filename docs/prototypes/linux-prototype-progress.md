@@ -28,12 +28,14 @@
 
 构造脚本追加 `$bb --install -s /bin`，并在 `bb` 变量赋值后创建 Documents，修正新镜像的初始化顺序。用户在当前真机原型串口直接执行入口安装、`ls /root/qq` 和已有测试。用户反馈及随后采集的原型串口日志均包含 `hello.cjs  test.cjs`、`ipad-local-test-ok` 和 `IPAD_TEST_EXIT:0`；本地串口复测已通过。
 
+用户随后关闭并重新打开 guest 网页，在原工作区与会话提交只读复测请求（`pwd`、`ls -l`、`node --version`、`node test.cjs`），反馈“全都成功了，没有红色的失败操作”。网页重开后的会话恢复及再次模型工具交互已获 HITL 确认。这里没有重启 Linux 或原型应用，不能推断跨 VM 重启的数据持久化；流式传输细节、连接中途断网恢复及工具取消仍未单独验收。
+
 最小 Linux 缺少 `xdg-user-dir`；官方 workspace controller 的默认工作区查询依赖它，也支持 `documentsDirectory` 部署覆盖。构造脚本已追加 `/root/Documents` 目录和官方 `--patch` 配置覆盖，供下次镜像构造使用。用隔离的临时 Harness home 在 Mac 上执行官方 `--profile web --patch … --dump-config`，组合结果包含目标 row 的目录覆盖；这是配置组合检查，未启动 Linux 二进制。尚未替换当前真机镜像，避免中断已配置的 API 会话。当前根文件系统仍在 RAM 中，`QQ` 项目、会话及 API 配置的跨 VM 重启恢复均未验收。
 
 带上述覆盖和 BusyBox 命令入口的新镜像已在独立临时输出目录构造，压缩 initramfs 为 195,738,663 字节。检查生成 cpio 内的 init、patch 与 launcher，`bb` 赋值、命令入口安装和目录创建顺序正确；生成的 shell/JavaScript 语法检查与 `make check` 通过。这些检查不替代下次真机启动验收。
 
 使用当前原型实际 PID 再次尝试短时 Activity Monitor 采样，Instruments 返回找不到目标进程，未生成有效采样；不报告 native 峰值内存。guest RAM 配置和 guest 内存统计不能替代应用进程的峰值占用。
 
-待验收：模型响应、会话、流式响应、真实工具调用与重连、持久化 POSIX 根文件系统和生产性能。本票保持开放；启动与可见界面不能替代完整闭环。
+已验收的小范围是 API Key 模型响应、工作区登记、文件/Node 测试工具、独立串口复测和网页重开后的会话恢复。待验收：流式传输细节、连接中途故障恢复、持久化 POSIX 根文件系统、IPA 重签交付链、native 峰值内存、冷启动和代表命令性能。本票保持开放；小型 Node 任务不能替代整个原型的全部验收条件或首版生产闭环。
 
 构建资料见[执行器来源](linux-executor-build-sources.md)和[最小 guest 来源](miniguest-build-sources.md)，代码与运行方式见[原型说明](../../ios/LinuxPrototype/README.md)。Working Copy 工作区参考已记录到[工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7#issuecomment-5965757506)。

@@ -75,10 +75,14 @@ protocol RuntimeDriving: AnyObject {
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws
     func reconnect() async throws -> URL
     func flush() async
+    func userDiskStatus() async throws -> UserDiskStatus
+    func growUserDisk(toGiB size: Int) async throws -> UserDiskStatus
     func exportRescueDisk(into directory: URL) async throws -> URL
 }
 
 extension RuntimeDriving {
+    func userDiskStatus() async throws -> UserDiskStatus { throw UserDiskError.unavailable }
+    func growUserDisk(toGiB size: Int) async throws -> UserDiskStatus { throw UserDiskError.unavailable }
     func exportRescueDisk(into directory: URL) async throws -> URL { throw RecoveryFailure.control }
 }
 
@@ -90,6 +94,8 @@ final class RuntimeController: ObservableObject {
     @Published private(set) var pageRevision = 0
     private let driver: RuntimeDriving
     private var startup: Task<Void, Never>?
+    private var growingDisk = false
+    private var pendingConnectionCheck = false
     private var checkingConnection = false
     private var reloadRequested = false
     private var terminalFailure = false
@@ -128,7 +134,31 @@ final class RuntimeController: ObservableObject {
 
     func flush() async { await driver.flush() }
 
+    func userDiskStatus() async throws -> UserDiskStatus { try await driver.userDiskStatus() }
+
+    func growUserDisk(toGiB size: Int) async throws -> UserDiskStatus {
+        guard phase == .ready, !growingDisk, !checkingConnection, !terminalFailure else { throw UserDiskError.busy }
+        growingDisk = true
+        do {
+            let result = try await driver.growUserDisk(toGiB: size)
+            await finishDiskGrowth()
+            return result
+        } catch {
+            await finishDiskGrowth()
+            throw error
+        }
+    }
+
+    private func finishDiskGrowth() async {
+        growingDisk = false
+        if pendingConnectionCheck {
+            pendingConnectionCheck = false
+            await checkConnection(reload: false)
+        }
+    }
+
     func exportRescueDisk(into directory: URL) async throws -> URL {
+        guard !growingDisk else { throw UserDiskError.busy }
         guard phase != .preparing, phase != .idle else { throw RecoveryFailure.busy }
         return try await driver.exportRescueDisk(into: directory)
     }
@@ -148,6 +178,7 @@ final class RuntimeController: ObservableObject {
     private func checkConnection(reload: Bool) async {
         guard driver.hasLaunched, !terminalFailure else { return }
         reloadRequested = reloadRequested || reload
+        if growingDisk { pendingConnectionCheck = true; return }
         guard !checkingConnection else { return }
         checkingConnection = true
         phase = .reconnecting

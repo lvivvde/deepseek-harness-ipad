@@ -93,7 +93,7 @@ struct RuntimeConfiguration: Sendable {
                 "-accel", "tcg", "-nodefaults", "-display", "none", "-monitor", "none",
                 "-chardev", serial, "-serial", "chardev:serial0"] + control + [
                 "-netdev", "user,id=net0," + forwards.joined(separator: ","),
-                "-device", "virtio-net-pci,netdev=net0", "-kernel", kernel.path,
+                "-device", "virtio-net-pci,netdev=net0,romfile=", "-kernel", kernel.path,
                 "-initrd", initramfs.path, "-append", "console=ttyAMA0 rdinit=/init harness.transfer=\(transferToken)",
                 "-drive", "file=\(drivePath(systemDisk)),if=none,id=system,format=raw,readonly=on",
                 "-device", "virtio-blk-pci,drive=system",
@@ -116,6 +116,48 @@ enum RuntimeConfigurationError: Error, LocalizedError {
         case .invalidResource: return "运行时资源配置无效，请重新安装应用"
         case .missingResource: return "运行时资源不完整，请重新安装应用"
         case .userDiskUnavailable: return "无法准备用户数据盘；原有数据未被重置"
+        }
+    }
+}
+
+/// Logical capacity is independent of the sparse file's allocated host space.
+struct UserDiskStatus: Equatable, Sendable {
+    let capacityBytes: UInt64
+    let allocatedBytes: UInt64
+    let hostAvailableBytes: UInt64
+    static let lowSpaceThreshold: UInt64 = 2 << 30
+    var isHostSpaceLow: Bool { hostAvailableBytes < Self.lowSpaceThreshold }
+
+    func growthBytes(toGiB size: Int) throws -> UInt64 {
+        guard (8...64).contains(size) else { throw UserDiskError.invalidSize }
+        let bytes = UInt64(size) << 30
+        guard bytes >= capacityBytes else { throw UserDiskError.shrinkUnsupported }
+        guard !isHostSpaceLow else { throw UserDiskError.lowSpace }
+        return bytes
+    }
+
+    static func read(disk: URL) throws -> UserDiskStatus {
+        var currentDisk = disk
+        currentDisk.removeAllCachedResourceValues()
+        let values = try currentDisk.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .volumeAvailableCapacityKey])
+        guard let size = values.fileSize, let allocated = values.totalFileAllocatedSize,
+              let available = values.volumeAvailableCapacity, size > 0, allocated >= 0, available >= 0 else {
+            throw UserDiskError.unavailable
+        }
+        return UserDiskStatus(capacityBytes: UInt64(size), allocatedBytes: UInt64(allocated), hostAvailableBytes: UInt64(available))
+    }
+}
+
+enum UserDiskError: Error, LocalizedError, Equatable {
+    case busy, invalidSize, shrinkUnsupported, lowSpace, unavailable, incomplete
+    var errorDescription: String? {
+        switch self {
+        case .busy: return "请等待运行环境就绪或当前备份、恢复、扩容完成后重试"
+        case .invalidSize: return "用户盘容量应在 8–64 GB 之间"
+        case .shrinkUnsupported: return "首版只支持扩容，不能缩小用户盘"
+        case .lowSpace: return "iPad 剩余空间不足 2 GB，请先释放空间再扩容"
+        case .unavailable: return "暂时无法读取数据盘或 iPad 可用空间"
+        case .incomplete: return "扩容尚未确认完成，原数据保留；请重试当前容量，或重开 App 完成文件系统扩容"
         }
     }
 }

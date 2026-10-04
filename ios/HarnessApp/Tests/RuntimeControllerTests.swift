@@ -4,6 +4,28 @@ import XCTest
 
 @MainActor
 final class RuntimeControllerTests: XCTestCase {
+    func testGrowingUserDiskRequiresReadyRuntimeAndRejectsOverlap() async throws {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        do { _ = try await runtime.growUserDisk(toGiB: 16); XCTFail("Not ready") }
+        catch { XCTAssertEqual(error as? UserDiskError, .busy) }
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        let growth = Task { try await runtime.growUserDisk(toGiB: 16) }
+        while driver.growthResult == nil { await Task.yield() }
+        do { _ = try await runtime.growUserDisk(toGiB: 32); XCTFail("Overlapping operation") }
+        catch { XCTAssertEqual(error as? UserDiskError, .busy) }
+        await runtime.resume()
+        await runtime.recoverPage()
+        XCTAssertEqual(driver.reconnects, 0)
+        driver.growthResult?.resume(returning: UserDiskStatus(capacityBytes: 16 << 30, allocatedBytes: 1 << 30, hostAvailableBytes: 8 << 30))
+        _ = try await growth.value
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertEqual(driver.reconnects, 1, "Defer the connection check until growth finishes")
+        XCTAssertEqual(runtime.pageRevision, 1, "A page exit during growth must still reload afterward")
+        XCTAssertEqual(driver.starts, 1)
+    }
+
     func testConcurrentOpeningStartsOnlyOneRuntime() async {
         let driver = RecordingDriver()
         let runtime = RuntimeController(driver: driver)
@@ -139,5 +161,9 @@ private final class RecordingDriver: RuntimeDriving {
         reconnectResult = nil
     }
 
+    var growthResult: CheckedContinuation<UserDiskStatus, Error>?
+    func growUserDisk(toGiB size: Int) async throws -> UserDiskStatus {
+        try await withCheckedThrowingContinuation { growthResult = $0 }
+    }
     func flush() async {}
 }

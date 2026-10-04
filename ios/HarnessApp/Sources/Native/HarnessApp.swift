@@ -60,6 +60,8 @@ private struct HarnessRoot: View {
     @State private var painted = false
     @State private var showingDiagnostics = false
     @State private var showingData = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var hostSpaceLow = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -113,6 +115,21 @@ private struct HarnessRoot: View {
         .alert(item: $preview.prompt) { server in
             Alert(title: Text("检测到开发服务器"), message: Text("端口 \(server.port)"),
                   primaryButton: .default(Text("在侧栏预览")) { preview.open(server) }, secondaryButton: .cancel(Text("稍后")))
+        }
+        .overlay(alignment: .top) {
+            if hostSpaceLow {
+                Button { showingData = true } label: {
+                    Label("iPad 剩余空间不足 2 GB，请先释放空间", systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                }.padding()
+            }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                if let status = try? await runtime.userDiskStatus() { hostSpaceLow = status.isHostSpaceLow }
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+            }
         }
         .sheet(isPresented: $showingData) { UserDataView(runtime: runtime) }
         .sheet(isPresented: $showingDiagnostics) {

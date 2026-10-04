@@ -56,7 +56,7 @@ final class QemuControl {
         channel?.onClose = { [weak self] in self?.close() }
     }
 
-    func command(_ name: String, arguments: [String: Any] = [:], timeout: Double = 4) async throws -> [String: Any] {
+    func command(_ name: String, arguments: [String: Any] = [:], timeout: Double = 4, beforeSend: () throws -> Void = {}) async throws -> [String: Any] {
         if negotiation == nil {
             negotiation = Task { [weak self] in
                 guard let self else { throw Failure.unavailable }
@@ -68,6 +68,8 @@ final class QemuControl {
         }
         do { try await negotiation?.value }
         catch { negotiation = nil; throw error }
+        try Task.checkCancellation()
+        try beforeSend()
         return try await exchange(name, arguments: arguments, timeout: timeout)
     }
 

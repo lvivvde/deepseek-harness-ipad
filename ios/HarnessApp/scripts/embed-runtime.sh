@@ -29,6 +29,11 @@ mkdir -p "$frameworks"
 for framework in "$executor"/Frameworks/*.framework; do
     target="$frameworks/$(basename "$framework")"
     ditto "$framework" "$target"
+    if [[ "$CONFIGURATION" == "Release" ]]; then
+        # Preserve dynamic exports (including the QEMU bridge); strip only local/debug symbols from the copy.
+        executable="$target/$(basename "$framework" .framework)"
+        xcrun strip -x -S "$executable"
+    fi
     if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
         codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$target"
     fi
@@ -38,4 +43,6 @@ mkdir -p "$bundle/Runtime"
 while IFS= read -r name; do
     ditto "$guest/$name" "$bundle/Runtime/$name"
 done < <(python3 "$SRCROOT/scripts/validate-runtime.py" "$guest" --list)
-if [[ -d "$executor/qemu" ]]; then ditto "$executor/qemu" "$bundle/qemu"; fi
+# virt + direct Linux kernel boot uses no BIOS, UEFI, VGA or PXE firmware.
+# The network device explicitly sets romfile=; don't ship firmware for unrelated machines.
+mkdir -p "$bundle/qemu"

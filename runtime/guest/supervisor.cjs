@@ -3,6 +3,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
+const {diskCapacityBytes, growFilesystem} = require('./user-disk.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function processTable() {
@@ -87,6 +88,29 @@ class HarnessSupervisor {
     child.on('exit', () => { this.options.onExit?.(); });
     return this.health();
   }
+  beginGrowth(bytes) {
+    if (this.lease) throw Error('BACKUP_BUSY');
+    const current=(this.options.diskCapacityBytes || diskCapacityBytes)();
+    if (!Number.isSafeInteger(bytes) || bytes % (1024**3) || bytes < 8*1024**3 || bytes > 64*1024**3 || bytes < current) throw Error('DISK_SIZE_INVALID');
+    if (!this.health().writable) throw Error('USER_READONLY');
+    this.lease=crypto.randomUUID(); this.growthBytes=bytes;
+    const lease=this.lease;
+    // A host that disappears before completing its QMP operation cannot retain the lock forever.
+    this.timer=setTimeout(()=>{if(this.lease===lease && !this.growing) this.cancelGrowth(lease);},120000);
+    this.timer.unref();
+    return lease;
+  }
+  async finishGrowth(lease) {
+    if (!lease || lease!==this.lease || !this.growthBytes || this.growing) throw Error('LEASE_INVALID');
+    this.growing=true;
+    clearTimeout(this.timer);
+    try { return await (this.options.growFilesystem || growFilesystem)(this.growthBytes); }
+    finally { this.growing=false; this.cancelGrowth(lease); }
+  }
+  cancelGrowth(lease) {
+    if (!lease || lease!==this.lease || !this.growthBytes || this.growing) throw Error('LEASE_INVALID');
+    clearTimeout(this.timer); this.lease=undefined; this.growthBytes=undefined;
+  }
   async pause() {
     if (this.lease) throw new Error('BACKUP_BUSY');
     this.lease = crypto.randomUUID();
@@ -98,7 +122,7 @@ class HarnessSupervisor {
     return this.lease;
   }
   async resume(lease) {
-    if (!lease || this.lease !== lease) throw new Error('LEASE_INVALID');
+    if (!lease || this.lease !== lease || this.growthBytes) throw new Error('LEASE_INVALID');
     clearTimeout(this.timer); this.lease=undefined;
     return this.restart();
   }
@@ -138,13 +162,16 @@ function createSupervisorServer(supervisor, socket) {
       let result;
       if (request.url==='/health') result=supervisor.health();
       else if (request.url==='/restart') result=await supervisor.restart();
+      else if (request.url==='/storage/begin') result={lease:supervisor.beginGrowth(body.bytes)};
+      else if (request.url==='/storage/finish') result=await supervisor.finishGrowth(body.lease);
+      else if (request.url==='/storage/cancel') { supervisor.cancelGrowth(body.lease); result={cancelled:true}; }
       else if (request.url==='/pause') result={lease:await supervisor.pause()};
       else if (request.url==='/resume') result=await supervisor.resume(body.lease);
       else throw Error('NOT_FOUND');
       response.writeHead(200, {'content-type':'application/json'}); response.end(JSON.stringify(result));
     };
     perform().catch(error => {
-      const code=['BACKUP_BUSY','USER_READONLY','WRITERS_BUSY','LEASE_INVALID'].includes(error.message) ? error.message : 'SUPERVISOR_UNAVAILABLE';
+      const code=['BACKUP_BUSY','USER_READONLY','WRITERS_BUSY','LEASE_INVALID','DISK_SIZE_INVALID','DISK_SIZE_PENDING'].includes(error.message) ? error.message : 'SUPERVISOR_UNAVAILABLE';
       response.writeHead(503);response.end(JSON.stringify({error:code}));
     });
   });
@@ -162,7 +189,7 @@ function supervisorRequest(operation, body={}) {
         catch(error) { reject(error); }
       });
     });
-    request.setTimeout(operation==='pause' ? 10000 : 1500, () => request.destroy());
+    request.setTimeout(operation==='storage/finish' ? 100000 : operation==='pause' ? 10000 : 1500, () => request.destroy());
     request.on('error', reject); request.end(JSON.stringify(body));
   });
 }

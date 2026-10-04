@@ -7,6 +7,7 @@ const {pipeline} = require('node:stream/promises');
 // Use npm's bundled tar alongside this Node installation (also works in host tests).
 const {createRequire} = require('node:module');
 const npmRoot = process.env.HARNESS_NPM_ROOT || path.resolve(process.execPath, '../../lib/node_modules/npm');
+const {supervisorRequest} = require('./supervisor.cjs');
 const {BackupManager} = require('./backup.cjs');
 const tar = createRequire(path.join(npmRoot, 'package.json'))('tar');
 
@@ -190,6 +191,12 @@ const server = http.createServer(async (request, response) => {
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const trashMatch = url.pathname.match(/^\/trash\/([^/]+?)(\/restore)?$/);
   try {
+    if (request.method === 'POST' && ['/storage/begin','/storage/finish','/storage/cancel'].includes(url.pathname)) {
+      let size=0,chunks=[];
+      for await (const chunk of request) { size+=chunk.length; if(size>4096) throw Error('REQUEST_LIMIT'); chunks.push(chunk); }
+      const body=JSON.parse(Buffer.concat(chunks));
+      return send(response,200,await supervisorRequest(url.pathname.slice(1),body));
+    }
     if (request.method === 'GET' && url.pathname === '/userdata/archive') return await mutate(async () => {
       response.writeHead(200, {'content-type':'application/x-tar'});
       await backup.export(response);
@@ -209,7 +216,7 @@ const server = http.createServer(async (request, response) => {
     }
     send(response, 404, {error: 'NOT_FOUND'});
   } catch (error) {
-    const known=['WORKSPACE_UNAVAILABLE','WRITERS_BUSY','BACKUP_BUSY','USER_READONLY'].includes(error.message) ? error.message : 'TRANSFER_FAILED';
+    const known=['WORKSPACE_UNAVAILABLE','WRITERS_BUSY','BACKUP_BUSY','USER_READONLY','LEASE_INVALID','DISK_SIZE_INVALID','DISK_SIZE_PENDING'].includes(error.message) ? error.message : 'TRANSFER_FAILED';
     console.log('HARNESS_TRANSFER_FAILURE:'+known);
     const unavailable = error.message === 'WORKSPACE_UNAVAILABLE';
     send(response, unavailable ? 503 : 500, {error:known});

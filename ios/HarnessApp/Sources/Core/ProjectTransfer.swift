@@ -119,6 +119,38 @@ struct ProjectTransfer: Sendable {
         return result.harnessRunning ?? true
     }
 
+    func beginDiskGrowth(bytes: UInt64) async throws -> String {
+        let data = try await storageOperation("begin", body: ["bytes": bytes])
+        struct Lease: Decodable { let lease: String }
+        return try JSONDecoder().decode(Lease.self, from: data).lease
+    }
+
+    func finishDiskGrowth(lease: String) async throws -> UInt64 {
+        let data = try await storageOperation("finish", body: ["lease": lease])
+        struct Capacity: Decodable { let capacityBytes: UInt64 }
+        return try JSONDecoder().decode(Capacity.self, from: data).capacityBytes
+    }
+
+    func cancelDiskGrowth(lease: String) async throws {
+        _ = try await storageOperation("cancel", body: ["lease": lease])
+    }
+
+    private func storageOperation(_ action: String, body: [String: Any]) async throws -> Data {
+        var operation = request("storage/" + action)
+        operation.httpMethod = "POST"
+        operation.timeoutInterval = action == "finish" ? 110 : 5
+        operation.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        operation.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: operation)
+        if (response as? HTTPURLResponse)?.statusCode != 200 {
+            let code = try? JSONDecoder().decode([String: String].self, from: data)["error"]
+            if code == "BACKUP_BUSY" { throw UserDiskError.busy }
+            if code == "DISK_SIZE_INVALID" { throw UserDiskError.invalidSize }
+            throw UserDiskError.incomplete
+        }
+        return data
+    }
+
     static func verify(archive: URL, checksumFile: URL) throws {
         let line = try String(contentsOf: checksumFile, encoding: .utf8)
         guard let expected = line.split(whereSeparator: \.isWhitespace).first?.lowercased(),

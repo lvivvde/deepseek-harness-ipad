@@ -17,7 +17,7 @@ def check(guest, name, version, full):
     with tempfile.TemporaryDirectory(prefix='harness-boot-check-') as directory:
         root = Path(directory)
         tree = root / 'seed'
-        (tree / 'Documents/Projects').mkdir(parents=True)
+        (tree / 'projects').mkdir(parents=True)
         (tree / '.cache/node-compile-cache').mkdir(parents=True)
         (tree / '.harness-layout-version').write_text(str(version) + '\n')
         disk = root / 'user.raw'

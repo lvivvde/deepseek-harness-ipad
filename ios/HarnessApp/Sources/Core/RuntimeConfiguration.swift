@@ -14,6 +14,7 @@ struct RuntimeConfiguration: Sendable {
         let systemDisk: String
         let userDiskSeed: String
         let memoryMiB: Int
+        let userDiskMiB: Int?
     }
 
     static func prepare(resources: URL, userData: URL) throws -> RuntimeConfiguration {
@@ -25,6 +26,7 @@ struct RuntimeConfiguration: Sendable {
         catch { throw RuntimeConfigurationError.invalidResource }
         guard manifest.formatVersion == 1 else { throw RuntimeConfigurationError.incompatibleRuntime }
         guard (128...2048).contains(manifest.memoryMiB) else { throw RuntimeConfigurationError.invalidResource }
+        if let size = manifest.userDiskMiB, !(512...65536).contains(size) { throw RuntimeConfigurationError.invalidResource }
         func resource(_ name: String) throws -> URL {
             guard !name.isEmpty, name != ".", name != "..",
                   name.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else {
@@ -49,9 +51,23 @@ struct RuntimeConfiguration: Sendable {
                 try manager.moveItem(at: temporary, to: disk)
             }
             guard isRegularFile(disk) else { throw RuntimeConfigurationError.userDiskUnavailable }
+            // Credentials and projects stay on this device; backups go through explicit export only.
+            var excluded = URLResourceValues()
+            excluded.isExcludedFromBackup = true
+            var directory = userData
+            try directory.setResourceValues(excluded)
+            if let size = manifest.userDiskMiB { try grow(disk, toMiB: size) }
         } catch { throw RuntimeConfigurationError.userDiskUnavailable }
         return RuntimeConfiguration(kernel: kernel, initramfs: initramfs, systemDisk: systemDisk,
                                     userDisk: disk, memoryMiB: manifest.memoryMiB)
+    }
+
+    /// Extends the file as a sparse tail; the guest grows ext4 online. Never shrinks or rewrites data.
+    private static func grow(_ disk: URL, toMiB size: Int) throws {
+        let target = UInt64(size) * 1024 * 1024
+        let handle = try FileHandle(forWritingTo: disk)
+        defer { try? handle.close() }
+        if try handle.seekToEnd() < target { try handle.truncate(atOffset: target) }
     }
 
     private static func isRegularFile(_ url: URL) -> Bool {

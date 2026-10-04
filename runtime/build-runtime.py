@@ -179,6 +179,7 @@ def build(args, lock):
     entries['etc/group'] = (stat.S_IFREG | 0o644, b'root:x:0:\n')
     entries['etc/resolv.conf'] = (stat.S_IFLNK | 0o777, b'/run/resolv.conf')
     entries['etc/udhcpc/default.script'] = (stat.S_IFREG | 0o755, (HERE / 'guest/default.script').read_bytes())
+    entries['etc/gitconfig'] = (stat.S_IFREG | 0o644, (HERE / 'guest/gitconfig').read_bytes())
     entries['usr/sbin/harness-init'] = (stat.S_IFREG | 0o755, (HERE / 'guest/harness-init').read_bytes())
     metadata = dict(runtimeVersion=lock['runtimeVersion'], protocolVersion=lock['protocolVersion'],
                     inputManifestSHA256=digest(Path(args.lock)), debianSnapshot=lock['debianSnapshot'])
@@ -194,13 +195,14 @@ def build(args, lock):
         write_tree(entries, root)
         harness = root / 'opt/harness'
         shutil.copytree(args.harness, harness, symlinks=True)
-        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs'):
+        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
         (harness / 'ipad.patch.yml').write_text('- id: workspace-controller\n  config:\n    documentsDirectory: /root/Documents\n')
         seed = Path(scratch) / 'user'
         seed.mkdir(mode=0o700)
         (seed / '.harness-layout-version').write_text('1\n')
-        (seed / 'Documents/Projects').mkdir(parents=True)
+        (seed / 'projects').mkdir()
+        (seed / 'Documents').mkdir()
         make_disk(args.mke2fs, root, args.output / 'system.raw', args.system_mib, 'HARNESS_SYSTEM')
         make_disk(args.mke2fs, seed, args.output / 'user-seed.raw', args.user_mib, 'HARNESS_USER')
     mini = dict(module_entries)
@@ -211,10 +213,10 @@ def build(args, lock):
     (args.output / 'initramfs.gz').write_bytes(make_cpio(mini))
     shutil.copyfile(Path(args.inputs) / 'vmlinuz-virt', args.output / 'Image')
     manifest = dict(formatVersion=1, memoryMiB=args.memory_mib, kernel='Image', initramfs='initramfs.gz',
-                    systemDisk='system.raw', userDiskSeed='user-seed.raw')
+                    systemDisk='system.raw', userDiskSeed='user-seed.raw', userDiskMiB=args.user_disk_mib)
     (args.output / 'runtime.json').write_text(json.dumps(manifest, indent=2) + '\n')
     receipt = dict(metadata, inputs=lock, harnessLockSHA256=lock['harnessLockSHA256'],
-                   systemMiB=args.system_mib, userMiB=args.user_mib, memoryMiB=args.memory_mib,
+                   systemMiB=args.system_mib, userMiB=args.user_mib, userDiskMiB=args.user_disk_mib, memoryMiB=args.memory_mib,
                    files={name: dict(bytes=(args.output / name).stat().st_size, sha256=digest(args.output / name))
                           for name in ('Image', 'initramfs.gz', 'system.raw', 'user-seed.raw', 'runtime.json')})
     (args.output / 'build-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
@@ -230,7 +232,8 @@ def main():
     parser.add_argument('--mke2fs')
     parser.add_argument('--unsquashfs')
     parser.add_argument('--system-mib', type=int, default=1024)
-    parser.add_argument('--user-mib', type=int, default=512)
+    parser.add_argument('--user-mib', type=int, default=512, help='bundled seed size')
+    parser.add_argument('--user-disk-mib', type=int, default=8192, help='sparse size the app grows the disk to')
     parser.add_argument('--memory-mib', type=int, default=2048)
     args = parser.parse_args()
     try:
@@ -238,7 +241,8 @@ def main():
         verify_inputs(Path(args.inputs), lock)
         if args.output and args.output.exists():
             raise ValueError('Output already exists; use a new build directory')
-        if not 128 <= args.memory_mib <= 2048 or not 128 <= args.system_mib <= 16384 or not 64 <= args.user_mib <= 16384:
+        if not 128 <= args.memory_mib <= 2048 or not 128 <= args.system_mib <= 16384 or not 64 <= args.user_mib <= 16384 \
+                or not max(512, args.user_mib) <= args.user_disk_mib <= 65536:
             raise ValueError('Unsupported build capacity')
         if not args.verify_inputs:
             build(args, lock)

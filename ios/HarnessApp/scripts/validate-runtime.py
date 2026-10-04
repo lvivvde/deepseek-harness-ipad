@@ -15,6 +15,9 @@ def validate(directory):
     memory = manifest.get("memoryMiB")
     if type(memory) is not int or not 128 <= memory <= 2048:
         raise ValueError("Invalid memoryMiB")
+    disk = manifest.get("userDiskMiB", 512)
+    if type(disk) is not int or not 512 <= disk <= 65536:
+        raise ValueError("Invalid userDiskMiB")
     for key in ("kernel", "initramfs", "systemDisk", "userDiskSeed"):
         name = manifest.get(key)
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name in (".", ".."):

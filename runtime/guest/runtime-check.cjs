@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const {execFileSync} = require('node:child_process');
 const {DatabaseSync} = require('node:sqlite');
-const project = '/root/Documents/Projects/runtime-acceptance';
+const project = '/root/projects/runtime-acceptance';
 assert(fs.readFileSync('/proc/mounts', 'utf8').split('\n').some(line => /^\/dev\/vda \/ ext4 ro[, ]/.test(line)));
 assert.throws(() => fs.writeFileSync('/etc/runtime-write-check', 'fail'), {code: 'EROFS'});
 assert(fs.readFileSync('/proc/mounts', 'utf8').includes('/dev/vdb /root ext4 rw,'));

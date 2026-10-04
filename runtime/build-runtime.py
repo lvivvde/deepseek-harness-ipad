@@ -141,6 +141,10 @@ def make_disk(mke2fs, tree, disk, size_mib, label):
                     '-E', 'root_owner=0:0,lazy_itable_init=0,lazy_journal_init=0',
                     '-d', str(tree), str(disk)], check=True)
 
+def ipad_profile_patch():
+    return ('- id: workspace-controller\n  config:\n    documentsDirectory: /root/Documents\n'
+            '- insert:\n  - id: ipad-project-lifecycle\n    name: /opt/harness/project-lifecycle.mjs\n')
+
 def build(args, lock):
     if not args.output or not args.harness or not args.mke2fs or not args.unsquashfs:
         raise ValueError('Build requires --output, --harness, --mke2fs and --unsquashfs')
@@ -197,9 +201,7 @@ def build(args, lock):
         shutil.copytree(args.harness, harness, symlinks=True)
         for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
-        (harness / 'ipad.patch.yml').write_text(
-            '- id: workspace-controller\n  config:\n    documentsDirectory: /root/Documents\n'
-            '- id: ipad-project-lifecycle\n  name: /opt/harness/project-lifecycle.mjs\n')
+        (harness / 'ipad.patch.yml').write_text(ipad_profile_patch())
         seed = Path(scratch) / 'user'
         seed.mkdir(mode=0o700)
         (seed / '.harness-layout-version').write_text('1\n')

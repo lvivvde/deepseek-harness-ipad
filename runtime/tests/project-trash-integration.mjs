@@ -9,6 +9,17 @@ import {createLifecycleServer} from '../guest/project-lifecycle.mjs';
 
 const modules = process.env.HARNESS_TEST_MODULES;
 const load = name => import(pathToFileURL(path.join(modules, '@deepseek-ai', name, 'lib/index.js')));
+if (process.argv[2] === 'composition') {
+  const {composeEntries} = await load('dsh-app-boot');
+  const yaml = createRequire(path.join(modules, 'package.json'))('yaml');
+  const diagnostics = [];
+  const rows = composeEntries([[{insert: [{id: 'workspace-controller', name: '@deepseek-ai/dsh-api-workspace-controller'}]}],
+    yaml.parse(process.env.HARNESS_IPAD_PATCH)], message => diagnostics.push(message));
+  assert.ok(rows.some(row => row.id === 'ipad-project-lifecycle' && row.name === '/opt/harness/project-lifecycle.mjs'));
+  assert.deepEqual(diagnostics, []);
+  console.log('PASS:composition');
+  process.exit(0);
+}
 const {Context} = await load('cordis');
 const {Storage} = await load('dsh-storage');
 const {JsonStorageBackend} = await load('dsh-storage-json');

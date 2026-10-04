@@ -1,4 +1,5 @@
 import os
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,3 +31,14 @@ class ProjectTrashTests(unittest.TestCase):
 
     def test_purging_old_trash_preserves_new_workspace_with_same_name(self):
         self.run_case('reused-name')
+
+    def test_runtime_patch_registers_the_lifecycle_plugin_in_official_composition(self):
+        spec = importlib.util.spec_from_file_location('runtime_builder', SCRIPT.parents[1] / 'build-runtime.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        result = subprocess.run(['node', str(SCRIPT), 'composition'],
+                                env=dict(os.environ, HARNESS_TEST_MODULES=str(MODULES),
+                                         HARNESS_IPAD_PATCH=builder.ipad_profile_patch()),
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:composition', result.stdout)

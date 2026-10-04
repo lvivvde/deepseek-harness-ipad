@@ -23,7 +23,7 @@ make check
 
 已选完整 Linux 系统软件模拟作为原型验证方向，保留官方 Harness 运行方式与 Web 界面；分层、语言及验证门槛见 [架构基线](docs/design/architecture-candidates.md)。远端执行客户端不满足当前约束。
 
-执行层和界面桥接已由 [无 JIT 自签 IPA 原型](https://github.com/lvivvde/deepseek-harness-ipad/issues/11) 真机验证；实测范围和限制见 [阶段记录](docs/prototypes/linux-prototype-progress.md)。运行时随 IPA 交付、系统盘与用户盘分离的机制也已 [确认](https://github.com/lvivvde/deepseek-harness-ipad/issues/12)，仍待实现。Harness 是智能体运行框架；打包应用不等于将 DeepSeek 模型权重放进 iPad。
+执行层和界面桥接已由 [无 JIT 自签 IPA 原型](https://github.com/lvivvde/deepseek-harness-ipad/issues/11) 真机验证；正式入口、内置运行时、独立用户盘及核心恢复已进入 main。代码完成与真实验收分开记录，最新状态见 [开发交接](docs/agents/handoff.md)。Harness 是智能体运行框架；打包应用不等于将 DeepSeek 模型权重放进 iPad。
 
 ## 目录
 
@@ -34,10 +34,9 @@ make check
 
 ## 后续步骤
 
-- 按适配 Spec 建立全屏官方主界面和应用级运行环境，去掉默认诊断外壳与主页面弹窗。
-- 实现内置只读系统盘与独立用户盘，先交付无需手工导入 guest 的开发安装包。
-- 结合首版范围与工作区决策，完成 Git 获取、模型修改、测试、提交与推送的本地开发闭环。
-- 实现页面与前后台恢复、备份救援，实测资源与他人重签安装链；公开发布前完成执行器归档及对应源码/许可资料。
+新会话先读 [开发交接](docs/agents/handoff.md)，其中列出主干/已安装包差异、开放任务、已验证和未完成项。真机连接、独立 runner 构建和页面检查使用 [真机自动化工具](docs/validation/ipad-device-automation.md)，本机设备/签名与证据保存在忽略的 `build/`。
+
+下一步聚焦真实 S 档开发闭环、插件/键盘/预览回退与资源/备份/重签验收，以及 guest Vite 生产构建超时。用户已取消后续锁屏项目，接手时不默认重启。公开发布仍待对应源码与许可证条件，不以可安装 IPA 代替这些条件。
 
 ## 参考资料
 

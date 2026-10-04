@@ -1,15 +1,16 @@
 # iPad App 适配实现任务表
 
-依据：[适配 Spec](ipad-app-spec.md)。2026-10-03 创建；下列任务均待实现。当前已交付的是技术原型，本文不把待办标为完成。
+依据：[适配 Spec](ipad-app-spec.md)。2026-10-03 创建，2026-10-04 更新。正式 App 的 M1–M3 核心实现已进入 main；后续容量设置、在线扩容、空间保护和完整工具集合在补齐分支实现。实现完成不等于验收完成；集中真机清单见 [恢复与备份验证](../validation/ipad-recovery-backup.md) 与 [存储与工具补齐](../validation/ipad-storage-tools.md)。
 
-GitHub 追踪入口：[适配规格](https://github.com/lvivvde/deepseek-harness-ipad/issues/15)。四项子任务已建立：
+GitHub 追踪入口：[适配规格](https://github.com/lvivvde/deepseek-harness-ipad/issues/15)。五项实现任务已建立：
 
 | 实现任务 | 对应本表 | 当前条件 |
 | --- | --- | --- |
-| [正式应用入口、全屏官方界面与运行环境管理](https://github.com/lvivvde/deepseek-harness-ipad/issues/16) | T1、T4、T5 | `ready-for-agent`；可以开始工程和代码，不以假页面代替运行时接入。 |
-| [内置运行时、持久化用户盘与首个开发签名 IPA](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | T2、T3、T6 | `ready-for-agent`；镜像构建可先行，安装包最终整合前一项。正式工具/容量值接入范围决策。 |
-| [Git 项目工作区与本地开发闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | T7、T8 | `needs-triage`；依赖两项基础实现、首版范围与工作区决策。 |
-| [前后台恢复、数据救援与重签验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | T9–T11 | `needs-triage`；依赖两项基础实现与首版恢复要求；公开发布另满足分发、归档与许可条件。 |
+| [正式应用入口、全屏官方界面与运行环境管理](https://github.com/lvivvde/deepseek-harness-ipad/issues/16) | T1、T4、T5 | 已实现；M1 已交付并经用户试用，完整交互回归仍待集中验收。 |
+| [内置运行时、持久化用户盘与首个开发签名 IPA](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | T2、T3、T6 | 内置镜像、持久盘与开发 IPA 已交付；工具集合、手动在线扩容与空间保护已补代码，待新包真机验收。 |
+| [Git 项目工作区与本地开发闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | T7、T8 | 项目/Git/回收站实现完成；S 档七步开发闭环与删除交互修复仍待真机验收。 |
+| [前后台恢复、数据救援与重签验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | T9–T11 | 恢复、完整备份和救援已实现；长后台、强杀、升级和重签等真机验收未收齐。 |
+| [首版插件、端口预览与终端辅助键](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | M2b | 已实现并完成隔离 guest 验证；模型调用、键盘与预览性能待真机验收。 |
 
 ## 第一个交付：打开就是官方 Harness 的自签 IPA
 
@@ -18,13 +19,13 @@ GitHub 追踪入口：[适配规格](https://github.com/lvivvde/deepseek-harness
 | 任务 | 拟负责路径 / 职责 | 依赖 | 具体交付与验收 |
 | --- | --- | --- | --- |
 | T1 正式应用入口 | `ios/HarnessApp/` 新工程与主界面 | Spec；复用现有执行器构建资料 | 独立 bundle ID；官方页面作为根视图；启动/错误状态与诊断入口收敛。关闭侧栏、子窗口不销毁主页面。A2、A9。 |
-| T2 构建内置运行时 | `ios/HarnessApp/scripts/` 及固定构建清单 | 运行时交付决策；首版工具清单最终值接入前保留为构建输入 | 生成小 initramfs、只读 ext4 系统盘与用户盘种子；固定版本、摘要、模块和依赖。QEMU 直接只读打开 bundle 系统盘真机通过。 |
-| T3 用户盘初始化 | `ios/HarnessApp/` 用户数据管理 | T2 | 新容器首次创建；重开、更新不覆盖；布局版本与失败救援。先使用明示的测试容量，首版上限由范围票确定。A1、A6 的磁盘部分。 |
+| T2 构建内置运行时 | `ios/HarnessApp/scripts/` 及固定构建清单 | 运行时交付决策；接入已定的首版工具清单 | 生成小 initramfs、只读 ext4 系统盘与用户盘种子；固定版本、摘要、模块和依赖。QEMU 直接只读打开 bundle 系统盘真机通过。 |
+| T3 用户盘初始化 | `ios/HarnessApp/` 用户数据管理 | T2 | 新容器首次创建；重开、更新不覆盖；布局版本与失败救援。默认 8 GiB，上限 64 GiB，用户主动扩容；不缩小、不自动扩容。A1、A6 的磁盘部分。 |
 | T4 应用级运行环境 | `ios/HarnessApp/` 运行环境及 QEMU bridge | T1、T2、T3 | 并发启动合并；自动启动 guest/Harness；真实就绪入口交给页面；页面销毁不停止环境。QEMU 退出后的恢复动作不调用未经验证的重复初始化。 |
 | T5 官方页面适配 | `ios/HarnessApp/` 页面宿主；必要的前端补丁独立记录 | T4 | 官方鉴权、全屏布局、safe area、键盘、停止生成、子窗口返回。先核查上游现成实现，不重写聊天协议或复制假界面。A1、A2、A9。 |
 | T6 开发安装包 | `ios/HarnessApp/scripts/` 构建/导出与安装说明 | T1–T5 | 个人开发签名的 IPA 与资源清单；新安装无需镜像导入。用户真机完成 API Key、持久化目录、Node 测试与重开恢复。标清尚未通过的完整 Git 闭环和重签链。 |
 
-T1 可以立即开始；T2 与 T1 可独立实施。T4 再整合。首个版本不改造或升级原型 App 的已有磁盘，避免试用影响当前数据。
+T1–T6 已交付正式 M1 开发包，后续功能在此基础上补齐。不改造或升级原型 App 的已有磁盘。
 
 ## 第二个交付：Git 项目的本地开发闭环
 
@@ -33,7 +34,7 @@ T1 可以立即开始；T2 与 T1 可独立实施。T4 再整合。首个版本�
 | T7 项目获取与工作区登记 | guest 内项目/Git 操作；官方工作区入口的最小适配 | T6；工作区决策的路径、凭据与导入约束 | 公开克隆、新建、打开已有目录；重名/取消/失败不覆盖项目。项目登记与官方工作区列表一致。A3。 |
 | T8 真实项目验收 | `docs/validation/` 记录、验收仓库与构建工具清单 | T7；首版范围与工作区决策 | 获取、依赖安装、模型修改、差异审阅、测试、commit；获得测试远端授权后 push。A4–A6。输出第二个可安装 IPA，而不是只交一份验收清单。 |
 
-建议先用小型 Node 项目收敛，但它不是已经确认的最终兼容范围。推送认证、其他语言工具链与社区插件不能因为原型测试通过而直接宣称支持。
+首版兼容范围以 [首版范围与验收决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/6) 的 Node/TypeScript、S 档、L1–L3 为准。S 仓库七步必须全部通过才计完成，不能以隔离 VM 的集成检查代替模型调用和真实推送。
 
 ## 第三个交付：恢复、数据救援与可重复交付
 

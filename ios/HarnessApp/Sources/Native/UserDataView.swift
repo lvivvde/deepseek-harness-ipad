@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct UserDataView: View {
     @ObservedObject var runtime: RuntimeController
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     @State private var workTask: Task<Void, Never>?
     @State private var busy: String?
@@ -10,6 +11,9 @@ struct UserDataView: View {
     @State private var exported: ProjectManagerSheet.ExportedFiles?
     @State private var exportDirectory: URL?
     @State private var importing = false
+    @State private var diskStatus: UserDiskStatus?
+    @State private var diskSize = 16
+    @State private var confirmingGrowth = false
     @State private var confirmingRestore = false
     @State private var confirmingRescue = false
     @AppStorage("userData.lastBackup") private var lastBackup: Double = 0
@@ -17,6 +21,26 @@ struct UserDataView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("用户盘容量") {
+                    if let diskStatus {
+                        LabeledContent("容量上限", value: formatted(diskStatus.capacityBytes))
+                        LabeledContent("已占 iPad 空间", value: formatted(diskStatus.allocatedBytes))
+                        LabeledContent("iPad 剩余空间", value: formatted(diskStatus.hostAvailableBytes))
+                        if diskStatus.isHostSpaceLow {
+                            Text("iPad 剩余空间不足 2 GB，请先释放空间。用户盘还有空余也可能无法继续写入。")
+                                .foregroundStyle(.orange)
+                        }
+                        Picker("扩容到", selection: $diskSize) {
+                            ForEach(capacities, id: \.self) { size in Text("\(size) GB").tag(size) }
+                        }.disabled(busy != nil)
+                        Button("确认容量…") { confirmingGrowth = true }
+                            .disabled(busy != nil || runtime.phase != .ready || diskStatus.isHostSpaceLow)
+                    } else {
+                        Text("正在读取容量…").foregroundStyle(.secondary)
+                    }
+                    Text("默认 8 GB，最高 64 GB；只支持增大，不自动扩容。稀疏数据盘按实际写入占用 iPad 空间。删除文件是否释放 iPad 空间仍待真机验证；备份恢复会保留旧数据，不能自动压缩原盘。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("用户数据备份") {
                     Text("建议定期导出，重签前先备份。备份会停止正在进行的任务，完成后恢复 Harness。备份含 API Key、会话及私密配置，请保存到你信任的位置；不含 node_modules、.cache 和 Git 凭据。")
                         .foregroundStyle(.secondary)
@@ -32,10 +56,20 @@ struct UserDataView: View {
                 if let busy { HStack { ProgressView(); Text(busy) } }
                 if let message { Text(message) }
             }
-            .navigationTitle("备份与救援")
+            .navigationTitle("iPad 应用设置")
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    if busy == nil { await refreshDisk() }
+                    do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+                }
+            }
             .toolbar { Button("完成") { dismiss() }.disabled(busy != nil) }
             .interactiveDismissDisabled(busy != nil)
             .sheet(item: $exported, onDismiss: cleanExport) { files in DocumentExporter(urls: files.urls) }
+            .confirmationDialog("将用户盘扩容到 \(diskSize) GB？iPad 当前剩余 \(diskStatus.map { formatted($0.hostAvailableBytes) } ?? "未知")。不会预占全部容量，但后续写入仍需要真实空间；容量不能缩小。请保持应用在前台。", isPresented: $confirmingGrowth, titleVisibility: .visible) {
+                Button("在线扩容到 \(diskSize) GB") { growDisk() }
+            }
             .confirmationDialog("恢复会停止正在进行的任务，并替换当前用户配置和项目。原数据会保留在用户盘的救援目录。", isPresented: $confirmingRestore, titleVisibility: .visible) {
                 Button("选择备份与 SHA256 文件…") { importing = true }
             }
@@ -43,6 +77,33 @@ struct UserDataView: View {
                 Button("停止并导出") { rescue() }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.archive, .data], allowsMultipleSelection: true, onCompletion: restore)
+        }
+    }
+
+    private var capacities: [Int] {
+        let current = Int(((diskStatus?.capacityBytes ?? 8 << 30) + (1 << 30) - 1) >> 30)
+        return Array(Set([8, 16, 32, 64, current])).sorted().filter { $0 >= current && $0 <= 64 }
+    }
+    private func formatted(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .binary)
+    }
+    private func refreshDisk() async {
+        do {
+            diskStatus = try await runtime.userDiskStatus()
+            if !capacities.contains(diskSize) { diskSize = capacities.first ?? 64 }
+        } catch { message = error.localizedDescription }
+    }
+    private func growDisk() {
+        busy = "正在在线扩容，请保持应用在前台…"; message = nil
+        workTask = Task {
+            do {
+                diskStatus = try await runtime.growUserDisk(toGiB: diskSize)
+                message = "用户盘容量已确认，正在运行的 Harness 和项目保留。"
+            } catch {
+                message = error.localizedDescription
+                await refreshDisk()
+            }
+            busy = nil
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Real embedded QEMU. Build inputs are supplied independently of the App UI.
 @MainActor
@@ -6,6 +7,7 @@ final class EmbeddedRuntime: RuntimeDriving {
     private var bootStartedAt: Date?
     private var receiptDirectory: URL?
     private(set) var hasLaunched = false
+    private var userDisk: URL?
     private var exited = false
     private var onEvent: (@MainActor (RuntimeEvent) -> Void)?
     private var serialChannel: RuntimeLineChannel?
@@ -55,6 +57,7 @@ final class EmbeddedRuntime: RuntimeDriving {
                                                     serialFD: serialPair[1].intValue, controlFD: controlPair[1].intValue)
         self.onEvent = onEvent
         receiptDirectory = userData
+        userDisk = configuration.userDisk
         hasLaunched = true
         publish(.booting)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -129,6 +132,32 @@ final class EmbeddedRuntime: RuntimeDriving {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         syncMarker = nil
+    }
+
+    func userDiskStatus() async throws -> UserDiskStatus {
+        guard let disk = userDisk else { throw UserDiskError.unavailable }
+        return try await Task.detached(priority: .utility) { try UserDiskStatus.read(disk: disk) }.value
+    }
+
+    func growUserDisk(toGiB size: Int) async throws -> UserDiskStatus {
+        guard hasLaunched, !exited else { throw UserDiskError.busy }
+        let bytes = try await userDiskStatus().growthBytes(toGiB: size)
+        let transfer = ProjectTransfer()
+        let acquiredAt = ProcessInfo.processInfo.systemUptime
+        let lease = try await transfer.beginDiskGrowth(bytes: bytes)
+        do {
+            // QEMU owns the running image; never truncate it from a second file handle.
+            _ = try await QemuControl.shared.command("block_resize", arguments: ["device": "user", "size": bytes], timeout: 10, beforeSend: {
+                guard ProcessInfo.processInfo.systemUptime - acquiredAt < 30,
+                      UIApplication.shared.applicationState == .active else { throw UserDiskError.busy }
+            })
+            let actual = try await transfer.finishDiskGrowth(lease: lease)
+            guard actual >= bytes else { throw UserDiskError.incomplete }
+            return try await userDiskStatus()
+        } catch {
+            try? await transfer.cancelDiskGrowth(lease: lease)
+            throw (error as? UserDiskError) ?? UserDiskError.incomplete
+        }
     }
 
     func exportRescueDisk(into directory: URL) async throws -> URL {

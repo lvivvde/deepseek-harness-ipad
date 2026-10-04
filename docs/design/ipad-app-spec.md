@@ -1,6 +1,6 @@
 # 官方 Harness 的 iPad App 适配 Spec
 
-状态：2026-10-03，开始设计与实现拆分。本文固定本会话已确认的应用体验，并提出首个可安装版本的验收范围；不代替仍开放的首版兼容范围、工作区和插件决策。
+状态：2026-10-04，M1–M3 核心实现已进入 main，工具与存储设置已补代码；真机验收仍待集中完成。本文固定应用体验并接入已关闭的首版范围、工作区与插件决策；实现状态见任务表，验收结论见验证记录。
 
 追踪入口：[规格：官方 Harness 的 iPad 全屏 App 适配与可安装版本](https://github.com/lvivvde/deepseek-harness-ipad/issues/15)。
 
@@ -15,9 +15,9 @@
 | 架构基线 | Swift 原生宿主、WKWebView 官方界面、无 JIT aarch64 Linux、官方 Node/dsh；工具本地执行，允许联网调用模型。 |
 | [原型结论](https://github.com/lvivvde/deepseek-harness-ipad/issues/11) | 核心链路真机通过。官方界面、API Key、模型调用与本地 Node 测试已验收；产品体验和完整 Git 闭环仍要实现。 |
 | [运行时交付决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/12) | IPA 内置小 initramfs、只读 ext4 系统盘和用户盘种子；用户盘挂载 `/root`，创建后永不被应用升级覆盖。 |
-| 待定 | 首版项目与工具清单、设备覆盖、容量与性能预算由 [首版范围](https://github.com/lvivvde/deepseek-harness-ipad/issues/6) 收敛。项目导入、Files 交换和 Git 凭据由 [工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7) 收敛。 |
+| 已定 | 首版项目与工具清单、设备覆盖、容量与性能预算由 [首版范围](https://github.com/lvivvde/deepseek-harness-ipad/issues/6) 收敛。项目导入、Files 交换和 Git 凭据由 [工作区决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/7) 收敛。 |
 
-本文中的建议默认值供第一个可运行版本使用，不把它们当作其他决策票已经通过的结论。后续票确认后更新本文件与任务表。
+首版支持 Node.js / TypeScript 的 S 档项目与 L1–L3 形态，承诺 npm；系统盘预装工具以 #6 为准。最低目标为 iPadOS 26、M 系列、8 GB 内存，当前仅 M4 16 GB 有真机记录。guest 固定 2 GiB、无 swap；用户盘默认 8 GiB、用户手动在线扩到 64 GiB、不缩小、不自动扩容，宿主剩余空间低于 2 GiB 时提醒并拒绝扩容。性能和体量预算按 #6 集中实测。
 
 ## 2. 界面设计
 
@@ -49,7 +49,7 @@
 
 应用的数据容器保存用户盘，Linux 内 `/root` 保存项目、依赖、Harness 状态与缓存。原生层不再创建另一份用于执行的项目副本。
 
-建议首个验收版本将项目集中在 `/root/Documents/Projects/<项目名>`，并登记到官方工作区列表。目录名称和导入策略待工作区决策确认；已有登记路径不能被悄悄移动。
+按已定工作区决策，Git 项目集中在 `/root/projects/<项目名>`，并登记到官方工作区列表。Files 使用 tar+SHA256 导入/导出；已有登记路径不能被悄悄移动。凭据由用户在终端提示中输入，不经对话或远端 URL。
 
 项目操作契约：
 
@@ -60,7 +60,7 @@
 5. 失败或取消的克隆不显示为成功工作区；重试不覆盖已有同名项目。临时目录与用户已有项目明确区分。
 6. Git 提交身份、私有仓库认证、推送授权及凭据存储遵循工作区决策；凭据不写入诊断、构建清单或仓库。
 
-第一个版本先用公开的小型 Node 仓库验收获取、依赖安装、模型修改、差异审阅、测试和本地 Git 提交。这是建议的工程验收样例，不代表首版只支持 Node。完整本地开发闭环还必须在用户授权的测试远端完成推送；只有 clone 和本地 commit 通过时，明确记录推送尚未通过。
+首版用固定 S 档 Node/TypeScript 仓库验收获取、依赖安装、模型修改、差异审阅、测试和本地 Git 提交。完整本地开发闭环还必须在用户授权的测试远端完成推送；只有 clone 和本地 commit 通过时，明确记录推送尚未通过。
 
 Files 作为导入、导出与备份入口。首个版本不宣称外部 Files 目录与 ext4 工作区实时双向映射；具体支持方式由工作区决策确定。
 

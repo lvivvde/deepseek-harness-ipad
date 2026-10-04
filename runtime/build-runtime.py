@@ -195,6 +195,9 @@ def build(args, lock):
         data = subprocess.check_output(['ar', '-p', str(package_path), data_name])
         with tarfile.open(fileobj=io.BytesIO(data), mode='r:*') as archive:
             read_tar(archive, entries)
+    # The guest uses C.UTF-8. Omit unused command-message translations while
+    # preserving every tool, terminfo, timezone and package copyright/source notice.
+    entries = {name: value for name, value in entries.items() if not name.startswith('usr/share/locale/')}
     with tarfile.open(Path(args.inputs) / 'node-v24.21.0-linux-arm64.tar.xz') as archive:
         read_tar(archive, entries, prefix='opt/node/', strip=1)
     busybox = entries['usr/bin/busybox'][1]
@@ -208,6 +211,8 @@ def build(args, lock):
         entries[name] = (stat.S_IFLNK | 0o777, target.encode())
     for applet in 'sh ls cat mkdir rm rmdir cp mv chmod chown touch sync sleep printf echo ps kill uname hostname ifconfig route udhcpc setsid cttyhack modprobe mount umount tar gzip gunzip wget find sed grep awk head tail sort cut wc df du readlink realpath xargs stat ln date env id whoami test true false basename dirname'.split():
         entries.setdefault('usr/bin/' + applet, (stat.S_IFLNK | 0o777, b'busybox'))
+    # npm scripts and official tools get GNU command semantics; boot/rescue scripts explicitly use BusyBox.
+    entries['usr/bin/sh'] = (stat.S_IFLNK | 0o777, b'bash')
     entries['etc/passwd'] = (stat.S_IFREG | 0o644, b'root:x:0:0:root:/root:/bin/bash\n')
     entries['etc/group'] = (stat.S_IFREG | 0o644, b'root:x:0:\n')
     entries['etc/resolv.conf'] = (stat.S_IFLNK | 0o777, b'/run/resolv.conf')
@@ -228,7 +233,7 @@ def build(args, lock):
         write_tree(entries, root)
         harness = root / 'opt/harness'
         shutil.copytree(args.harness, harness, symlinks=True)
-        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'preview.cjs', 'supervisor.cjs', 'control.cjs', 'backup.cjs', 'AGENTS.md'):
+        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'preview.cjs', 'supervisor.cjs', 'user-disk.cjs', 'control.cjs', 'backup.cjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
         patch_client_bridges(harness)
         shutil.copytree(HERE / 'guest/examples', harness / 'examples')
@@ -238,6 +243,13 @@ def build(args, lock):
         pnpm = root / 'usr/local/bin/pnpm'
         pnpm.write_text('#!/bin/sh\nexec /opt/node/bin/node /opt/harness/node_modules/pnpm/bin/pnpm.mjs "$@"\n')
         pnpm.chmod(0o755)
+        for name in ('yarn', 'yarnpkg'):
+            command = root / 'usr/local/bin' / name
+            command.write_text('#!/bin/sh\nexec /opt/node/bin/corepack yarn "$@"\n')
+            command.chmod(0o755)
+        # Fixed UTC default; all IANA zones remain available through TZ.
+        (root / 'etc/timezone').write_text('Etc/UTC\n')
+        (root / 'etc/localtime').symlink_to('/usr/share/zoneinfo/Etc/UTC')
         for command in ('python', 'python3', 'pip', 'pip3', 'gcc', 'g++', 'cc', 'c++', 'make', 'cmake', 'apt', 'apt-get'):
             stub = root / 'usr/local/bin' / command
             stub.write_text('#!/bin/sh\nprintf "%s\\n" "首版暂不支持 Python、原生编译或系统包安装；请使用纯 JS 或 linux-arm64 glibc 预编译依赖。" >&2\nexit 126\n')
@@ -277,7 +289,7 @@ def main():
     parser.add_argument('--mke2fs')
     parser.add_argument('--unsquashfs')
     parser.add_argument('--system-mib', type=int, default=1024)
-    parser.add_argument('--user-mib', type=int, default=512, help='bundled seed size')
+    parser.add_argument('--user-mib', type=int, default=8, help='bundled seed size; expanded before Harness starts')
     parser.add_argument('--user-disk-mib', type=int, default=8192, help='sparse size the app grows the disk to')
     parser.add_argument('--memory-mib', type=int, default=2048)
     args = parser.parse_args()
@@ -286,7 +298,7 @@ def main():
         verify_inputs(Path(args.inputs), lock)
         if args.output and args.output.exists():
             raise ValueError('Output already exists; use a new build directory')
-        if not 128 <= args.memory_mib <= 2048 or not 128 <= args.system_mib <= 16384 or not 64 <= args.user_mib <= 16384 \
+        if not 128 <= args.memory_mib <= 2048 or not 128 <= args.system_mib <= 16384 or not 8 <= args.user_mib <= 16384 \
                 or not max(512, args.user_mib) <= args.user_disk_mib <= 65536:
             raise ValueError('Unsupported build capacity')
         if not args.verify_inputs:

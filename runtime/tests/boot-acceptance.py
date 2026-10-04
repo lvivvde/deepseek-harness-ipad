@@ -11,6 +11,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import threading
 import urllib.request
 import uuid
 
@@ -40,6 +41,18 @@ def main():
   log=(root/'qemu.log').open('wb');process=subprocess.Popen(command,pass_fds=(serial.fileno(),qmp.fileno()),stdout=subprocess.DEVNULL,stderr=log)
   serial.close();qmp.close();console.settimeout(.2);control.settimeout(5)
   buffer=bytearray();qmpfile=control.makefile('rwb',buffering=0)
+  stop_serial=threading.Event()
+  def drain_serial():
+   # The App always drains its serial channel. A blocked host HTTP request must
+   # not backpressure QEMU's console while the guest grows ext4 or restarts.
+   while not stop_serial.is_set():
+    try:
+     data=console.recv(65536)
+     if not data:return
+     buffer.extend(data)
+    except socket.timeout:pass
+    except OSError:return
+  serial_reader=threading.Thread(target=drain_serial,daemon=True);serial_reader.start()
   def monitor(name,arguments={}):
    identifier=uuid.uuid4().hex
    qmpfile.write((json.dumps({'execute':name,'arguments':arguments,'id':identifier})+'\n').encode())
@@ -53,8 +66,7 @@ def main():
    while time.monotonic()<deadline:
     if predicate(bytes(buffer)):return
     assert process.poll() is None,'QEMU_EXITED'
-    try:buffer.extend(console.recv(65536))
-    except socket.timeout:pass
+    time.sleep(.05)
    raise RuntimeError('SERIAL_DEADLINE')
   def shell(command,seconds=120):
    marker='ACCEPT_'+uuid.uuid4().hex
@@ -84,8 +96,7 @@ def main():
    while time.monotonic()<deadline:
     try:page(latest_auth());return
     except (OSError,http.client.HTTPException,AssertionError):
-     try:buffer.extend(console.recv(65536))
-     except socket.timeout:pass
+     pass
      time.sleep(.5)
    page(latest_auth(),report=True)
   def transfer(route,method='GET',body=None):
@@ -108,6 +119,36 @@ def main():
    stage='CLOCK';result=guest_health();assert result['clock'] and result['running'] and result['writable']
    assert abs(result['epoch']/1000-time.time())<=2
    print('PASS:GUEST_CLOCK_AND_HEALTH',flush=True)
+   stage='STORAGE_TOOLS'
+   shell("for tool in script node npm corepack pnpm yarn bash git ssh curl xdg-user-dir resize2fs ls find grep sed gawk diff patch ps lsblk less file tar gzip xz zstd zip unzip rg jq nano; do command -v \"$tool\" >/dev/null || exit 1; done; test -f /usr/share/zoneinfo/Etc/UTC && echo TOOLS_''PRESENT")
+   assert b'\nTOOLS_PRESENT' in buffer,'TOOLS_INVENTORY_MISSING'
+   # Invoke the ELF programs too: a path alone does not prove shared libraries are present.
+   shell("failed=0; for tool in nano less jq rg ssh file tar xz zstd lsblk; do case $tool in jq) args=\"-n 1\";; ssh) args=-V;; file) args=/opt/node/bin/node;; *) args=--version;; esac; if ! /usr/bin/$tool $args >/run/tool-$tool.log 2>&1; then echo TOOL_FAILED:$tool; failed=1; fi; done; test $failed = 0 && echo TOOLS_''RUN")
+   assert b'\nTOOLS_RUN' in buffer,'TOOLS_EXECUTION_FAILED'
+   shell("npm config get prefix >/run/npm-prefix; test \"$(cat /run/npm-prefix)\" = /root/.local && test \"$COREPACK_HOME\" = /root/.cache/corepack && echo PACKAGE_''PREFIX")
+   assert b'\nPACKAGE_PREFIX' in buffer,'USER_PACKAGE_PREFIX_FAILED'
+   shell("/bin/sh -c 'less --version >/run/posix-less && tar --version >/run/posix-tar' && echo POSIX_''GNU")
+   assert b'\nPOSIX_GNU' in buffer,'POSIX_TOOLS_FAILED'
+   shell("{ sleep 2; printf '\\030'; } | timeout 15 /usr/bin/script -qe -c '/usr/bin/nano /root/nano-probe' /run/nano-screen >/dev/null 2>&1 && echo NANO_''PTY")
+   assert b'\nNANO_PTY' in buffer,'NANO_PTY_FAILED'
+   print('PASS:REQUIRED_GUEST_TOOLS_AND_USER_PACKAGE_PREFIX',flush=True)
+   stage='ONLINE_GROWTH'
+   auth_before=latest_auth()
+   shell("echo retained >/root/growth-sentinel")
+   for size in [16,64]:
+    stage='GROWTH_BEGIN_'+str(size)
+    lease=json.loads(transfer('/storage/begin','POST',json.dumps({'bytes':size*1024**3}).encode()))['lease']
+    stage='GROWTH_QMP_'+str(size)
+    monitor('block_resize',{'device':'user','size':size*1024**3})
+    stage='GROWTH_EXT4_'+str(size)
+    result=json.loads(transfer('/storage/finish','POST',json.dumps({'lease':lease}).encode()))
+    assert result['capacityBytes']==size*1024**3
+    assert disk.stat().st_size==size*1024**3
+   shell("grep -q '^retained$' /root/growth-sentinel && echo GROWTH_''PRESERVED")
+   assert b'\nGROWTH_PRESERVED' in buffer
+   assert latest_auth()==auth_before,'ONLINE_GROWTH_RESTARTED_HARNESS'
+   ready_page()
+   print('PASS:ONLINE_GROWTH_TO_64_GIB_PRESERVES_RUNNING_HARNESS_AND_DATA',flush=True)
    stage='FORWARD_REPAIR';monitor('human-monitor-command',{'command-line':'hostfwd_remove net0 tcp:127.0.0.1:39080'})
    assert monitor('human-monitor-command',{'command-line':'hostfwd_add net0 tcp:127.0.0.1:39080-10.0.2.15:2999'}).strip()==''
    ready_page();print('PASS:FORWARD_REPAIR_WITHOUT_VM_RESTART',flush=True)
@@ -147,6 +188,11 @@ def main():
    stream=urllib.request.urlopen(request,timeout=180)
    assert len(stream.read(262144))==262144
    result=guest_health();assert result['leased'] and not result['writable'] and result['clock']
+   try:
+    transfer('/storage/begin','POST',json.dumps({'bytes':64*1024**3}).encode())
+    raise AssertionError('GROWTH_ACCEPTED_DURING_BACKUP')
+   except urllib.error.HTTPError as error:
+    assert json.loads(error.read())['error']=='BACKUP_BUSY'
    shell('true')
    print('PASS:CONTROL_DURING_FROZEN_BACKUP',flush=True)
    stream.close()
@@ -181,8 +227,11 @@ def main():
    stage='TRASH';transfer('/projects/backup-probe','DELETE');transfer('/trash','DELETE')
    print('PASS:PROJECT_TRASH_AND_PURGE',flush=True)
   except Exception as error:
-   if isinstance(error,AssertionError) and str(error) in ['AUTH_FAILED','PAGE_NOT_READY']:
+   if isinstance(error,AssertionError) and str(error) in ['AUTH_FAILED','PAGE_NOT_READY','TOOLS_INVENTORY_MISSING','TOOLS_EXECUTION_FAILED','USER_PACKAGE_PREFIX_FAILED','NANO_PTY_FAILED','POSIX_TOOLS_FAILED']:
     print('DIAGNOSTIC:'+str(error),flush=True)
+    for tool in re.findall(rb'\nTOOL_FAILED:([a-z]+)\r?\n',buffer):print('DIAGNOSTIC:TOOL_FAILED:'+tool.decode(),flush=True)
+   if b'Out of memory' in buffer or b'Killed process' in buffer:print('DIAGNOSTIC:GUEST_OOM',flush=True)
+   if b'Buffer I/O error' in buffer or b'EXT4-fs error' in buffer:print('DIAGNOSTIC:GUEST_IO_ERROR',flush=True)
    print('DIAGNOSTIC:AUTH_LAUNCH_COUNT:'+str(len(re.findall(rb'dsh web: http://127\.0\.0\.1:3001/\?token=',buffer))),flush=True)
    if isinstance(error,urllib.error.HTTPError):print('DIAGNOSTIC:HTTP_STATUS:'+str(error.code),flush=True)
    elif isinstance(error,RuntimeError) and str(error) in ['SERIAL_DEADLINE','QEMU_EXITED']:
@@ -190,7 +239,7 @@ def main():
    else:print('DIAGNOSTIC:EXCEPTION_TYPE:'+type(error).__name__,flush=True)
    raise
   finally:
-   console.close();control.close();qmpfile.close();process.kill();process.wait();log.close()
+   stop_serial.set();console.close();serial_reader.join(timeout=1);control.close();qmpfile.close();process.kill();process.wait();log.close()
 try:main()
 except Exception:
  print('FAIL:'+stage,flush=True)

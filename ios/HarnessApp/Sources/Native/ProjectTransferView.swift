@@ -363,7 +363,7 @@ struct HarnessToolsButton: View {
                     }
                 }
                 Divider()
-                Button { showData() } label: { Label("备份与救援…", systemImage: "externaldrive") }
+                Button { showData() } label: { Label("iPad 应用设置…", systemImage: "gearshape") }
                 Button { showDiagnostics() } label: { Label("诊断", systemImage: "stethoscope") }
             } label: {
                 Image(systemName: "shippingbox")

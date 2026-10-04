@@ -11,8 +11,8 @@
 
 ## 当前代码与交付
 
-- main：`5a5f93d`，PR27–PR30 已合并，main CI 通过。PR30 修复原生菜单打开时隐藏行文字、hello 示例工具未进入模型工具面。
-- 真机工具及本交接在 `codex/device-automation-handoff` 分支整理，PR 未合并时从该分支接手。合并后以 Git 查询的新 main 为准。
+- 本交接的代码基线：PR30 后的 main `5a5f93d`，PR27–PR30 已合并且 CI 通过；PR31 合并后的当前 main SHA 以开始工作时的 Git 查询为准。PR30 修复原生菜单打开时隐藏行文字、hello 示例工具未进入模型工具面。
+- 真机工具及本交接由 [PR31](https://github.com/lvivvde/deepseek-harness-ipad/pull/31) 交付；用户已同意合并。未合并时从 `codex/device-automation-handoff` 分支接手，合并后直接从 main 接手。
 - 当前安装包仍是 **da2d0aa**：`build/HarnessApp-0.1.0-main-da2d0aa.ipa`，293.2 MiB，旁有 SHA256、receipt 和 acceptance。PR30 修复尚未重新打包或安装。不要把源码合并当作设备已升级。
 - 最后已知正式包签名截止：**2026-10-10 21:11:14（北京时间）**。后续签名以实际新 profile 为准，不沿用旧截止。本轮无需立即重包。
 - #1 规划地图、#16 原 M1 入口已关闭；#16 后续交互回归转 #23，恢复转 #19，资源测量留 #17，整体验收由 #15 跟踪。

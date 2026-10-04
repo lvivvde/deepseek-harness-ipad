@@ -30,7 +30,11 @@ python3 runtime/build-runtime.py \
   --system-mib 1024 --user-mib 512 --memory-mib 2048
 ```
 
-上述容量和工具集合仅为本次开发验收输入，正式预算继续由首版范围任务确定。工具包括 Node/npm、Bash、Git、curl、CA、e2fsprogs 和 BusyBox；不是对所有项目类型的兼容承诺。当前用户盘为固定容量，在线扩容尚未实现。
+上述容量和工具集合仅为本次开发验收输入，正式预算继续由首版范围任务确定。工具包括 Node/npm、Bash、Git、curl、CA、e2fsprogs 和 BusyBox；不是对所有项目类型的兼容承诺。种子用户盘为 512 MiB；`--user-disk-mib`（默认 8192）写入 `runtime.json`，App 首次或升级时把 `user.raw` 稀疏扩展到该容量（只增不减，目录排除 iCloud 备份），guest 挂载后在线 `resize2fs`。
+
+Git 预置 `/etc/gitconfig`：credential store 写入 `/root/.git-credentials`（0600）、`user.useConfigOnly`、默认分支 main、pager 为 cat。项目放在 `/root/projects/<名称>`；全局 `/root/.dsh/AGENTS.md` 由镜像管理（带标记行时每次启动刷新，删除标记即由用户接管）。
+
+单项目导出/导入由 guest `transfer.cjs`（npm 自带 node-tar）提供：仅监听 guest 网卡 3002，App 经 `127.0.0.1:28083` 转发，每个 App 进程随机 token 通过内核参数 `harness.transfer=` 传入，并以 `X-Harness-Transfer` 头校验。导出跳过 `node_modules` 与 `.cache`；导入只接受单个顶层目录，解压到临时目录后改名，重名追加 `-2`、`-3`，从不覆盖。
 
 输出 `Image`、`initramfs.gz`、`system.raw`、`user-seed.raw`、`runtime.json` 与 `build-receipt.json`。App bundle 只嵌入前五项；收据作为构建资料单独交付，包含输入清单与最终资源 SHA256。App、运行时版本和协议在构建时检查一致。
 
@@ -42,7 +46,7 @@ python3 runtime/build-runtime.py \
 
 ## 构建与打包
 
-QEMU 执行器复用已验证输入；正式 App 使用独立 28080/28081/28082 端口，与原型 18080/18081/18082 分开。Swift 端口集中在 `RuntimePorts`；guest 内仍为官方 loopback 3001 与原有网卡 3000 relay，官方 trusted-host 为 127.0.0.1:28080，鉴权不变。修改端口时必须同步 guest trusted-host 并重建运行时；这项跨语言契约仍是非阻塞的维护限制。
+QEMU 执行器复用已验证输入；正式 App 使用独立 28080/28081/28082/28083（页面/串口/QMP/项目传输）端口，与原型 18080/18081/18082 分开。Swift 端口集中在 `RuntimePorts`；guest 内仍为官方 loopback 3001 与原有网卡 3000 relay，官方 trusted-host 为 127.0.0.1:28080，鉴权不变。修改端口时必须同步 guest trusted-host 并重建运行时；这项跨语言契约仍是非阻塞的维护限制。
 
 ```sh
 xcodebuild -project ios/HarnessApp/HarnessApp.xcodeproj -scheme HarnessApp \

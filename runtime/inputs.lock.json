@@ -7,7 +7,7 @@
   "debianIndexSHA256": "be16b37b2f740f066ea93d35d56f04f94d63693e5a3eb421b052bf86fae75bcd",
   "nodeVersion": "24.21.0",
   "harnessVersion": "0.2.0-rc.2",
-  "harnessLockSHA256": "43b3815e29bce2cba0fc4481a2040ce9653b1b9efd6b2d3e2cf8dfc16195ca34",
+  "harnessLockSHA256": "1a60fdd7b3dd0501993f8848be11301c0fc1423268ff2fc02aeab39298559a19",
   "validationTools": [
     "busybox-static",
     "bash",

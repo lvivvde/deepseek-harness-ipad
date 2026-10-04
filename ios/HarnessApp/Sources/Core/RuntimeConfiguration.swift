@@ -76,15 +76,23 @@ struct RuntimeConfiguration: Sendable {
             (attributes?[.size] as? NSNumber)?.uint64Value ?? 0 > 0
     }
 
-    func qemuArguments(firmwareDirectory: URL, transferToken: String = ProjectTransfer.sessionToken) -> [String] {
+    func qemuArguments(firmwareDirectory: URL, transferToken: String = ProjectTransfer.sessionToken,
+                       serialFD: Int? = nil, controlFD: Int? = nil) -> [String] {
         // QEMU -drive parses commas, including commas in containing directory names.
         func drivePath(_ url: URL) -> String { url.path.replacingOccurrences(of: ",", with: ",,") }
+        let serial = serialFD.map { "socket,id=serial0,fd=\($0)" } ??
+            "socket,id=serial0,host=127.0.0.1,port=\(RuntimePorts.serial),server=on,wait=off"
+        let control = controlFD.map { ["-chardev", "socket,id=control0,fd=\($0)", "-qmp", "chardev:control0"] } ??
+            ["-qmp", "tcp:127.0.0.1:\(RuntimePorts.control),server=on,wait=off"]
+        let forwards = ["hostfwd=tcp:127.0.0.1:\(RuntimePorts.page)-:2999",
+                        "hostfwd=tcp:127.0.0.1:\(RuntimePorts.transfer)-:3002",
+                        "hostfwd=tcp:127.0.0.1:\(RuntimePorts.previewCatalog)-:3003"] +
+            RuntimePorts.previewFallback.enumerated().map { "hostfwd=tcp:127.0.0.1:\($0.element)-:\(40000 + $0.offset)" }
         return ["qemu-aarch64-softmmu", "-L", firmwareDirectory.path,
                 "-machine", "virt", "-cpu", "cortex-a72", "-smp", "1", "-m", String(memoryMiB),
                 "-accel", "tcg", "-nodefaults", "-display", "none", "-monitor", "none",
-                "-chardev", "socket,id=serial0,host=127.0.0.1,port=\(RuntimePorts.serial),server=on,wait=off",
-                "-serial", "chardev:serial0", "-qmp", "tcp:127.0.0.1:\(RuntimePorts.control),server=on,wait=off",
-                "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(RuntimePorts.page)-:3000,hostfwd=tcp:127.0.0.1:\(RuntimePorts.transfer)-:3002",
+                "-chardev", serial, "-serial", "chardev:serial0"] + control + [
+                "-netdev", "user,id=net0," + forwards.joined(separator: ","),
                 "-device", "virtio-net-pci,netdev=net0", "-kernel", kernel.path,
                 "-initrd", initramfs.path, "-append", "console=ttyAMA0 rdinit=/init harness.transfer=\(transferToken)",
                 "-drive", "file=\(drivePath(systemDisk)),if=none,id=system,format=raw,readonly=on",

@@ -16,6 +16,10 @@
 		EEBB24B25330A5F2F4CD2CFA = {isa = PBXBuildFile; fileRef = F8059F7783054616D24DE609; };
 		A00000000000000000000019 /* Sources/Native/HarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000008 /* Sources/Native/HarnessApp.swift */; };
 		A00000000000000000000020 /* Sources/Native/QemuBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000009 /* Sources/Native/QemuBridge.m */; };
+		841A7BDE0B1431B6BBB5DB5D = {isa = PBXBuildFile; fileRef = C4A2B7B99C24450E6937A8BF; };
+		AF410786348A8E5A207E18AF = {isa = PBXBuildFile; fileRef = 302FF21071EC930D3870C611; };
+		293051239FE28E93C7B489FF = {isa = PBXBuildFile; fileRef = 169074DA626A34331BA13207; };
+		85C74A1F23B1981E368D528F = {isa = PBXBuildFile; fileRef = 11FEFA9B61DAD70C0C1C3A0F; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +36,10 @@
 		A00000000000000000000010 /* Sources/Native/QemuBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Sources/Native/QemuBridge.h; sourceTree = "<group>"; };
 		A00000000000000000000011 /* Sources/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000012 /* HarnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4A2B7B99C24450E6937A8BF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/PreviewEndpoint.swift; sourceTree = "<group>"; };
+		302FF21071EC930D3870C611 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/QemuControl.swift; sourceTree = "<group>"; };
+		169074DA626A34331BA13207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/PreviewController.swift; sourceTree = "<group>"; };
+		11FEFA9B61DAD70C0C1C3A0F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/TerminalKeyRow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +56,10 @@
 		A00000000000000000000003 = {
 			isa = PBXGroup;
 			children = (
+				11FEFA9B61DAD70C0C1C3A0F,
+				169074DA626A34331BA13207,
+				302FF21071EC930D3870C611,
+				C4A2B7B99C24450E6937A8BF,
 				F8059F7783054616D24DE609,
 				BD1EA9E8D0BEAF775E81DECA,
 				06ED3A08F613F5760C1EFE62,
@@ -140,6 +152,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				85C74A1F23B1981E368D528F,
+				293051239FE28E93C7B489FF,
+				AF410786348A8E5A207E18AF,
+				841A7BDE0B1431B6BBB5DB5D,
 				EEBB24B25330A5F2F4CD2CFA,
 				19EA7099BE979C9208B576D4,
 				56DCF8959EFCD0E6BF947EF0,

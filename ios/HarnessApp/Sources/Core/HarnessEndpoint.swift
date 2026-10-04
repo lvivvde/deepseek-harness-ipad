@@ -5,6 +5,8 @@ enum RuntimePorts {
     static let serial: UInt16 = 28081
     static let control = 28082
     static let transfer = 28083
+    static let previewCatalog = 28084
+    static let previewFallback = [3000, 4173, 5173, 8080]
 }
 
 enum HarnessEndpoint {

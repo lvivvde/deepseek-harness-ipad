@@ -2,8 +2,14 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 
 @implementation HarnessQemuBridge
++ (NSArray<NSNumber *> *)createSocketPair {
+    int descriptors[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) != 0) return nil;
+    return @[@(descriptors[0]), @(descriptors[1])];
+}
 + (int)runLibrary:(NSString *)path arguments:(NSArray<NSString *> *)arguments {
     static BOOL invoked = NO;
     @synchronized(self) {

@@ -4,14 +4,16 @@ import SwiftUI
 struct HarnessApp: App {
     @StateObject private var runtime = RuntimeController(driver: EmbeddedRuntime())
     @StateObject private var transfer = ProjectTransferModel()
+    @StateObject private var preview = PreviewController()
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
 
     var body: some Scene {
         WindowGroup {
-            HarnessRoot(runtime: runtime, transfer: transfer)
+            HarnessRoot(runtime: runtime, transfer: transfer, preview: preview)
                 .projectTransfer(transfer)
                 .task { await runtime.ensureRunning() }
+                .task { await preview.monitor() }
                 .onChange(of: scenePhase) { phase in
                     if phase == .background {
                         wasBackgrounded = true
@@ -52,17 +54,30 @@ private final class BackgroundLease {
 private struct HarnessRoot: View {
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var transfer: ProjectTransferModel
+    @ObservedObject var preview: PreviewController
     @State private var painted = false
     @State private var showingDiagnostics = false
 
     var body: some View {
+        GeometryReader { geometry in
         ZStack {
             Color(uiColor: .systemBackground).ignoresSafeArea()
             if let destination = runtime.destination {
-                OfficialWebView(destination: destination, revision: runtime.pageRevision,
-                                onLoading: { painted = false }, onPaint: { painted = true },
-                                onFailure: { runtime.pageFailed() },
-                                onContentTerminated: { Task { await runtime.recoverPage() } })
+                HStack(spacing: 0) {
+                    OfficialWebView(destination: destination, revision: runtime.pageRevision,
+                                    previewRequest: preview.request, onNativePreview: { preview.nativeURL = $0 },
+                                    onLoading: { painted = false }, onPaint: { painted = true },
+                                    onFailure: { runtime.pageFailed() },
+                                    onContentTerminated: { Task { await runtime.recoverPage() } })
+                    if geometry.size.width > geometry.size.height, let url = preview.nativeURL {
+                        Divider()
+                        NativePreviewPanel(url: url) { preview.nativeURL = nil }
+                            .frame(width: geometry.size.width * 0.45)
+                    }
+                }
+                if geometry.size.width <= geometry.size.height, let url = preview.nativeURL {
+                    NativePreviewPanel(url: url) { preview.nativeURL = nil }
+                }
             }
             if runtime.phase != .ready || !painted {
                 VStack(spacing: 20) {
@@ -83,8 +98,12 @@ private struct HarnessRoot: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
             } else {
-                HarnessToolsButton(transfer: transfer) { showingDiagnostics = true }
+                HarnessToolsButton(transfer: transfer, preview: preview) { showingDiagnostics = true }
             }
+        }
+        .alert(item: $preview.prompt) { server in
+            Alert(title: Text("检测到开发服务器"), message: Text("端口 \(server.port)"),
+                  primaryButton: .default(Text("在侧栏预览")) { preview.open(server) }, secondaryButton: .cancel(Text("稍后")))
         }
         .sheet(isPresented: $showingDiagnostics) {
             NavigationStack {
@@ -98,6 +117,8 @@ private struct HarnessRoot: View {
                 .toolbar { Button("完成") { showingDiagnostics = false } }
             }
         }
+    }
+
     }
 
     private var stage: String {

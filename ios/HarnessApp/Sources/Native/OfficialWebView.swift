@@ -5,6 +5,8 @@ import WebKit
 struct OfficialWebView: UIViewRepresentable {
     let destination: URL
     let revision: Int
+    let previewRequest: PreviewRequest?
+    let onNativePreview: (URL) -> Void
     let onLoading: () -> Void
     let onPaint: () -> Void
     let onFailure: () -> Void
@@ -18,6 +20,8 @@ struct OfficialWebView: UIViewRepresentable {
         scripts.addUserScript(WKUserScript(source: Self.paintScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         scripts.addUserScript(WKUserScript(source: Self.stopTapScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         scripts.add(context.coordinator, name: "appPaint")
+        scripts.add(context.coordinator, name: "terminalState")
+        scripts.addUserScript(WKUserScript(source: TerminalKeyRow.bridgeScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let container = UIView()
         container.backgroundColor = .systemBackground
         let page = WKWebView(frame: .zero, configuration: configuration)
@@ -32,6 +36,17 @@ struct OfficialWebView: UIViewRepresentable {
             page.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             page.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
+        let keys = TerminalKeyRow(page: page)
+        keys.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(keys)
+        let height = keys.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            keys.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            keys.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keys.bottomAnchor.constraint(equalTo: container.keyboardLayoutGuide.topAnchor), height
+        ])
+        keys.onVisibility = { visible in height.constant = visible ? 44 : 0 }
+        context.coordinator.keys = keys
         context.coordinator.page = page
         context.coordinator.load(destination, revision: revision)
         return container
@@ -40,10 +55,13 @@ struct OfficialWebView: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.owner = self
         context.coordinator.load(destination, revision: revision)
+        context.coordinator.openPreview(previewRequest)
     }
 
     static func dismantleUIView(_ view: UIView, coordinator: Coordinator) {
         coordinator.paintTimeout?.cancel()
+        coordinator.keys?.detach()
+        coordinator.page?.configuration.userContentController.removeScriptMessageHandler(forName: "terminalState")
         coordinator.page?.configuration.userContentController.removeScriptMessageHandler(forName: "appPaint")
         // The App's runtime remains alive. Only page resources belong here.
     }
@@ -51,6 +69,8 @@ struct OfficialWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var owner: OfficialWebView
         weak var page: WKWebView?
+        weak var keys: TerminalKeyRow?
+        private var lastPreview: UUID?
         var paintTimeout: Task<Void, Never>?
         private var lastDestination: URL?
         private var lastRevision = -1
@@ -75,8 +95,23 @@ struct OfficialWebView: UIViewRepresentable {
             }
         }
 
+        func openPreview(_ request: PreviewRequest?) {
+            guard let request, request.id != lastPreview, let page else { return }
+            lastPreview = request.id
+            guard let data = try? JSONSerialization.data(withJSONObject: [request.url.absoluteString]),
+                  let argument = String(data: data, encoding: .utf8) else { return }
+            page.evaluateJavaScript("window.harnessOpenSidebarPreview?.(\(argument)[0]) ?? false") { [weak self] result, error in
+                guard let self else { return }
+                if error != nil || result as? Bool != true { owner.onNativePreview(request.url) }
+            }
+        }
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.webView === page, message.frameInfo.isMainFrame,
+            guard message.webView === page, message.frameInfo.isMainFrame else { return }
+            if message.name == "terminalState", let state = message.body as? [String: Bool] {
+                keys?.update(state); return
+            }
+            guard message.name == "appPaint",
                   message.body as? String == "ready", !painted else { return }
             painted = true
             paintTimeout?.cancel()

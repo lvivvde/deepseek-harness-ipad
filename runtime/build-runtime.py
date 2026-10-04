@@ -145,6 +145,35 @@ def ipad_profile_patch():
     return ('- id: workspace-controller\n  config:\n    documentsDirectory: /root/Documents\n'
             '- insert:\n  - id: ipad-project-lifecycle\n    name: /opt/harness/project-lifecycle.mjs\n')
 
+def patch_client_bridges(harness):
+    """Version-pinned, small adapters to the official terminal and sidebar services."""
+    def replace(relative, before, after):
+        file = harness / 'node_modules/@deepseek-ai' / relative
+        text = file.read_text()
+        if text.count(before) != 1:
+            raise ValueError('Official client bridge seam changed: ' + relative)
+        file.write_text(text.replace(before, after, 1))
+    replace('dsh-client-ui-sidebar-terminal/lib/client.terminal.js',
+            'xterm.open(node);',
+            'xterm.open(node);\n                xterm.element.harnessTerminalInput = data => { if (current.current.state.writable) model.write(data); };')
+    replace('dsh-client-ui-sidebar-terminal/lib/client.terminal.js',
+            'xterm.dispose();', 'delete xterm.element.harnessTerminalInput;\n                    xterm.dispose();')
+    replace('dsh-client-ui-sidebar-browser/lib/client.js',
+            'const openTabs = ctx.sidebarRight.openTabs;',
+            """const openTabs = ctx.sidebarRight.openTabs;
+            ctx.effect(() => {
+                const open = value => {
+                    const url = new URL(value);
+                    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port) return false;
+                    const target = ctx.sidebarRight.commandTarget(document.activeElement);
+                    if (!target) return false;
+                    ctx.sidebarRight.openTab('browser', {paneId: target.paneId, params: {url: url.href}});
+                    return true;
+                };
+                window.harnessOpenSidebarPreview = open;
+                return () => { if (window.harnessOpenSidebarPreview === open) delete window.harnessOpenSidebarPreview; };
+            }, 'ipad.sidebar-preview');""")
+
 def build(args, lock):
     if not args.output or not args.harness or not args.mke2fs or not args.unsquashfs:
         raise ValueError('Build requires --output, --harness, --mke2fs and --unsquashfs')
@@ -199,8 +228,20 @@ def build(args, lock):
         write_tree(entries, root)
         harness = root / 'opt/harness'
         shutil.copytree(args.harness, harness, symlinks=True)
-        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'AGENTS.md'):
+        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'preview.cjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
+        patch_client_bridges(harness)
+        shutil.copytree(HERE / 'guest/examples', harness / 'examples')
+        dsh = root / 'usr/local/bin/dsh'
+        dsh.write_text('#!/bin/sh\nexec /opt/node/bin/node /opt/harness/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"\n')
+        dsh.chmod(0o755)
+        pnpm = root / 'usr/local/bin/pnpm'
+        pnpm.write_text('#!/bin/sh\nexec /opt/node/bin/node /opt/harness/node_modules/pnpm/bin/pnpm.mjs "$@"\n')
+        pnpm.chmod(0o755)
+        for command in ('python', 'python3', 'pip', 'pip3', 'gcc', 'g++', 'cc', 'c++', 'make', 'cmake', 'apt', 'apt-get'):
+            stub = root / 'usr/local/bin' / command
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "首版暂不支持 Python、原生编译或系统包安装；请使用纯 JS 或 linux-arm64 glibc 预编译依赖。" >&2\nexit 126\n')
+            stub.chmod(0o755)
         (harness / 'ipad.patch.yml').write_text(ipad_profile_patch())
         seed = Path(scratch) / 'user'
         seed.mkdir(mode=0o700)

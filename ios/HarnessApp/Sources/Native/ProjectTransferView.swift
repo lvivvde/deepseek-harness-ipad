@@ -336,6 +336,7 @@ extension View {
 /// Touch entry for app-level tools; a small edge tab the user can drag along either side.
 struct HarnessToolsButton: View {
     @ObservedObject var transfer: ProjectTransferModel
+    @ObservedObject var preview: PreviewController
     let showDiagnostics: () -> Void
     @AppStorage("toolsButton.y") private var storedY = 0.5
     @AppStorage("toolsButton.leading") private var leading = false
@@ -351,6 +352,11 @@ struct HarnessToolsButton: View {
                 Button { transfer.manager = .projects } label: { Label("项目管理…", systemImage: "folder") }
                 Button { transfer.importing = true } label: { Label("导入项目…", systemImage: "square.and.arrow.down") }
                 Button { transfer.manager = .trash } label: { Label("回收站…", systemImage: "trash") }
+                Menu("端口预览") {
+                    ForEach(preview.servers) { server in
+                        Button("在侧栏预览 · \(server.port)") { preview.open(server) }
+                    }
+                }
                 Divider()
                 Button { showDiagnostics() } label: { Label("诊断", systemImage: "stethoscope") }
             } label: {

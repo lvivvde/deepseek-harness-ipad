@@ -27,6 +27,20 @@ final class RuntimeConfigurationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: userDisk), Data("existing-project-and-credentials".utf8))
     }
 
+    func testConnectedControlChannelsAndLoopbackOnlyPreviewForwards() {
+        let file = URL(fileURLWithPath: "/tmp/test.raw")
+        let runtime = RuntimeConfiguration(kernel: file, initramfs: file, systemDisk: file, userDisk: file, memoryMiB: 2048)
+        let arguments = runtime.qemuArguments(firmwareDirectory: file, transferToken: "test", serialFD: 10, controlFD: 11)
+        XCTAssertTrue(arguments.contains("socket,id=serial0,fd=10"))
+        XCTAssertTrue(arguments.contains("socket,id=control0,fd=11"))
+        let network = arguments[arguments.firstIndex(of: "-netdev")! + 1]
+        XCTAssertTrue(network.contains("hostfwd=tcp:127.0.0.1:28080-:2999"))
+        XCTAssertTrue(network.contains("hostfwd=tcp:127.0.0.1:5173-:40002"))
+        XCTAssertFalse(network.contains("hostfwd=tcp:0.0.0.0"))
+        XCTAssertFalse(PreviewServer.accepts(port: 28080))
+        XCTAssertTrue(PreviewServer.accepts(port: 5173))
+    }
+
     func testUserDiskGrowsSparselyAndIsExcludedFromBackup() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

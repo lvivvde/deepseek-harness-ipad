@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		3BFF727A73C8434598343AFA = {isa = PBXBuildFile; fileRef = 455805EC1539E66069F4B9A2; };
 		736D6725982BF105198F5400 = {isa = PBXBuildFile; fileRef = 01C54B9D96F100DB8D575FA5; };
+		B10000000000000000000002 = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
+		B10000000000000000000004 = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
 		56DCF8959EFCD0E6BF947EF0 = {isa = PBXBuildFile; fileRef = 06ED3A08F613F5760C1EFE62; };
 		19EA7099BE979C9208B576D4 = {isa = PBXBuildFile; fileRef = BD1EA9E8D0BEAF775E81DECA; };
 		EEBB24B25330A5F2F4CD2CFA = {isa = PBXBuildFile; fileRef = F8059F7783054616D24DE609; };
@@ -19,6 +21,8 @@
 /* Begin PBXFileReference section */
 		455805EC1539E66069F4B9A2 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/OfficialWebView.swift; sourceTree = "<group>"; };
 		01C54B9D96F100DB8D575FA5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/EmbeddedRuntime.swift; sourceTree = "<group>"; };
+		B10000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/ProjectTransfer.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/ProjectTransferView.swift; sourceTree = "<group>"; };
 		06ED3A08F613F5760C1EFE62 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/HarnessEndpoint.swift; sourceTree = "<group>"; };
 		BD1EA9E8D0BEAF775E81DECA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/RuntimeConfiguration.swift; sourceTree = "<group>"; };
 		F8059F7783054616D24DE609 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/RuntimeController.swift; sourceTree = "<group>"; };
@@ -47,6 +51,8 @@
 				F8059F7783054616D24DE609,
 				BD1EA9E8D0BEAF775E81DECA,
 				06ED3A08F613F5760C1EFE62,
+				B10000000000000000000003,
+				B10000000000000000000001,
 				01C54B9D96F100DB8D575FA5,
 				455805EC1539E66069F4B9A2,
 				A00000000000000000000008 /* Sources/Native/HarnessApp.swift */,
@@ -137,6 +143,8 @@
 				EEBB24B25330A5F2F4CD2CFA,
 				19EA7099BE979C9208B576D4,
 				56DCF8959EFCD0E6BF947EF0,
+				B10000000000000000000004,
+				B10000000000000000000002,
 				736D6725982BF105198F5400,
 				3BFF727A73C8434598343AFA,
 				A00000000000000000000019 /* Sources/Native/HarnessApp.swift in Sources */,

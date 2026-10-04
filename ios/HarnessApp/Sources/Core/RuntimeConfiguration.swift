@@ -76,7 +76,7 @@ struct RuntimeConfiguration: Sendable {
             (attributes?[.size] as? NSNumber)?.uint64Value ?? 0 > 0
     }
 
-    func qemuArguments(firmwareDirectory: URL) -> [String] {
+    func qemuArguments(firmwareDirectory: URL, transferToken: String = ProjectTransfer.sessionToken) -> [String] {
         // QEMU -drive parses commas, including commas in containing directory names.
         func drivePath(_ url: URL) -> String { url.path.replacingOccurrences(of: ",", with: ",,") }
         return ["qemu-aarch64-softmmu", "-L", firmwareDirectory.path,
@@ -84,9 +84,9 @@ struct RuntimeConfiguration: Sendable {
                 "-accel", "tcg", "-nodefaults", "-display", "none", "-monitor", "none",
                 "-chardev", "socket,id=serial0,host=127.0.0.1,port=\(RuntimePorts.serial),server=on,wait=off",
                 "-serial", "chardev:serial0", "-qmp", "tcp:127.0.0.1:\(RuntimePorts.control),server=on,wait=off",
-                "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(RuntimePorts.page)-:3000",
+                "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(RuntimePorts.page)-:3000,hostfwd=tcp:127.0.0.1:\(RuntimePorts.transfer)-:3002",
                 "-device", "virtio-net-pci,netdev=net0", "-kernel", kernel.path,
-                "-initrd", initramfs.path, "-append", "console=ttyAMA0 rdinit=/init",
+                "-initrd", initramfs.path, "-append", "console=ttyAMA0 rdinit=/init harness.transfer=\(transferToken)",
                 "-drive", "file=\(drivePath(systemDisk)),if=none,id=system,format=raw,readonly=on",
                 "-device", "virtio-blk-pci,drive=system",
                 "-drive", "file=\(drivePath(userDisk)),if=none,id=user,format=raw",

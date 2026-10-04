@@ -3,12 +3,14 @@ import SwiftUI
 @main
 struct HarnessApp: App {
     @StateObject private var runtime = RuntimeController(driver: EmbeddedRuntime())
+    @StateObject private var transfer = ProjectTransferModel()
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
 
     var body: some Scene {
         WindowGroup {
             HarnessRoot(runtime: runtime)
+                .projectTransfer(transfer)
                 .task { await runtime.ensureRunning() }
                 .onChange(of: scenePhase) { phase in
                     if phase == .background {
@@ -20,6 +22,7 @@ struct HarnessApp: App {
                     }
                 }
         }
+        .commands { ProjectMenuCommands(transfer: transfer, ready: runtime.phase == .ready) }
     }
 
     private func flushBeforeSuspension() {

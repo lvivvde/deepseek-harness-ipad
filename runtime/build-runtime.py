@@ -195,7 +195,7 @@ def build(args, lock):
         write_tree(entries, root)
         harness = root / 'opt/harness'
         shutil.copytree(args.harness, harness, symlinks=True)
-        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'AGENTS.md'):
+        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
         (harness / 'ipad.patch.yml').write_text('- id: workspace-controller\n  config:\n    documentsDirectory: /root/Documents\n')
         seed = Path(scratch) / 'user'

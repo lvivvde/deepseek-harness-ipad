@@ -78,7 +78,6 @@ struct ProjectManagerSheet: View {
     @State private var busy: String?
     @State private var exported: ExportedFiles?
     @State private var failure: String?
-    @State private var chosen: String?
     @State private var confirmingTrash: String?
 
     struct ExportedFiles: Identifiable {
@@ -94,12 +93,19 @@ struct ProjectManagerSheet: View {
                     if let projects {
                         if projects.isEmpty { Text("/root/projects 下还没有项目").foregroundStyle(.secondary) }
                         ForEach(projects, id: \.self) { name in
-                            Button { chosen = name } label: {
+                            // A menu anchors its popover to the tapped row on iPad.
+                            Menu {
+                                Button { export(name) } label: { Label("导出…", systemImage: "square.and.arrow.up") }
+                                Button(role: .destructive) { confirmingTrash = name } label: {
+                                    Label("移到回收站", systemImage: "trash")
+                                }
+                            } label: {
                                 HStack {
-                                    Label(name, systemImage: "folder")
+                                    Label(name, systemImage: "folder").foregroundStyle(Color.primary)
                                     Spacer()
                                     if busy == name { ProgressView() }
                                 }
+                                .contentShape(Rectangle())
                             }
                             .disabled(busy != nil)
                             .swipeActions {
@@ -129,11 +135,6 @@ struct ProjectManagerSheet: View {
             .task { await load() }
             .onAppear { if start == .trash, path.isEmpty { path = [.trash] } }
             .onChange(of: path) { if $0.isEmpty { Task { await load() } } }
-            .confirmationDialog(chosen ?? "", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } }),
-                                titleVisibility: .visible, presenting: chosen) { name in
-                Button("导出…") { export(name) }
-                Button("移到回收站", role: .destructive) { confirmingTrash = name }
-            }
             .alert("移到回收站？", isPresented: Binding(get: { confirmingTrash != nil }, set: { if !$0 { confirmingTrash = nil } }),
                    presenting: confirmingTrash) { name in
                 Button("移到回收站", role: .destructive) { moveToTrash(name) }
@@ -182,7 +183,6 @@ private struct TrashView: View {
     @State private var items: [TrashItem]?
     @State private var failure: String?
     @State private var restored: String?
-    @State private var chosen: TrashItem?
     @State private var purging: TrashItem?
     @State private var confirmingEmpty = false
 
@@ -193,7 +193,12 @@ private struct TrashView: View {
             if let items {
                 if items.isEmpty { Text("回收站是空的").foregroundStyle(.secondary) }
                 ForEach(items) { item in
-                    Button { chosen = item } label: { row(item) }
+                    Menu {
+                        Button { restore(item) } label: { Label("恢复", systemImage: "arrow.uturn.backward") }
+                        Button(role: .destructive) { purging = item } label: { Label("彻底删除", systemImage: "trash") }
+                    } label: {
+                        row(item).contentShape(Rectangle())
+                    }
                         .swipeActions(edge: .leading) {
                             Button("恢复") { restore(item) }.tint(.blue)
                         }
@@ -212,11 +217,6 @@ private struct TrashView: View {
         }
         .refreshable { await load() }
         .task { await load() }
-        .confirmationDialog(chosen?.name ?? "", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } }),
-                            titleVisibility: .visible, presenting: chosen) { item in
-            Button("恢复") { restore(item) }
-            Button("彻底删除", role: .destructive) { purging = item }
-        }
         .alert("彻底删除？", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
                presenting: purging) { item in
             Button("彻底删除", role: .destructive) { purge(item) }
@@ -241,6 +241,7 @@ private struct TrashView: View {
             }
             .font(.caption).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load() async {

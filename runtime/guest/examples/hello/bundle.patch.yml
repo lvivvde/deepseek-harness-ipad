@@ -1,0 +1,5 @@
+- id: agent
+  children:
+    - insert:
+        - id: ipad-hello
+          name: ipad-hello-plugin

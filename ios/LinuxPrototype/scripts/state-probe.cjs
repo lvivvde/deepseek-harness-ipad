@@ -1,0 +1,47 @@
+// Throwaway integration probe: run against the restored tiny Node workspace.
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const {execFileSync} = require('node:child_process');
+const {DatabaseSync} = require('node:sqlite');
+const start = performance.now();
+const workspace = process.argv[2];
+const expected = Number(process.argv[3]);
+assert(workspace && path.isAbsolute(workspace));
+assert(Number.isInteger(expected) && expected >= 0);
+const rootMount = fs.readFileSync('/proc/mounts', 'utf8').split('\n').map(line => line.split(' ')).find(row => row[1] === '/root');
+assert.equal(rootMount?.[2], 'ext4');
+const {add} = require(path.join(workspace, 'hello.cjs'));
+assert.equal(add(2, 3), 5);
+assert.equal(add(-2, 5), 3);
+const testStart = performance.now();
+const output = execFileSync(process.execPath, ['test.cjs'], {cwd: workspace, timeout: 60000}).toString().trim();
+assert.equal(output, 'ipad-local-test-ok');
+const testMs = performance.now() - testStart;
+const directory = '/root/.persistence-proof';
+fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+const counter = path.join(directory, 'count.txt');
+const before = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+assert.equal(before, expected);
+const file = path.join(directory, 'mode.txt');
+const link = path.join(directory, 'symlink');
+const hardlink = path.join(directory, 'hardlink');
+if (expected === 0) {
+    fs.writeFileSync(file, 'ext4-mode-ok\n', {mode: 0o640});
+    fs.chmodSync(file, 0o640);
+    fs.symlinkSync('mode.txt', link);
+    fs.linkSync(file, hardlink);
+}
+assert.equal(fs.readFileSync(file, 'utf8'), 'ext4-mode-ok\n');
+assert.equal(fs.statSync(file).mode & 0o777, 0o640);
+assert.equal(fs.readlinkSync(link), 'mode.txt');
+assert.equal(fs.statSync(file).ino, fs.statSync(hardlink).ino);
+const db = new DatabaseSync(path.join(directory, 'probe.sqlite'));
+db.exec('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS proof(id INTEGER PRIMARY KEY, value INTEGER NOT NULL)');
+const previous = db.prepare('SELECT value FROM proof WHERE id=1').get();
+assert.equal(previous?.value ?? 0, expected);
+db.prepare('INSERT INTO proof(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(before + 1);
+db.close();
+fs.writeFileSync(counter, String(before + 1), {mode: 0o600});
+execFileSync('/bin/busybox', ['sync'], {timeout: 60000});
+console.log('STATE_PROBE_SUMMARY:' + JSON.stringify({filesystem: 'ext4', before, after: before + 1, testMs, totalMs: performance.now() - start, permission: '0640', symlink: true, hardlink: true, sqlite: true, testOutput: output}));

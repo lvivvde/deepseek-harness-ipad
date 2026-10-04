@@ -1,0 +1,273 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3BFF727A73C8434598343AFA = {isa = PBXBuildFile; fileRef = 455805EC1539E66069F4B9A2; };
+		736D6725982BF105198F5400 = {isa = PBXBuildFile; fileRef = 01C54B9D96F100DB8D575FA5; };
+		B10000000000000000000002 = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
+		B10000000000000000000004 = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
+		56DCF8959EFCD0E6BF947EF0 = {isa = PBXBuildFile; fileRef = 06ED3A08F613F5760C1EFE62; };
+		19EA7099BE979C9208B576D4 = {isa = PBXBuildFile; fileRef = BD1EA9E8D0BEAF775E81DECA; };
+		EEBB24B25330A5F2F4CD2CFA = {isa = PBXBuildFile; fileRef = F8059F7783054616D24DE609; };
+		A00000000000000000000019 /* Sources/Native/HarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000008 /* Sources/Native/HarnessApp.swift */; };
+		A00000000000000000000020 /* Sources/Native/QemuBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000009 /* Sources/Native/QemuBridge.m */; };
+		841A7BDE0B1431B6BBB5DB5D = {isa = PBXBuildFile; fileRef = C4A2B7B99C24450E6937A8BF; };
+		AF410786348A8E5A207E18AF = {isa = PBXBuildFile; fileRef = 302FF21071EC930D3870C611; };
+		293051239FE28E93C7B489FF = {isa = PBXBuildFile; fileRef = 169074DA626A34331BA13207; };
+		85C74A1F23B1981E368D528F = {isa = PBXBuildFile; fileRef = 11FEFA9B61DAD70C0C1C3A0F; };
+		B289E81CB91CB5F3CE4A1FAA = {isa = PBXBuildFile; fileRef = 64B05F7FE7383C28006FC608; };
+		697F4384AC5893EBE0A0161C = {isa = PBXBuildFile; fileRef = 98326FBFF19F279E54F1F707; };
+		C02673774DCF41FA97C997CD = {isa = PBXBuildFile; fileRef = B7AA98D80CCA9B9B6F2CA5CA; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		455805EC1539E66069F4B9A2 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/OfficialWebView.swift; sourceTree = "<group>"; };
+		01C54B9D96F100DB8D575FA5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/EmbeddedRuntime.swift; sourceTree = "<group>"; };
+		B10000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/ProjectTransfer.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/ProjectTransferView.swift; sourceTree = "<group>"; };
+		06ED3A08F613F5760C1EFE62 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/HarnessEndpoint.swift; sourceTree = "<group>"; };
+		BD1EA9E8D0BEAF775E81DECA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/RuntimeConfiguration.swift; sourceTree = "<group>"; };
+		F8059F7783054616D24DE609 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/RuntimeController.swift; sourceTree = "<group>"; };
+		A00000000000000000000021 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		A00000000000000000000008 /* Sources/Native/HarnessApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/HarnessApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000009 /* Sources/Native/QemuBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Sources/Native/QemuBridge.m; sourceTree = "<group>"; };
+		A00000000000000000000010 /* Sources/Native/QemuBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Sources/Native/QemuBridge.h; sourceTree = "<group>"; };
+		A00000000000000000000011 /* Sources/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/Info.plist; sourceTree = "<group>"; };
+		A00000000000000000000012 /* HarnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4A2B7B99C24450E6937A8BF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/PreviewEndpoint.swift; sourceTree = "<group>"; };
+		302FF21071EC930D3870C611 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/QemuControl.swift; sourceTree = "<group>"; };
+		169074DA626A34331BA13207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/PreviewController.swift; sourceTree = "<group>"; };
+		11FEFA9B61DAD70C0C1C3A0F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/TerminalKeyRow.swift; sourceTree = "<group>"; };
+		64B05F7FE7383C28006FC608 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/GuestHealth.swift; sourceTree = "<group>"; };
+		98326FBFF19F279E54F1F707 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/UserDataView.swift; sourceTree = "<group>"; };
+		B7AA98D80CCA9B9B6F2CA5CA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/BackgroundDataWork.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000015 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000003 = {
+			isa = PBXGroup;
+			children = (
+				B7AA98D80CCA9B9B6F2CA5CA,
+				98326FBFF19F279E54F1F707,
+				64B05F7FE7383C28006FC608,
+				11FEFA9B61DAD70C0C1C3A0F,
+				169074DA626A34331BA13207,
+				302FF21071EC930D3870C611,
+				C4A2B7B99C24450E6937A8BF,
+				F8059F7783054616D24DE609,
+				BD1EA9E8D0BEAF775E81DECA,
+				06ED3A08F613F5760C1EFE62,
+				B10000000000000000000003,
+				B10000000000000000000001,
+				01C54B9D96F100DB8D575FA5,
+				455805EC1539E66069F4B9A2,
+				A00000000000000000000008 /* Sources/Native/HarnessApp.swift */,
+				A00000000000000000000009 /* Sources/Native/QemuBridge.m */,
+				A00000000000000000000010 /* Sources/Native/QemuBridge.h */,
+				A00000000000000000000011 /* Sources/Info.plist */,
+				A00000000000000000000021 /* Signing.xcconfig */,
+				A00000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000012 /* HarnessApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000005 /* HarnessApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000013 /* Build configuration list for PBXNativeTarget "HarnessApp" */;
+			buildPhases = (
+				A00000000000000000000014 /* Sources */,
+				A00000000000000000000015 /* Frameworks */,
+				A00000000000000000000016 /* Embed prepared no-JIT runtime */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HarnessApp;
+			productName = HarnessApp;
+			productReference = A00000000000000000000012 /* HarnessApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+			};
+			buildConfigurationList = A00000000000000000000002 /* Build configuration list for PBXProject "HarnessApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000003;
+			productRefGroup = A00000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000005 /* HarnessApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A00000000000000000000016 /* Embed prepared no-JIT runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed prepared no-JIT runtime";
+			alwaysOutOfDate = 1;
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "bash \"$SRCROOT/scripts/embed-runtime.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000014 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C02673774DCF41FA97C997CD,
+				697F4384AC5893EBE0A0161C,
+				B289E81CB91CB5F3CE4A1FAA,
+				85C74A1F23B1981E368D528F,
+				293051239FE28E93C7B489FF,
+				AF410786348A8E5A207E18AF,
+				841A7BDE0B1431B6BBB5DB5D,
+				EEBB24B25330A5F2F4CD2CFA,
+				19EA7099BE979C9208B576D4,
+				56DCF8959EFCD0E6BF947EF0,
+				B10000000000000000000004,
+				B10000000000000000000002,
+				736D6725982BF105198F5400,
+				3BFF727A73C8434598343AFA,
+				A00000000000000000000019 /* Sources/Native/HarnessApp.swift in Sources */,
+				A00000000000000000000020 /* Sources/Native/QemuBridge.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000006 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		A00000000000000000000007 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+			};
+			name = Release;
+		};
+		A00000000000000000000017 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000021 /* Signing.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.lvivvde.harness.ipad;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/Native/QemuBridge.h;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		A00000000000000000000018 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000021 /* Signing.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.lvivvde.harness.ipad;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/Native/QemuBridge.h;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000002 /* Build configuration list for PBXProject "HarnessApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000006 /* Debug */,
+				A00000000000000000000007 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A00000000000000000000013 /* Build configuration list for PBXNativeTarget "HarnessApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000017 /* Debug */,
+				A00000000000000000000018 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

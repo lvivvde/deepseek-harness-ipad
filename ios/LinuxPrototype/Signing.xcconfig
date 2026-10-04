@@ -1,0 +1,2 @@
+// Signing identity stays local. Unsigned builds need no account configuration.
+#include? "Signing.local.xcconfig"

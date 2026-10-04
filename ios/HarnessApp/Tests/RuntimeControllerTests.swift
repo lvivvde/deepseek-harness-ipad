@@ -4,6 +4,59 @@ import XCTest
 
 @MainActor
 final class RuntimeControllerTests: XCTestCase {
+    func testReturningDuringExpiredRecoveryRunsFreshProbe() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        driver.pauseReconnect = true
+        let oldProbe = Task { await runtime.resume() }
+        await withCheckedContinuation { started in
+            driver.onReconnectStarted = { started.resume() }
+        }
+        // The App returns while the probe started before suspension is still pending.
+        await runtime.resume()
+        driver.pauseReconnect = false
+        driver.finishReconnect(failure: .guestControl)
+        await oldProbe.value
+
+        XCTAssertEqual(runtime.phase, .ready, "An expired probe must not consume the new foreground recovery")
+        XCTAssertEqual(driver.reconnects, 2)
+        XCTAssertEqual(runtime.pageRevision, 1)
+        XCTAssertEqual(driver.starts, 1)
+    }
+
+    func testControlTimeoutAllowsRetryWithoutRestartingVM() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        driver.reconnectFailure = .control
+        await runtime.resume()
+
+        guard case .failed(_, requiresRelaunch: false) = runtime.phase else {
+            return XCTFail("A control timeout is not evidence that QEMU exited")
+        }
+        XCTAssertTrue(runtime.diagnostics.contains("reconnectFailed:control"))
+        driver.reconnectFailure = nil
+        await runtime.retry()
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertEqual(driver.starts, 1)
+    }
+
+    func testForegroundRecoveryReopensPageEvenWhenHTTPStayedHealthy() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+
+        await runtime.resume()
+
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertEqual(runtime.pageRevision, 1, "HTTP readiness must not leave the suspended page connection in place")
+        XCTAssertEqual(driver.starts, 1)
+    }
+
     func testGrowingUserDiskRequiresReadyRuntimeAndRejectsOverlap() async throws {
         let driver = RecordingDriver()
         let runtime = RuntimeController(driver: driver)
@@ -133,8 +186,9 @@ private final class RecordingDriver: RuntimeDriving {
     private(set) var reconnects = 0
     var onEvent: (@MainActor (RuntimeEvent) -> Void)?
     var pauseReconnect = false
+    var reconnectFailure: RecoveryFailure?
     var onReconnectStarted: (() -> Void)?
-    private var reconnectResult: CheckedContinuation<URL, Never>?
+    private var reconnectResult: CheckedContinuation<URL, Error>?
     let endpoint = URL(string: "http://127.0.0.1:28080/?token=test-only")!
 
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws {
@@ -147,8 +201,9 @@ private final class RecordingDriver: RuntimeDriving {
 
     func reconnect() async throws -> URL {
         reconnects += 1
+        if let reconnectFailure { throw reconnectFailure }
         if pauseReconnect {
-            return await withCheckedContinuation { result in
+            return try await withCheckedThrowingContinuation { result in
                 reconnectResult = result
                 onReconnectStarted?()
             }
@@ -156,8 +211,9 @@ private final class RecordingDriver: RuntimeDriving {
         return endpoint
     }
 
-    func finishReconnect() {
-        reconnectResult?.resume(returning: endpoint)
+    func finishReconnect(failure: RecoveryFailure? = nil) {
+        if let failure { reconnectResult?.resume(throwing: failure) }
+        else { reconnectResult?.resume(returning: endpoint) }
         reconnectResult = nil
     }
 

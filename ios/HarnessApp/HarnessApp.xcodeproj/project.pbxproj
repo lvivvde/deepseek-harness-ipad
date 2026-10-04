@@ -40,7 +40,7 @@
 		A00000000000000000000011 /* Sources/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000012 /* HarnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C4A2B7B99C24450E6937A8BF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/PreviewEndpoint.swift; sourceTree = "<group>"; };
-		302FF21071EC930D3870C611 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/QemuControl.swift; sourceTree = "<group>"; };
+		302FF21071EC930D3870C611 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/QemuControl.swift; sourceTree = "<group>"; };
 		169074DA626A34331BA13207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/PreviewController.swift; sourceTree = "<group>"; };
 		11FEFA9B61DAD70C0C1C3A0F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/TerminalKeyRow.swift; sourceTree = "<group>"; };
 		64B05F7FE7383C28006FC608 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/GuestHealth.swift; sourceTree = "<group>"; };

@@ -9,6 +9,7 @@ enum RuntimeEvent {
     case harnessStopped
     case dataOperationFailed
     case connectionUnavailable
+    case recovery(RecoveryStage)
     case bootFailed(RuntimeBootFailure)
 
     var diagnosticStage: String {
@@ -20,6 +21,7 @@ enum RuntimeEvent {
         case .harnessStopped: return "harnessStopped"
         case .exited: return "runtimeExited"
         case .connectionUnavailable: return "connectionUnavailable"
+        case .recovery(let stage): return "recovery:" + stage.rawValue
         case .bootFailed(let failure): return "bootFailed:" + failure.rawValue
         }
     }
@@ -97,6 +99,7 @@ final class RuntimeController: ObservableObject {
     private var growingDisk = false
     private var pendingConnectionCheck = false
     private var checkingConnection = false
+    private var pendingForegroundResume = false
     private var reloadRequested = false
     private var terminalFailure = false
     @Published private(set) var diagnostics: [String] = []
@@ -129,7 +132,15 @@ final class RuntimeController: ObservableObject {
 
     func resume() async {
         guard destination != nil else { return }
-        await checkConnection(reload: phase != .ready)
+        // A probe suspended with the App may complete with an expired deadline.
+        // Coalesce a new foreground entry into one fresh attempt afterward.
+        if checkingConnection {
+            pendingForegroundResume = true
+            reloadRequested = true
+            return
+        }
+        // A separate HTTP probe says nothing about the suspended page's WebSocket.
+        await checkConnection(reload: true)
     }
 
     func flush() async { await driver.flush() }
@@ -181,23 +192,30 @@ final class RuntimeController: ObservableObject {
         if growingDisk { pendingConnectionCheck = true; return }
         guard !checkingConnection else { return }
         checkingConnection = true
-        phase = .reconnecting
         defer {
             checkingConnection = false
+            pendingForegroundResume = false
             reloadRequested = false
         }
-        do {
-            let url = try await driver.reconnect()
-            guard !terminalFailure else { return }
-            destination = url
-            if reloadRequested { pageRevision += 1 }
-            phase = .ready
-        } catch {
-            guard !terminalFailure else { return }
-            let message = (error as? RecoveryFailure)?.errorDescription ?? "暂时无法连接 Harness，请重试连接"
-            phase = .failed(message, requiresRelaunch: (error as? RecoveryFailure) == .control)
-            record("reconnectFailed")
-        }
+        repeat {
+            pendingForegroundResume = false
+            phase = .reconnecting
+            do {
+                let url = try await driver.reconnect()
+                guard !terminalFailure else { return }
+                destination = url
+                if reloadRequested { pageRevision += 1 }
+                phase = .ready
+            } catch {
+                guard !terminalFailure else { return }
+                let message = (error as? RecoveryFailure)?.errorDescription ?? "暂时无法连接 Harness，请重试连接"
+                let failure = error as? RecoveryFailure
+                terminalFailure = failure == .exited
+                phase = .failed(message, requiresRelaunch: terminalFailure)
+                record("reconnectFailed:" + (failure?.rawValue ?? "unknown"))
+            }
+            reloadRequested = pendingForegroundResume
+        } while pendingForegroundResume && !terminalFailure
     }
 
     private func receive(_ event: RuntimeEvent) {
@@ -207,7 +225,7 @@ final class RuntimeController: ObservableObject {
         case .booting: phase = .booting
         case .loadingHarness: phase = .loadingHarness
         case .ready(let url): destination = url; phase = .ready
-        case .dataOperationFailed: break
+        case .dataOperationFailed, .recovery: break
         case .harnessStopped:
             phase = .failed("Harness 已停止，可重试连接；备份或恢复进行中时请等待完成", requiresRelaunch: false)
         case .exited:

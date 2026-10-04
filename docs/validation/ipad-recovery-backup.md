@@ -2,6 +2,8 @@
 
 对应 [前后台恢复、用户数据救援与重签交付验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/19)，与 [插件、端口预览和终端辅助键](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) 一起交付测试，避免反复打包与安装。
 
+2026-10-04 后续诊断发现宿主流读取的小包阻塞、前台页面不重载、旧恢复吞掉新前台请求及控制超时禁止重试，已建立先失败后通过的隔离测试并修正；证据与集中真机步骤见 [长后台恢复诊断](ipad-background-recovery.md)。本页此前的编译和 Linux 检查不能证明真实长后台故障已修复。
+
 ## 已实现
 
 - 嵌入 QEMU 的串口与 QMP 使用预先连接的 Unix socketpair，设置 SO_NOSIGPIPE；页面转发可单独修复。回到前台先确认 VM，再通过串口检查 Harness、用户盘可写性、备份占用状态，并完成两阶段宿主时间握手。连接恢复设 10 秒截止；时间校验容差 2 秒，真机耗时仍需验证。

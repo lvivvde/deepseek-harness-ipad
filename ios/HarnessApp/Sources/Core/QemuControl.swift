@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Connected Unix descriptors survive background suspension without TCP accept/reconnect.
 @MainActor
@@ -11,9 +12,15 @@ final class RuntimeLineChannel {
 
     init(descriptor: Int32) {
         handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        handle.readabilityHandler = { [weak self] handle in
-            let data = try? handle.read(upToCount: 8192)
-            Task { @MainActor [weak self] in self?.receive(data ?? Data()) }
+        handle.readabilityHandler = { [weak self] _ in
+            // Foundation's read(upToCount:) can wait to fill the requested count
+            // on a stream. QMP greetings and serial health replies are small;
+            // one POSIX read delivers them without waiting for unrelated output.
+            var bytes = [UInt8](repeating: 0, count: 8192)
+            let count = Darwin.read(descriptor, &bytes, bytes.count)
+            if count < 0, errno == EINTR || errno == EAGAIN { return }
+            let data = count > 0 ? Data(bytes.prefix(count)) : Data()
+            Task { @MainActor [weak self] in self?.receive(data) }
         }
     }
 

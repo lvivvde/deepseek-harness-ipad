@@ -257,9 +257,8 @@ private struct TrashView: View {
     }
 }
 
-/// UIKit owns both the visible label and its anchored menu, keeping row text
-/// outside SwiftUI Menu's label presentation lifecycle.
-private struct ProjectRowMenu: UIViewRepresentable {
+/// Keep the visible row label separate from UIKit's menu presentation source.
+private struct ProjectRowMenu: View {
     let title: String
     var subtitle: String? = nil
     var enabled = true
@@ -272,8 +271,35 @@ private struct ProjectRowMenu: UIViewRepresentable {
         let perform: () -> Void
     }
 
+    var body: some View {
+        ZStack(alignment: .leading) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                VStack(alignment: .leading) {
+                    Text(title).font(.body).lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+            .foregroundStyle(enabled ? Color.primary : Color.secondary)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            ProjectRowMenuButton(title: title, subtitle: subtitle, enabled: enabled, actions: actions)
+        }
+    }
+}
+
+// UIKit hides the menu's source button during presentation. Keep row text in
+// the separate SwiftUI view so presenting a menu cannot hide its label.
+private struct ProjectRowMenuButton: UIViewRepresentable {
+    let title: String
+    let subtitle: String?
+    let enabled: Bool
+    let actions: [ProjectRowMenu.Action]
+
     func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .system)
+        let button = UIButton(type: .custom)
         button.contentHorizontalAlignment = .leading
         button.showsMenuAsPrimaryAction = true
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -281,27 +307,6 @@ private struct ProjectRowMenu: UIViewRepresentable {
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
-        var configuration = UIButton.Configuration.plain()
-        configuration.title = title
-        configuration.subtitle = subtitle
-        configuration.image = UIImage(systemName: "folder")
-        configuration.imagePadding = 8
-        configuration.titleAlignment = .leading
-        configuration.contentInsets = .zero
-        configuration.baseForegroundColor = .label
-        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-            var attributes = attributes
-            attributes.font = UIFont.preferredFont(forTextStyle: .body)
-            attributes.foregroundColor = .label
-            return attributes
-        }
-        configuration.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-            var attributes = attributes
-            attributes.font = UIFont.preferredFont(forTextStyle: .caption1)
-            attributes.foregroundColor = .secondaryLabel
-            return attributes
-        }
-        button.configuration = configuration
         button.isEnabled = enabled
         button.accessibilityLabel = [title, subtitle].compactMap { $0 }.joined(separator: ", ")
         button.menu = UIMenu(children: actions.map { action in

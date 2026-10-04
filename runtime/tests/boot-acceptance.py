@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Linux/QEMU integration on a fresh temporary disk; prints fixed markers only."""
 import argparse
+import base64
 import http.client
 import json
 import os
@@ -19,8 +20,12 @@ import uuid
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('runtime',type=Path)
 parser.add_argument('--scratch',type=Path,default=Path('/var/tmp'))
-parser.add_argument('--recovery-only',action='store_true',help='Fault injection on a fresh disk; no iPad background claim')
+modes=parser.add_mutually_exclusive_group()
+modes.add_argument('--recovery-only',action='store_true',help='Fault injection on a fresh disk; no iPad background claim')
+modes.add_argument('--plugin-model-only',action='store_true',help='Synthetic Messages response with actual guest plugin execution')
+parser.add_argument('--plugin-source',type=Path,help='Copy the current example source into the fresh test disk only')
 args=parser.parse_args()
+if args.plugin_source and not args.plugin_model_only:parser.error('--plugin-source requires --plugin-model-only')
 stage='START'
 token='0123456789abcdef0123456789abcdef'
 headers={'X-Harness-Transfer':token}
@@ -122,6 +127,25 @@ def main():
    stage='CLOCK';result=guest_health();assert result['clock'] and result['running'] and result['writable']
    assert abs(result['epoch']/1000-time.time())<=2
    print('PASS:GUEST_CLOCK_AND_HEALTH',flush=True)
+   if args.plugin_model_only:
+    from mock_messages import MockMessages
+    stage='PLUGIN_MODEL'
+    if args.plugin_source:
+     for name in ['package.json','index.mjs','bundle.patch.yml']:
+      payload=base64.b64encode((args.plugin_source/name).read_bytes()).decode()
+      shell('printf %s '+shlex.quote(payload)+' | base64 -d > /root/projects/ipad-hello-plugin/'+name)
+     print('PASS:CURRENT_EXAMPLE_SOURCE_IN_TEMP_GUEST',flush=True)
+    shell('dsh plugin --profile headless add /root/projects/ipad-hello-plugin >/run/plugin-model-install.log 2>&1 && echo MODEL_''INSTALLED',180)
+    assert b'\nMODEL_INSTALLED' in buffer,'MODEL_PLUGIN_INSTALL_FAILED'
+    with MockMessages() as provider:
+     port=provider.server_address[1]
+     shell("cd /root/projects; timeout -k 3 90 env DEEPSEEK_API_KEY=mock-acceptance-only DEEPSEEK_BASE_URL=http://10.0.2.2:"+str(port)+" dsh --profile headless --json 'Call ipad_hello once and then finish.' </dev/null >/run/plugin-model-call.log 2>&1; code=$?; echo MODEL_EXIT:$code; grep -q MOCK_PLUGIN_OK /run/plugin-model-call.log && echo MODEL_''RESULT",100)
+     exits=re.findall(rb'\nMODEL_EXIT:([0-9]+)',buffer)
+     assert exits and exits[-1]==b'0','MODEL_RUN_FAILED'
+     assert provider.advertised,'PLUGIN_NOT_ADVERTISED_TO_MODEL'
+     assert provider.actual_result and b'\nMODEL_RESULT' in buffer,'PLUGIN_RESULT_NOT_RETURNED_TO_MODEL'
+    print('PASS:SYNTHETIC_MESSAGES_SSE_WITH_ACTUAL_PLUGIN_EXECUTION',flush=True)
+    return
    if args.recovery_only:
     original_auth=latest_auth();original_pid=process.pid
     shell("echo retained >/root/recovery-sentinel")
@@ -285,6 +309,8 @@ def main():
    stage='TRASH';transfer('/projects/backup-probe','DELETE');transfer('/trash','DELETE')
    print('PASS:PROJECT_TRASH_AND_PURGE',flush=True)
   except Exception as error:
+   if isinstance(error,AssertionError) and str(error) in ['MODEL_PLUGIN_INSTALL_FAILED','MODEL_RUN_FAILED','PLUGIN_NOT_ADVERTISED_TO_MODEL','PLUGIN_RESULT_NOT_RETURNED_TO_MODEL']:
+    print('DIAGNOSTIC:'+str(error),flush=True)
    if isinstance(error,AssertionError) and str(error) in ['AUTH_FAILED','PAGE_NOT_READY','TOOLS_INVENTORY_MISSING','TOOLS_EXECUTION_FAILED','USER_PACKAGE_PREFIX_FAILED','NANO_PTY_FAILED','POSIX_TOOLS_FAILED']:
     print('DIAGNOSTIC:'+str(error),flush=True)
     for tool in re.findall(rb'\nTOOL_FAILED:([a-z]+)\r?\n',buffer):print('DIAGNOSTIC:TOOL_FAILED:'+tool.decode(),flush=True)

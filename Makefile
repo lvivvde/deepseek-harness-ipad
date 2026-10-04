@@ -13,6 +13,7 @@ check:
 	@bash -n scripts/doctor.sh
 	@bash -n ios/HarnessApp/scripts/embed-runtime.sh
 	@python3 -c "import ast; from pathlib import Path; ast.parse(Path('ios/HarnessApp/scripts/validate-runtime.py').read_text())"
+	@python3 -c "import ast; from pathlib import Path; ast.parse(Path('ios/HarnessApp/scripts/test-native-menu.py').read_text())"
 	@python3 -c "import ast; from pathlib import Path; [ast.parse(p.read_text()) for p in Path('runtime').glob('*.py')]"
 	@bash -n runtime/guest/init runtime/guest/harness-init runtime/guest/default.script
 	@git diff --check

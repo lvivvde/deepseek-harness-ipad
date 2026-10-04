@@ -36,6 +36,10 @@ Git 预置 `/etc/gitconfig`：credential store 写入 `/root/.git-credentials`�
 
 单项目导出/导入由 guest `transfer.cjs`（npm 自带 node-tar）提供：仅监听 guest 网卡 3002，App 经 `127.0.0.1:28083` 转发，每个 App 进程随机 token 通过内核参数 `harness.transfer=` 传入，并以 `X-Harness-Transfer` 头校验。导出跳过 `node_modules` 与 `.cache`；导入只接受单个顶层目录，解压到临时目录后改名，重名追加 `-2`、`-3`，从不覆盖。项目名可含中文、空格与符号，只排除隐藏名、斜杠和控制字符。删除先移入同盘 `/root/.trash/<id>/`（含 `meta.json` 与原目录），彻底删除先改名为 `.purging-<id>` 再后台删除，服务启动时清理残留。
 
+项目删除通过 `project-lifecycle.mjs` host 插件的 `/run/harness-workspaces.sock`（0600）协调官方 `workspaceRegistry`：先停止并持久归档项目会话，再删除工作区登记，最后允许传输服务移动文件。只调用官方 API，不从另一进程改写官方存储或上游包。旧版回收站清空时用删除时间筛选旧工作区和会话；即使重启后目录已不存在，也通过官方持久会话头找回应归档的会话。同名新工作区保留。插件不可用则返回 `WORKSPACE_UNAVAILABLE`，不移动项目文件。
+
+`make test-runtime` 包含真实官方注册表、JSON 持久化和传输 HTTP 接口的项目删除回归。需要先按上文准备固定 Harness 依赖，并设置 `HARNESS_TEST_MODULES=/path/to/harness/node_modules`（本机默认 `/private/tmp/ipad-runtime-harness/node_modules`）；缺少依赖时这些集成测试明确跳过。测试使用自己的临时目录、socket 与测试令牌，不读取设备或用户配置。
+
 输出 `Image`、`initramfs.gz`、`system.raw`、`user-seed.raw`、`runtime.json` 与 `build-receipt.json`。App bundle 只嵌入前五项；收据作为构建资料单独交付，包含输入清单与最终资源 SHA256。App、运行时版本和协议在构建时检查一致。
 
 小 initramfs 只保留静态 BusyBox、启动脚本和匹配内核的必要模块。系统盘以 `ro,noload` 挂载后 switch_root；`/tmp`、`/run`、`/var` 为临时文件系统，项目、会话、配置和 Node 编译缓存都在持久化 `/root`。

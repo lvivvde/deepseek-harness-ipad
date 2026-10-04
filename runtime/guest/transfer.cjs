@@ -4,7 +4,10 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {pipeline} = require('node:stream/promises');
-const tar = require('/opt/node/lib/node_modules/npm/node_modules/tar');
+// Use npm's bundled tar alongside this Node installation (also works in host tests).
+const {createRequire} = require('node:module');
+const npmRoot = process.env.HARNESS_NPM_ROOT || path.resolve(process.execPath, '../../lib/node_modules/npm');
+const tar = createRequire(path.join(npmRoot, 'package.json'))('tar');
 
 const root = process.env.HARNESS_PROJECTS || '/root/projects';
 // Same filesystem as the projects, so trashing and restoring are single renames.
@@ -14,6 +17,28 @@ const skipped = new Set(['node_modules', '.cache']);
 const token = (fs.readFileSync(process.env.HARNESS_CMDLINE || '/proc/cmdline', 'utf8').match(/(?:^|\s)harness\.transfer=([0-9a-f]{32,})(?:\s|$)/) || [])[1];
 // Any single visible path component: Chinese, spaces and symbols are fine; hidden and staging entries are not.
 const validName = name => !name.startsWith('.') && !/[\/\x00-\x1f]/.test(name) && Buffer.byteLength(name) <= 200;
+let mutationTail = Promise.resolve();
+function mutate(operation) {
+  const result = mutationTail.then(operation);
+  mutationTail = result.catch(() => {});
+  return result;
+}
+
+// Only the dsh owner may mutate the official registry. Refuse the filesystem
+// deletion if it cannot durably archive sessions and acknowledge removal.
+function retireProject(name, before) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({socketPath: process.env.HARNESS_WORKSPACE_SOCKET || '/run/harness-workspaces.sock',
+      path: '/retire', method: 'POST', headers: {'content-type': 'application/json'}}, response => {
+      response.resume();
+      response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error('WORKSPACE_UNAVAILABLE')));
+      response.on('error', () => reject(new Error('WORKSPACE_UNAVAILABLE')));
+    });
+    request.setTimeout(15000, () => request.destroy());
+    request.on('error', () => reject(new Error('WORKSPACE_UNAVAILABLE')));
+    request.end(JSON.stringify({name, before}));
+  });
+}
 
 function authorized(request) {
   const given = Buffer.from(String(request.headers['x-harness-transfer'] || ''));
@@ -74,9 +99,10 @@ async function directoryBytes(directory) {
   return total;
 }
 
-function trashProject(name, response) {
+async function trashProject(name, response) {
   const source = projectPath(name);
   if (!source) return send(response, 404, {error: 'PROJECT_NOT_FOUND'});
+  await retireProject(name);
   const id = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const entry = path.join(trash, id);
   fs.mkdirSync(entry, {recursive: true});
@@ -119,7 +145,14 @@ function restoreItem(id, response) {
 
 // Purging renames first so the item leaves the list at once; removal continues in the background
 // and any leftover `.purging-*` is finished on the next start.
-function purge(ids, response) {
+async function purge(ids, response) {
+  // Retire old registrations left by earlier app versions before purging.
+  // The timestamp protects a genuinely new workspace reusing the same name.
+  for (const id of ids) {
+    const meta = JSON.parse(fs.readFileSync(path.join(trash, id, 'meta.json'), 'utf8'));
+    if (!validName(meta.name) || !Number.isFinite(meta.deletedAt)) throw new Error('TRASH_INVALID');
+    await retireProject(meta.name, meta.deletedAt);
+  }
   for (const id of ids) {
     const target = path.join(trash, `.purging-${id}`);
     fs.renameSync(path.join(trash, id), target);
@@ -151,16 +184,17 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/projects') return send(response, 200, {projects: projects()});
     if (request.method === 'GET' && exportMatch) return await exportProject(decodeURIComponent(exportMatch[1]), response);
     if (request.method === 'POST' && url.pathname === '/projects/import') return await importProject(request, response);
-    if (request.method === 'DELETE' && projectMatch) return trashProject(decodeURIComponent(projectMatch[1]), response);
+    if (request.method === 'DELETE' && projectMatch) return await mutate(() => trashProject(decodeURIComponent(projectMatch[1]), response));
     if (request.method === 'GET' && url.pathname === '/trash') return send(response, 200, {items: trashItems()});
-    if (request.method === 'DELETE' && url.pathname === '/trash') return purge(trashItems().map(item => item.id), response);
-    if (request.method === 'POST' && trashMatch?.[2]) return restoreItem(trashMatch[1], response);
+    if (request.method === 'DELETE' && url.pathname === '/trash') return await mutate(() => purge(trashItems().map(item => item.id), response));
+    if (request.method === 'POST' && trashMatch?.[2]) return await mutate(() => restoreItem(trashMatch[1], response));
     if (request.method === 'DELETE' && trashMatch && !trashMatch[2]) {
-      return trashEntry(trashMatch[1]) ? purge([trashMatch[1]], response) : send(response, 404, {error: 'TRASH_NOT_FOUND'});
+      return await mutate(() => trashEntry(trashMatch[1]) ? purge([trashMatch[1]], response) : send(response, 404, {error: 'TRASH_NOT_FOUND'}));
     }
     send(response, 404, {error: 'NOT_FOUND'});
-  } catch {
-    send(response, 500, {error: 'TRANSFER_FAILED'});
+  } catch (error) {
+    const unavailable = error.message === 'WORKSPACE_UNAVAILABLE';
+    send(response, unavailable ? 503 : 500, {error: unavailable ? 'WORKSPACE_UNAVAILABLE' : 'TRANSFER_FAILED'});
   }
 });
 

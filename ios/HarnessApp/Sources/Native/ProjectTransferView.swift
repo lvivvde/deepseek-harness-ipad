@@ -93,21 +93,15 @@ struct ProjectManagerSheet: View {
                     if let projects {
                         if projects.isEmpty { Text("/root/projects 下还没有项目").foregroundStyle(.secondary) }
                         ForEach(projects, id: \.self) { name in
-                            // A menu anchors its popover to the tapped row on iPad.
-                            Menu {
-                                Button { export(name) } label: { Label("导出…", systemImage: "square.and.arrow.up") }
-                                Button(role: .destructive) { confirmingTrash = name } label: {
-                                    Label("移到回收站", systemImage: "trash")
-                                }
-                            } label: {
-                                HStack {
-                                    Label(name, systemImage: "folder").foregroundStyle(Color.primary)
-                                    Spacer()
-                                    if busy == name { ProgressView() }
-                                }
-                                .contentShape(Rectangle())
+                            HStack {
+                                ProjectRowMenu(title: name, enabled: busy == nil, actions: [
+                                    .init(title: "导出…", image: "square.and.arrow.up", perform: { export(name) }),
+                                    .init(title: "移到回收站", image: "trash", destructive: true,
+                                          perform: { confirmingTrash = name })
+                                ])
+                                .frame(height: 44)
+                                if busy == name { ProgressView() }
                             }
-                            .disabled(busy != nil)
                             .swipeActions {
                                 Button("删除", role: .destructive) { confirmingTrash = name }
                             }
@@ -140,7 +134,7 @@ struct ProjectManagerSheet: View {
                 Button("移到回收站", role: .destructive) { moveToTrash(name) }
                 Button("取消", role: .cancel) {}
             } message: { name in
-                Text("“\(name)”可在回收站恢复。如果它已登记为工作区，请同时在左侧工作区列表中移除。")
+                Text("“\(name)”可在回收站恢复。会同时从左侧移除工作区，停止并归档这个项目的会话，防止旧会话重新创建目录。")
             }
             .sheet(item: $exported) { files in
                 DocumentExporter(urls: files.urls)
@@ -193,12 +187,11 @@ private struct TrashView: View {
             if let items {
                 if items.isEmpty { Text("回收站是空的").foregroundStyle(.secondary) }
                 ForEach(items) { item in
-                    Menu {
-                        Button { restore(item) } label: { Label("恢复", systemImage: "arrow.uturn.backward") }
-                        Button(role: .destructive) { purging = item } label: { Label("彻底删除", systemImage: "trash") }
-                    } label: {
-                        row(item).contentShape(Rectangle())
-                    }
+                    ProjectRowMenu(title: item.name, subtitle: subtitle(item), actions: [
+                        .init(title: "恢复", image: "arrow.uturn.backward", perform: { restore(item) }),
+                        .init(title: "彻底删除", image: "trash", destructive: true, perform: { purging = item })
+                    ])
+                        .frame(height: 62)
                         .swipeActions(edge: .leading) {
                             Button("恢复") { restore(item) }.tint(.blue)
                         }
@@ -232,16 +225,9 @@ private struct TrashView: View {
         }
     }
 
-    private func row(_ item: TrashItem) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Label(item.name, systemImage: "folder").foregroundStyle(.primary)
-            HStack(spacing: 12) {
-                Text("删除于 \(item.deletedDate.formatted(date: .abbreviated, time: .shortened))")
-                Text(item.bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "正在计算大小…")
-            }
-            .font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    private func subtitle(_ item: TrashItem) -> String {
+        let size = item.bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "正在计算大小…"
+        return "删除于 \(item.deletedDate.formatted(date: .abbreviated, time: .shortened)) · \(size)"
     }
 
     private func load() async {
@@ -264,6 +250,60 @@ private struct TrashView: View {
             do { try await ProjectTransfer().purge(item) } catch { failure = error.localizedDescription }
             await load()
         }
+    }
+}
+
+/// UIKit owns both the visible label and its anchored menu, keeping row text
+/// outside SwiftUI Menu's label presentation lifecycle.
+private struct ProjectRowMenu: UIViewRepresentable {
+    let title: String
+    var subtitle: String? = nil
+    var enabled = true
+    let actions: [Action]
+
+    struct Action {
+        let title: String
+        let image: String
+        var destructive = false
+        let perform: () -> Void
+    }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.contentHorizontalAlignment = .leading
+        button.showsMenuAsPrimaryAction = true
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = title
+        configuration.subtitle = subtitle
+        configuration.image = UIImage(systemName: "folder")
+        configuration.imagePadding = 8
+        configuration.titleAlignment = .leading
+        configuration.contentInsets = .zero
+        configuration.baseForegroundColor = .label
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = UIFont.preferredFont(forTextStyle: .body)
+            attributes.foregroundColor = .label
+            return attributes
+        }
+        configuration.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = UIFont.preferredFont(forTextStyle: .caption1)
+            attributes.foregroundColor = .secondaryLabel
+            return attributes
+        }
+        button.configuration = configuration
+        button.isEnabled = enabled
+        button.accessibilityLabel = [title, subtitle].compactMap { $0 }.joined(separator: ", ")
+        button.menu = UIMenu(children: actions.map { action in
+            UIAction(title: action.title, image: UIImage(systemName: action.image),
+                     attributes: action.destructive ? .destructive : []) { _ in action.perform() }
+        })
     }
 }
 

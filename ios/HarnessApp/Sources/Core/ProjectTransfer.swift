@@ -144,12 +144,14 @@ enum ProjectTransferError: Error, LocalizedError, Equatable {
     case notFound
     case invalidArchive
     case checksumMismatch
+    case workspaceUnavailable
     case unavailable
 
     init(code: String?, status: Int) {
         switch code {
         case "PROJECT_NOT_FOUND", "TRASH_NOT_FOUND": self = .notFound
         case "ARCHIVE_LAYOUT", "ARCHIVE_INVALID": self = .invalidArchive
+        case "WORKSPACE_UNAVAILABLE": self = .workspaceUnavailable
         default: self = .unavailable
         }
     }
@@ -160,6 +162,7 @@ enum ProjectTransferError: Error, LocalizedError, Equatable {
         case .notFound: return "找不到该项目，可能已被移动或删除"
         case .invalidArchive: return "归档无效：需要由本应用导出的、只含一个项目目录的 tar"
         case .checksumMismatch: return "SHA256 校验不一致，未导入"
+        case .workspaceUnavailable: return "无法同步官方工作区，未移动或清空项目文件。请等 Harness 就绪后重试；部分会话可能已归档。"
         case .unavailable: return "运行环境暂不可用，请等 Harness 就绪后重试"
         }
     }

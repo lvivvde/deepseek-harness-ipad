@@ -2,12 +2,17 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Native entry for single-project export/import through the Files app.
+/// Native entry for project management, trash and export/import through the Files app.
 @MainActor
 final class ProjectTransferModel: ObservableObject {
-    @Published var exporting = false
+    @Published var manager: ManagerPage?
     @Published var importing = false
     @Published var notice: Notice?
+
+    enum ManagerPage: String, Identifiable {
+        case projects, trash
+        var id: String { rawValue }
+    }
 
     struct Notice: Identifiable {
         let id = UUID()
@@ -53,22 +58,28 @@ struct ProjectMenuCommands: Commands {
 
     var body: some Commands {
         CommandMenu("项目") {
-            Button("导出项目…") { transfer.exporting = true }
+            Button("项目管理…") { transfer.manager = .projects }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(!ready)
             Button("导入项目…") { transfer.importing = true }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(!ready)
+            Button("回收站…") { transfer.manager = .trash }
+                .disabled(!ready)
         }
     }
 }
 
-struct ProjectExportSheet: View {
+struct ProjectManagerSheet: View {
     @ObservedObject var transfer: ProjectTransferModel
+    let start: ProjectTransferModel.ManagerPage
+    @State private var path: [ProjectTransferModel.ManagerPage] = []
     @State private var projects: [String]?
     @State private var busy: String?
     @State private var exported: ExportedFiles?
     @State private var failure: String?
+    @State private var chosen: String?
+    @State private var confirmingTrash: String?
 
     struct ExportedFiles: Identifiable {
         let id = UUID()
@@ -76,41 +87,69 @@ struct ProjectExportSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if let failure { Text(failure).foregroundStyle(.red) }
-                if let projects {
-                    if projects.isEmpty { Text("/root/projects 下还没有项目").foregroundStyle(.secondary) }
-                    ForEach(projects, id: \.self) { name in
-                        Button { export(name) } label: {
-                            HStack {
-                                Label(name, systemImage: "folder")
-                                Spacer()
-                                if busy == name { ProgressView() }
+                Section {
+                    if let projects {
+                        if projects.isEmpty { Text("/root/projects 下还没有项目").foregroundStyle(.secondary) }
+                        ForEach(projects, id: \.self) { name in
+                            Button { chosen = name } label: {
+                                HStack {
+                                    Label(name, systemImage: "folder")
+                                    Spacer()
+                                    if busy == name { ProgressView() }
+                                }
+                            }
+                            .disabled(busy != nil)
+                            .swipeActions {
+                                Button("删除", role: .destructive) { confirmingTrash = name }
                             }
                         }
-                        .disabled(busy != nil)
+                    } else {
+                        ProgressView()
                     }
-                } else {
-                    ProgressView()
+                } header: {
+                    Text("/root/projects")
+                } footer: {
+                    Text("点项目可导出或删除。导出为 tar 和 SHA256 校验文件，不含 node_modules 与 .cache；Git 凭据不在项目内，不会被导出。")
                 }
                 Section {
-                    Text("导出为 tar 和 SHA256 校验文件，不含 node_modules 与 .cache；Git 凭据不在项目内，不会被导出。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    NavigationLink(value: ProjectTransferModel.ManagerPage.trash) {
+                        Label("回收站", systemImage: "trash")
+                    }
                 }
             }
-            .navigationTitle("导出项目")
-            .toolbar { Button("完成") { transfer.exporting = false } }
+            .navigationTitle("项目管理")
+            .toolbar { Button("完成") { transfer.manager = nil } }
+            .navigationDestination(for: ProjectTransferModel.ManagerPage.self) { _ in
+                TrashView(onRestore: { Task { await load() } })
+            }
+            .refreshable { await load() }
             .task { await load() }
-            .sheet(item: $exported, onDismiss: { transfer.exporting = false }) { files in
+            .onAppear { if start == .trash, path.isEmpty { path = [.trash] } }
+            .onChange(of: path) { if $0.isEmpty { Task { await load() } } }
+            .confirmationDialog(chosen ?? "", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } }),
+                                titleVisibility: .visible, presenting: chosen) { name in
+                Button("导出…") { export(name) }
+                Button("移到回收站", role: .destructive) { confirmingTrash = name }
+            }
+            .alert("移到回收站？", isPresented: Binding(get: { confirmingTrash != nil }, set: { if !$0 { confirmingTrash = nil } }),
+                   presenting: confirmingTrash) { name in
+                Button("移到回收站", role: .destructive) { moveToTrash(name) }
+                Button("取消", role: .cancel) {}
+            } message: { name in
+                Text("“\(name)”可在回收站恢复。如果它已登记为工作区，请同时在左侧工作区列表中移除。")
+            }
+            .sheet(item: $exported) { files in
                 DocumentExporter(urls: files.urls)
             }
         }
     }
 
     private func load() async {
-        do { projects = try await ProjectTransfer().projects() }
-        catch { failure = error.localizedDescription; projects = [] }
+        do { projects = try await ProjectTransfer().projects(); failure = nil }
+        catch { failure = error.localizedDescription; projects = projects ?? [] }
     }
 
     private func export(_ name: String) {
@@ -125,6 +164,104 @@ struct ProjectExportSheet: View {
             } catch {
                 failure = error.localizedDescription
             }
+        }
+    }
+
+    private func moveToTrash(_ name: String) {
+        busy = name
+        Task {
+            defer { busy = nil }
+            do { try await ProjectTransfer().trash(name) } catch { failure = error.localizedDescription }
+            await load()
+        }
+    }
+}
+
+private struct TrashView: View {
+    let onRestore: () -> Void
+    @State private var items: [TrashItem]?
+    @State private var failure: String?
+    @State private var restored: String?
+    @State private var chosen: TrashItem?
+    @State private var purging: TrashItem?
+    @State private var confirmingEmpty = false
+
+    var body: some View {
+        List {
+            if let failure { Text(failure).foregroundStyle(.red) }
+            if let restored { Text("已恢复为 /root/projects/\(restored)").foregroundStyle(.secondary) }
+            if let items {
+                if items.isEmpty { Text("回收站是空的").foregroundStyle(.secondary) }
+                ForEach(items) { item in
+                    Button { chosen = item } label: { row(item) }
+                        .swipeActions(edge: .leading) {
+                            Button("恢复") { restore(item) }.tint(.blue)
+                        }
+                        .swipeActions {
+                            Button("彻底删除", role: .destructive) { purging = item }
+                        }
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .navigationTitle("回收站")
+        .toolbar {
+            Button("清空", role: .destructive) { confirmingEmpty = true }
+                .disabled(items?.isEmpty ?? true)
+        }
+        .refreshable { await load() }
+        .task { await load() }
+        .confirmationDialog(chosen?.name ?? "", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } }),
+                            titleVisibility: .visible, presenting: chosen) { item in
+            Button("恢复") { restore(item) }
+            Button("彻底删除", role: .destructive) { purging = item }
+        }
+        .alert("彻底删除？", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
+               presenting: purging) { item in
+            Button("彻底删除", role: .destructive) { purge(item) }
+            Button("取消", role: .cancel) {}
+        } message: { item in
+            Text("“\(item.name)”将从磁盘上永久删除，无法恢复。")
+        }
+        .alert("清空回收站？", isPresented: $confirmingEmpty) {
+            Button("全部彻底删除", role: .destructive) { purge(nil) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("回收站中的 \(items?.count ?? 0) 个项目将从磁盘上永久删除，无法恢复。")
+        }
+    }
+
+    private func row(_ item: TrashItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(item.name, systemImage: "folder").foregroundStyle(.primary)
+            HStack(spacing: 12) {
+                Text("删除于 \(item.deletedDate.formatted(date: .abbreviated, time: .shortened))")
+                Text(item.bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "正在计算大小…")
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func load() async {
+        do { items = try await ProjectTransfer().trashItems(); failure = nil }
+        catch { failure = error.localizedDescription; items = items ?? [] }
+    }
+
+    private func restore(_ item: TrashItem) {
+        Task {
+            do {
+                restored = try await ProjectTransfer().restore(item)
+                onRestore()
+            } catch { failure = error.localizedDescription }
+            await load()
+        }
+    }
+
+    private func purge(_ item: TrashItem?) {
+        Task {
+            do { try await ProjectTransfer().purge(item) } catch { failure = error.localizedDescription }
+            await load()
         }
     }
 }
@@ -142,8 +279,8 @@ private struct DocumentExporter: UIViewControllerRepresentable {
 extension View {
     func projectTransfer(_ transfer: ProjectTransferModel) -> some View {
         self
-            .sheet(isPresented: Binding(get: { transfer.exporting }, set: { transfer.exporting = $0 })) {
-                ProjectExportSheet(transfer: transfer)
+            .sheet(item: Binding(get: { transfer.manager }, set: { transfer.manager = $0 })) { page in
+                ProjectManagerSheet(transfer: transfer, start: page)
             }
             .fileImporter(isPresented: Binding(get: { transfer.importing }, set: { transfer.importing = $0 }),
                           allowedContentTypes: [.archive, .data], allowsMultipleSelection: true) { result in
@@ -170,8 +307,9 @@ struct HarnessToolsButton: View {
             let x = leading ? size / 2 + 4 : geometry.size.width - size / 2 - 4
             let y = min(max(storedY * geometry.size.height, minY), maxY)
             Menu {
-                Button { transfer.exporting = true } label: { Label("导出项目…", systemImage: "square.and.arrow.up") }
+                Button { transfer.manager = .projects } label: { Label("项目管理…", systemImage: "folder") }
                 Button { transfer.importing = true } label: { Label("导入项目…", systemImage: "square.and.arrow.down") }
+                Button { transfer.manager = .trash } label: { Label("回收站…", systemImage: "trash") }
                 Divider()
                 Button { showDiagnostics() } label: { Label("诊断", systemImage: "stethoscope") }
             } label: {

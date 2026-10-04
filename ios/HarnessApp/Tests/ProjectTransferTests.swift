@@ -54,6 +54,34 @@ final class ProjectTransferTests: XCTestCase {
         XCTAssertTrue(files[0].lastPathComponent.hasPrefix("我的 app-"))
     }
 
+    func testTrashRestoreAndPurgeUseTheGuestRoutes() async throws {
+        var calls: [String] = []
+        StubProtocol.handler = { request in
+            calls.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")")
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/trash"):
+                return (200, Data(#"{"items":[{"id":"1791095339992-acd6a38b","name":"我的 项目","deletedAt":1791095339992}]}"#.utf8))
+            case ("POST", _): return (200, Data(#"{"name":"我的 项目-2"}"#.utf8))
+            default: return (200, Data(#"{}"#.utf8))
+            }
+        }
+        try await transfer().trash("我的 项目")
+        let items = try await transfer().trashItems()
+        XCTAssertEqual(items.first?.name, "我的 项目")
+        XCTAssertNil(items.first?.bytes)
+        let restored = try await transfer().restore(items[0])
+        XCTAssertEqual(restored, "我的 项目-2")
+        try await transfer().purge(items[0])
+        try await transfer().purge(nil)
+        XCTAssertEqual(calls, ["DELETE /projects/我的 项目", "GET /trash", "POST /trash/1791095339992-acd6a38b/restore",
+                               "DELETE /trash/1791095339992-acd6a38b", "DELETE /trash"])
+        StubProtocol.handler = { _ in (404, Data(#"{"error":"TRASH_NOT_FOUND"}"#.utf8)) }
+        do {
+            try await transfer().purge(items[0])
+            XCTFail("expected error")
+        } catch { XCTAssertEqual(error as? ProjectTransferError, .notFound) }
+    }
+
     func testImportRefusesMismatchedChecksumBeforeUploading() async throws {
         let archive = directory.appendingPathComponent("p.tar")
         let checksum = directory.appendingPathComponent("p.tar.sha256")

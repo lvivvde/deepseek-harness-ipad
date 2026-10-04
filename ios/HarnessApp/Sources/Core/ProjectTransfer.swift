@@ -91,6 +91,34 @@ struct ProjectTransfer: Sendable {
         try check(response, data)
     }
 
+    /// A coordinated snapshot of the whole user filesystem, including private Harness config.
+    func exportUserData(into directory: URL) async throws -> [URL] {
+        let (downloaded, response) = try await session.download(for: request("userdata/archive"))
+        defer { try? FileManager.default.removeItem(at: downloaded) }
+        try check(response, nil)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let archive = directory.appendingPathComponent("HarnessBackup.tar")
+        try FileManager.default.moveItem(at: downloaded, to: archive)
+        let checksum = archive.appendingPathExtension("sha256")
+        try Data("\(try Self.sha256(of: archive))  \(archive.lastPathComponent)\n".utf8).write(to: checksum)
+        return [archive, checksum]
+    }
+
+    /// Checks the selected checksum before any restore upload reaches the guest.
+    @discardableResult
+    func restoreUserData(_ archive: URL, checksum: URL) async throws -> Bool {
+        try Self.verify(archive: archive, checksumFile: checksum)
+        var upload = request("userdata/restore")
+        upload.httpMethod = "POST"
+        upload.setValue("application/x-tar", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: upload, fromFile: archive)
+        try check(response, data)
+        struct Restored: Decodable { let restored: Bool; let harnessRunning: Bool? }
+        let result = try JSONDecoder().decode(Restored.self, from: data)
+        guard result.restored else { throw ProjectTransferError.unavailable }
+        return result.harnessRunning ?? true
+    }
+
     static func verify(archive: URL, checksumFile: URL) throws {
         let line = try String(contentsOf: checksumFile, encoding: .utf8)
         guard let expected = line.split(whereSeparator: \.isWhitespace).first?.lowercased(),
@@ -145,12 +173,14 @@ enum ProjectTransferError: Error, LocalizedError, Equatable {
     case invalidArchive
     case checksumMismatch
     case workspaceUnavailable
+    case writersBusy
     case unavailable
 
     init(code: String?, status: Int) {
         switch code {
         case "PROJECT_NOT_FOUND", "TRASH_NOT_FOUND": self = .notFound
         case "ARCHIVE_LAYOUT", "ARCHIVE_INVALID": self = .invalidArchive
+        case "WRITERS_BUSY", "BACKUP_BUSY": self = .writersBusy
         case "WORKSPACE_UNAVAILABLE": self = .workspaceUnavailable
         default: self = .unavailable
         }
@@ -162,6 +192,7 @@ enum ProjectTransferError: Error, LocalizedError, Equatable {
         case .notFound: return "找不到该项目，可能已被移动或删除"
         case .invalidArchive: return "归档无效：需要由本应用导出的、只含一个项目目录的 tar"
         case .checksumMismatch: return "SHA256 校验不一致，未导入"
+        case .writersBusy: return "任务尚未停止，未备份或替换原数据。请先停止终端里的长任务，再重试。"
         case .workspaceUnavailable: return "无法同步官方工作区，未移动或清空项目文件。请等 Harness 就绪后重试；部分会话可能已归档。"
         case .unavailable: return "运行环境暂不可用，请等 Harness 就绪后重试"
         }

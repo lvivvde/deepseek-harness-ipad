@@ -78,6 +78,7 @@ final class TerminalKeyRow: UIView {
             sticky = false
             page?.evaluateJavaScript("window.harnessStickyControl = false", completionHandler: nil)
         }
+        buttons.first { $0.title(for: .normal) == "Ctrl" }?.backgroundColor = sticky ? .systemBlue.withAlphaComponent(0.2) : .clear
         onVisibility?(visible)
     }
 

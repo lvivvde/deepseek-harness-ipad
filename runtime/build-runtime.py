@@ -228,7 +228,7 @@ def build(args, lock):
         write_tree(entries, root)
         harness = root / 'opt/harness'
         shutil.copytree(args.harness, harness, symlinks=True)
-        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'preview.cjs', 'AGENTS.md'):
+        for script in ('harness-start.cjs', 'compile-cache-flush.cjs', 'clean-locks.cjs', 'transfer.cjs', 'project-lifecycle.mjs', 'preview.cjs', 'supervisor.cjs', 'control.cjs', 'backup.cjs', 'AGENTS.md'):
             shutil.copyfile(HERE / 'guest' / script, harness / script)
         patch_client_bridges(harness)
         shutil.copytree(HERE / 'guest/examples', harness / 'examples')

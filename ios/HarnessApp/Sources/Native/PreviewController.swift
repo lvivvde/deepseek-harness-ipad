@@ -41,9 +41,9 @@ final class PreviewController: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
                 servers = live
-                for server in live where !announced.contains(server.port) {
+                if prompt == nil, let server = live.first(where: { !announced.contains($0.port) }) {
                     announced.insert(server.port)
-                    if prompt == nil { prompt = server }
+                    prompt = server
                 }
             } catch {
                 // Boot forwards always exist even if discovery/control is temporarily unavailable.

@@ -6,6 +6,8 @@ enum RuntimeEvent {
     case loadingHarness
     case ready(URL)
     case exited
+    case harnessStopped
+    case dataOperationFailed
     case connectionUnavailable
     case bootFailed(RuntimeBootFailure)
 
@@ -14,6 +16,8 @@ enum RuntimeEvent {
         case .booting: return "booting"
         case .loadingHarness: return "loadingHarness"
         case .ready: return "ready"
+        case .dataOperationFailed: return "userDataOperationFailed"
+        case .harnessStopped: return "harnessStopped"
         case .exited: return "runtimeExited"
         case .connectionUnavailable: return "connectionUnavailable"
         case .bootFailed(let failure): return "bootFailed:" + failure.rawValue
@@ -29,6 +33,7 @@ enum RuntimeBootFailure: String {
     case userReadonly = "USER_READONLY"
     case userSpace = "USER_SPACE"
     case network = "NETWORK"
+    case userRestore = "USER_RESTORE"
     case userLocks = "USER_LOCKS"
     case harnessExit = "HARNESS_EXIT"
 
@@ -47,6 +52,7 @@ enum RuntimeBootFailure: String {
         case .userReadonly: return "用户盘不可写或空间不足，原盘已保留"
         case .userSpace: return "用户盘空间不足或写入失败，原盘已保留，运行环境停在救援模式"
         case .network: return "运行环境网络初始化失败，请关闭并重新打开应用"
+        case .userRestore: return "用户数据恢复未能回滚，原始目录和事务记录已保留，请导出救援盘"
         case .userLocks: return "Harness 状态锁无法恢复，用户盘已保留"
         case .harnessExit: return "Harness 已退出，请关闭并重新打开应用"
         }
@@ -69,6 +75,11 @@ protocol RuntimeDriving: AnyObject {
     func start(onEvent: @escaping @MainActor (RuntimeEvent) -> Void) async throws
     func reconnect() async throws -> URL
     func flush() async
+    func exportRescueDisk(into directory: URL) async throws -> URL
+}
+
+extension RuntimeDriving {
+    func exportRescueDisk(into directory: URL) async throws -> URL { throw RecoveryFailure.control }
 }
 
 /// The App owns this module. Pages and auxiliary windows never own VM lifetime.
@@ -117,6 +128,11 @@ final class RuntimeController: ObservableObject {
 
     func flush() async { await driver.flush() }
 
+    func exportRescueDisk(into directory: URL) async throws -> URL {
+        guard phase != .preparing, phase != .idle else { throw RecoveryFailure.busy }
+        return try await driver.exportRescueDisk(into: directory)
+    }
+
     func pageFailed() {
         guard !terminalFailure else { return }
         phase = .failed("页面暂时无法加载，请重试连接", requiresRelaunch: false)
@@ -147,7 +163,8 @@ final class RuntimeController: ObservableObject {
             phase = .ready
         } catch {
             guard !terminalFailure else { return }
-            phase = .failed("暂时无法连接 Harness，请重试连接", requiresRelaunch: false)
+            let message = (error as? RecoveryFailure)?.errorDescription ?? "暂时无法连接 Harness，请重试连接"
+            phase = .failed(message, requiresRelaunch: (error as? RecoveryFailure) == .control)
             record("reconnectFailed")
         }
     }
@@ -159,6 +176,9 @@ final class RuntimeController: ObservableObject {
         case .booting: phase = .booting
         case .loadingHarness: phase = .loadingHarness
         case .ready(let url): destination = url; phase = .ready
+        case .dataOperationFailed: break
+        case .harnessStopped:
+            phase = .failed("Harness 已停止，可重试连接；备份或恢复进行中时请等待完成", requiresRelaunch: false)
         case .exited:
             terminalFailure = true
             phase = .failed("运行环境已退出，请关闭并重新打开应用", requiresRelaunch: true)

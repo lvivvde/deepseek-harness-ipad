@@ -8,6 +8,10 @@
 + (NSArray<NSNumber *> *)createSocketPair {
     int descriptors[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) != 0) return nil;
+    int enabled = 1;
+    for (int index = 0; index < 2; index++) {
+        setsockopt(descriptors[index], SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+    }
     return @[@(descriptors[0]), @(descriptors[1])];
 }
 + (int)runLibrary:(NSString *)path arguments:(NSArray<NSString *> *)arguments {

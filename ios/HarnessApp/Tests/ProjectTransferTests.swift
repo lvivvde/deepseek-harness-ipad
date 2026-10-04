@@ -94,6 +94,26 @@ final class ProjectTransferTests: XCTestCase {
         } catch { XCTAssertEqual(error as? ProjectTransferError, .checksumMismatch) }
     }
 
+    func testFullRestoreRequiresChecksumBeforeSendingAnyUserData() async throws {
+        let archive = directory.appendingPathComponent("backup.tar")
+        let checksum = directory.appendingPathComponent("backup.tar.sha256")
+        try Data("data".utf8).write(to: archive)
+        try Data(String(repeating: "0", count: 64).utf8).write(to: checksum)
+        StubProtocol.handler = { _ in XCTFail("invalid backup must never upload"); return (500, Data()) }
+        do {
+            try await transfer().restoreUserData(archive, checksum: checksum)
+            XCTFail("expected checksum mismatch")
+        } catch { XCTAssertEqual(error as? ProjectTransferError, .checksumMismatch) }
+        try Data("\(try ProjectTransfer.sha256(of: archive))  backup.tar\n".utf8).write(to: checksum)
+        StubProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/userdata/restore")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Harness-Transfer"), "secret-token")
+            return (200, Data(#"{"restored":true}"#.utf8))
+        }
+        try await transfer().restoreUserData(archive, checksum: checksum)
+    }
+
     func testImportReturnsGuestProjectNameAndMapsErrors() async throws {
         let archive = directory.appendingPathComponent("p.tar")
         try Data("archive".utf8).write(to: archive)

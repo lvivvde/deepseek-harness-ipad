@@ -32,8 +32,10 @@ final class ProjectTransferModel: ObservableObject {
             do {
                 let staging = FileManager.default.temporaryDirectory.appendingPathComponent("Import-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: staging) }
-                let localArchive = try Self.copy(archive, into: staging)
-                let localChecksum = try checksum.map { try Self.copy($0, into: staging) }
+                let localArchive = try await Self.copy(archive, into: staging)
+                let localChecksum: URL?
+                if let checksum { localChecksum = try await Self.copy(checksum, into: staging) }
+                else { localChecksum = nil }
                 let name = try await ProjectTransfer().importArchive(localArchive, checksum: localChecksum)
                 notice = Notice(title: "已导入", message: "项目位于 /root/projects/\(name)。请在左侧“工作区 → 添加工作区”登记该目录；依赖需重新 npm install。")
             } catch {
@@ -42,13 +44,15 @@ final class ProjectTransferModel: ObservableObject {
         }
     }
 
-    private static func copy(_ source: URL, into directory: URL) throws -> URL {
-        let scoped = source.startAccessingSecurityScopedResource()
-        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let destination = directory.appendingPathComponent(source.lastPathComponent)
-        try FileManager.default.copyItem(at: source, to: destination)
-        return destination
+    private static func copy(_ source: URL, into directory: URL) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent(source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination
+        }.value
     }
 }
 
@@ -307,7 +311,7 @@ private struct ProjectRowMenu: UIViewRepresentable {
     }
 }
 
-private struct DocumentExporter: UIViewControllerRepresentable {
+struct DocumentExporter: UIViewControllerRepresentable {
     let urls: [URL]
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
@@ -337,6 +341,7 @@ extension View {
 struct HarnessToolsButton: View {
     @ObservedObject var transfer: ProjectTransferModel
     @ObservedObject var preview: PreviewController
+    let showData: () -> Void
     let showDiagnostics: () -> Void
     @AppStorage("toolsButton.y") private var storedY = 0.5
     @AppStorage("toolsButton.leading") private var leading = false
@@ -358,6 +363,7 @@ struct HarnessToolsButton: View {
                     }
                 }
                 Divider()
+                Button { showData() } label: { Label("备份与救援…", systemImage: "externaldrive") }
                 Button { showDiagnostics() } label: { Label("诊断", systemImage: "stethoscope") }
             } label: {
                 Image(systemName: "shippingbox")

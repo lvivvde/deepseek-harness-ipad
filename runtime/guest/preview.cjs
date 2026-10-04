@@ -8,7 +8,9 @@ const fallbackPorts = [3000, 4173, 5173, 8080];
 const reserved = new Set([2999, 3001, 3002, 3003, 28080, 28081, 28082, 28083, 28084]);
 
 async function listeningPorts(tables) {
-  const ports = new Set();
+  const ports = new Map();
+  const addresses = {'00000000':'127.0.0.1','0100007F':'127.0.0.1','0F02000A':'10.0.2.15',
+    '00000000000000000000000000000000':'::1','00000000000000000000000001000000':'::1'};
   for (const table of tables) {
     const text = await fs.promises.readFile(table, 'utf8');
     for (const line of text.split('\n').slice(1)) {
@@ -16,18 +18,20 @@ async function listeningPorts(tables) {
       if (columns[3] !== '0A') continue;
       const [address, hexPort] = columns[1].split(':');
       // Only IPv4 loopback/wildcard/guest NIC and IPv6 wildcard/loopback.
-      if (!['00000000', '0100007F', '0F02000A', '00000000000000000000000000000000',
-        '00000000000000000000000001000000'].includes(address)) continue;
+      if (!addresses[address]) continue;
       const port = parseInt(hexPort, 16);
-      if (port >= 1024 && port <= 65535 && !reserved.has(port) && !(port >= 40000 && port < 40100)) ports.add(port);
+      if (port >= 1024 && port <= 65535 && !reserved.has(port) && !(port >= 40000 && port < 40100)) {
+        if (!ports.has(port)) ports.set(port,new Set());
+        ports.get(port).add(addresses[address]);
+      }
     }
   }
-  return [...ports].sort((a, b) => a - b).slice(0, 32);
+  return [...ports].sort(([a], [b]) => a - b).slice(0, 32).map(([port,hosts])=>({port,hosts:[...hosts]}));
 }
 
-function respondsToHTTP(port) {
+function respondsToHTTP(port,host) {
   return new Promise(resolve => {
-    const request = http.request({host: '127.0.0.1', port, method: 'HEAD', path: '/', timeout: 1500}, response => {
+    const request = http.request({host, port, method: 'HEAD', path: '/', timeout: 1500}, response => {
       response.resume(); resolve(true);
     });
     request.on('timeout', () => request.destroy());
@@ -36,13 +40,14 @@ function respondsToHTTP(port) {
   });
 }
 
-function createRelay(port) {
+function createRelay(port,target) {
+  const authority=()=>`${target().includes(':') ? '['+target()+']' : target()}:${port}`;
   const server = http.createServer((request, response) => {
     if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(request.method)) {
       response.writeHead(405).end(); return;
     }
-    const upstream = http.request({host: '127.0.0.1', port, method: request.method, path: request.url,
-      headers: {...request.headers, host: `127.0.0.1:${port}`}, timeout: 30000}, remote => {
+    const upstream = http.request({host: target(), port, method: request.method, path: request.url,
+      headers: {...request.headers, host: authority()}, timeout: 30000}, remote => {
       response.writeHead(remote.statusCode, remote.headers);
       remote.pipe(response);
     });
@@ -54,9 +59,9 @@ function createRelay(port) {
   });
   server.on('upgrade', (request, socket, head) => {
     if (request.headers.upgrade?.toLowerCase() !== 'websocket') { socket.destroy(); return; }
-    const upstream = net.connect(port, '127.0.0.1');
+    const upstream = net.connect(port, target());
     upstream.on('connect', () => {
-      const headers = {...request.headers, host: `127.0.0.1:${port}`};
+      const headers = {...request.headers, host: authority()};
       upstream.write(`${request.method} ${request.url} HTTP/1.1\r\n` +
         Object.entries(headers).map(([key, value]) => `${key}: ${value}\r\n`).join('') + '\r\n');
       if (head.length) upstream.write(head);
@@ -75,12 +80,13 @@ async function startPreviewService(options = {}) {
   const host = options.host || '10.0.2.15';
   const tables = options.tables || ['/proc/net/tcp', '/proc/net/tcp6'];
   const relays = new Map();
+  const targets = new Map();
   const fallback = options.fallbackPorts || fallbackPorts;
   let scanTail = Promise.resolve();
   async function ensureRelay(port) {
     if (relays.has(port)) return relays.get(port).address().port;
     if (relays.size >= 32) throw new Error('PREVIEW_LIMIT');
-    const relay = createRelay(port);
+    const relay = createRelay(port,()=>targets.get(port)||'127.0.0.1');
     const relayPort = 40000 + relays.size;
     await new Promise((resolve, reject) => {
       relay.once('error', reject);
@@ -100,11 +106,14 @@ async function startPreviewService(options = {}) {
       if (request.method !== 'GET' || request.url !== '/ports') { response.writeHead(404).end(); return; }
       let detected, degraded = false;
       try { detected = await listeningPorts(tables); }
-      catch { detected = fallback; degraded = true; }
-      const alive = (await Promise.all(detected.map(async port => await respondsToHTTP(port) ? port : undefined)))
+      catch { detected = fallback.map(port=>({port,hosts:['127.0.0.1','::1']})); degraded = true; }
+      const alive = (await Promise.all(detected.map(async ({port,hosts}) => {
+        for (const host of hosts) if (await respondsToHTTP(port,host)) return {port,host};
+      })))
         .filter(port => port !== undefined);
       const ports = [];
-      for (const port of alive) {
+      for (const {port,host} of alive) {
+        targets.set(port,host);
         try { ports.push({port, relayPort: await ensureRelay(port)}); }
         catch { degraded = true; }
       }

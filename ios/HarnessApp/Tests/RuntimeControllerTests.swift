@@ -70,6 +70,25 @@ final class RuntimeControllerTests: XCTestCase {
         XCTAssertEqual(runtime.phase, .ready)
     }
 
+    func testHarnessExitRemainsRecoverableAndNeverRestartsVM() async {
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        driver.onEvent?(.harnessStopped)
+        guard case .failed(_, requiresRelaunch: false) = runtime.phase else { return XCTFail("Harness failure is recoverable") }
+        await runtime.retry()
+        XCTAssertEqual(driver.starts, 1)
+        XCTAssertEqual(driver.reconnects, 1)
+        XCTAssertEqual(runtime.phase, .ready)
+    }
+
+    func testClockAcknowledgementMustMatchCurrentHostTimeWithinTwoSeconds() throws {
+        let health = try JSONDecoder().decode(GuestHealth.self, from: Data(#"{"clock":true,"epoch":100000,"running":true,"writable":true,"restartable":false}"#.utf8))
+        XCTAssertTrue(health.clockMatches(Date(timeIntervalSince1970: 101)))
+        XCTAssertFalse(health.clockMatches(Date(timeIntervalSince1970: 103)))
+    }
+
     func testIncompatibleUserDiskRemainsFailedWithoutRestartOrStaleReadiness() async {
         let driver = RecordingDriver()
         let runtime = RuntimeController(driver: driver)

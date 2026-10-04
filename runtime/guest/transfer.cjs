@@ -7,6 +7,7 @@ const {pipeline} = require('node:stream/promises');
 // Use npm's bundled tar alongside this Node installation (also works in host tests).
 const {createRequire} = require('node:module');
 const npmRoot = process.env.HARNESS_NPM_ROOT || path.resolve(process.execPath, '../../lib/node_modules/npm');
+const {BackupManager} = require('./backup.cjs');
 const tar = createRequire(path.join(npmRoot, 'package.json'))('tar');
 
 const root = process.env.HARNESS_PROJECTS || '/root/projects';
@@ -17,6 +18,7 @@ const skipped = new Set(['node_modules', '.cache']);
 const token = (fs.readFileSync(process.env.HARNESS_CMDLINE || '/proc/cmdline', 'utf8').match(/(?:^|\s)harness\.transfer=([0-9a-f]{32,})(?:\s|$)/) || [])[1];
 // Any single visible path component: Chinese, spaces and symbols are fine; hidden and staging entries are not.
 const validName = name => !name.startsWith('.') && !/[\/\x00-\x1f]/.test(name) && Buffer.byteLength(name) <= 200;
+const backup = new BackupManager({root:process.env.HARNESS_USER_ROOT || '/root',tar});
 let mutationTail = Promise.resolve();
 function mutate(operation) {
   const result = mutationTail.then(operation);
@@ -109,10 +111,17 @@ async function trashProject(name, response) {
   const meta = {name, deletedAt: Date.now()};
   fs.writeFileSync(path.join(entry, 'meta.json'), JSON.stringify(meta));
   fs.renameSync(source, path.join(entry, name));
+  const identity=fs.statSync(entry);
   send(response, 200, {id});
   // Size is informational; walking a large node_modules on TCG must not hold the request.
   directoryBytes(path.join(entry, name))
-    .then(bytes => fs.promises.writeFile(path.join(entry, 'meta.json'), JSON.stringify({...meta, bytes})))
+    .then(bytes => mutate(() => {
+      const current=fs.statSync(entry,{throwIfNoEntry:false});
+      if (!current || current.ino!==identity.ino || current.dev!==identity.dev) return;
+      const temporary=path.join(entry,'.meta.tmp');
+      fs.writeFileSync(temporary,JSON.stringify({...meta,bytes}));
+      fs.renameSync(temporary,path.join(entry,'meta.json'));
+    }))
     .catch(() => {});
 }
 
@@ -158,13 +167,13 @@ async function purge(ids, response) {
     fs.renameSync(path.join(trash, id), target);
   }
   send(response, 200, {purged: ids.length});
-  sweep();
+  await sweep();
 }
 
-function sweep() {
+async function sweep() {
   if (!fs.existsSync(trash)) return;
   for (const leftover of fs.readdirSync(trash).filter(name => name.startsWith('.purging-'))) {
-    fs.promises.rm(path.join(trash, leftover), {recursive: true, force: true}).catch(() => {});
+    await fs.promises.rm(path.join(trash, leftover), {recursive: true, force: true}).catch(() => {});
   }
 }
 
@@ -181,9 +190,16 @@ const server = http.createServer(async (request, response) => {
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const trashMatch = url.pathname.match(/^\/trash\/([^/]+?)(\/restore)?$/);
   try {
+    if (request.method === 'GET' && url.pathname === '/userdata/archive') return await mutate(async () => {
+      response.writeHead(200, {'content-type':'application/x-tar'});
+      await backup.export(response);
+    });
+    if (request.method === 'POST' && url.pathname === '/userdata/restore') return await mutate(async () => {
+      const result=await backup.restore(request);send(response,200,result);
+    });
     if (request.method === 'GET' && url.pathname === '/projects') return send(response, 200, {projects: projects()});
-    if (request.method === 'GET' && exportMatch) return await exportProject(decodeURIComponent(exportMatch[1]), response);
-    if (request.method === 'POST' && url.pathname === '/projects/import') return await importProject(request, response);
+    if (request.method === 'GET' && exportMatch) return await mutate(() => exportProject(decodeURIComponent(exportMatch[1]), response));
+    if (request.method === 'POST' && url.pathname === '/projects/import') return await mutate(() => importProject(request, response));
     if (request.method === 'DELETE' && projectMatch) return await mutate(() => trashProject(decodeURIComponent(projectMatch[1]), response));
     if (request.method === 'GET' && url.pathname === '/trash') return send(response, 200, {items: trashItems()});
     if (request.method === 'DELETE' && url.pathname === '/trash') return await mutate(() => purge(trashItems().map(item => item.id), response));
@@ -193,15 +209,17 @@ const server = http.createServer(async (request, response) => {
     }
     send(response, 404, {error: 'NOT_FOUND'});
   } catch (error) {
+    const known=['WORKSPACE_UNAVAILABLE','WRITERS_BUSY','BACKUP_BUSY','USER_READONLY'].includes(error.message) ? error.message : 'TRANSFER_FAILED';
+    console.log('HARNESS_TRANSFER_FAILURE:'+known);
     const unavailable = error.message === 'WORKSPACE_UNAVAILABLE';
-    send(response, unavailable ? 503 : 500, {error: unavailable ? 'WORKSPACE_UNAVAILABLE' : 'TRANSFER_FAILED'});
+    send(response, unavailable ? 503 : 500, {error:known});
   }
 });
 
 if (require.main === module) {
   if (!token) { console.log('HARNESS_TRANSFER_DISABLED'); return; }
   fs.mkdirSync(root, {recursive: true});
-  sweep();
+  mutate(sweep);
   server.listen(Number(process.env.HARNESS_TRANSFER_PORT || 3002), process.env.HARNESS_TRANSFER_HOST || '10.0.2.15',
     () => console.log('HARNESS_TRANSFER_READY'));
 }

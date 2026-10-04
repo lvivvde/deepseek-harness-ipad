@@ -8,6 +8,8 @@ struct HarnessApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
 
+    init() { BackgroundDataWork.register() }
+
     var body: some Scene {
         WindowGroup {
             HarnessRoot(runtime: runtime, transfer: transfer, preview: preview)
@@ -57,6 +59,7 @@ private struct HarnessRoot: View {
     @ObservedObject var preview: PreviewController
     @State private var painted = false
     @State private var showingDiagnostics = false
+    @State private var showingData = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -69,17 +72,22 @@ private struct HarnessRoot: View {
                                     onLoading: { painted = false }, onPaint: { painted = true },
                                     onFailure: { runtime.pageFailed() },
                                     onContentTerminated: { Task { await runtime.recoverPage() } })
-                    if geometry.size.width > geometry.size.height, let url = preview.nativeURL {
+                    if isLandscape && geometry.size.width >= 600, let url = preview.nativeURL {
                         Divider()
                         NativePreviewPanel(url: url) { preview.nativeURL = nil }
                             .frame(width: geometry.size.width * 0.45)
                     }
                 }
-                if geometry.size.width <= geometry.size.height, let url = preview.nativeURL {
+                if (!isLandscape || geometry.size.width < 600), let url = preview.nativeURL {
                     NativePreviewPanel(url: url) { preview.nativeURL = nil }
                 }
             }
-            if runtime.phase != .ready || !painted {
+            if runtime.phase == .reconnecting && painted {
+                VStack {
+                    Text("正在重新连接…").font(.callout).padding(10).background(.regularMaterial, in: Capsule())
+                    Spacer()
+                }.padding().allowsHitTesting(false)
+            } else if runtime.phase != .ready || !painted {
                 VStack(spacing: 20) {
                     Text("DeepSeek Harness").font(.title2.weight(.medium))
                     if case .failed(let message, let requiresRelaunch) = runtime.phase {
@@ -88,6 +96,7 @@ private struct HarnessRoot: View {
                             Button("重试") { Task { await runtime.retry() } }.buttonStyle(.borderedProminent)
                         }
                         Button("查看诊断") { showingDiagnostics = true }.buttonStyle(.bordered)
+                        Button("备份与救援…") { showingData = true }
                     } else {
                         ProgressView()
                         Text(stage).foregroundStyle(.secondary)
@@ -98,13 +107,14 @@ private struct HarnessRoot: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
             } else {
-                HarnessToolsButton(transfer: transfer, preview: preview) { showingDiagnostics = true }
+                HarnessToolsButton(transfer: transfer, preview: preview, showData: { showingData = true }) { showingDiagnostics = true }
             }
         }
         .alert(item: $preview.prompt) { server in
             Alert(title: Text("检测到开发服务器"), message: Text("端口 \(server.port)"),
                   primaryButton: .default(Text("在侧栏预览")) { preview.open(server) }, secondaryButton: .cancel(Text("稍后")))
         }
+        .sheet(isPresented: $showingData) { UserDataView(runtime: runtime) }
         .sheet(isPresented: $showingDiagnostics) {
             NavigationStack {
                 List {
@@ -119,6 +129,10 @@ private struct HarnessRoot: View {
         }
     }
 
+    }
+
+    private var isLandscape: Bool {
+        (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation.isLandscape == true
     }
 
     private var stage: String {

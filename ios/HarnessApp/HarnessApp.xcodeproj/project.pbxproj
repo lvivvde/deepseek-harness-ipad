@@ -20,6 +20,9 @@
 		AF410786348A8E5A207E18AF = {isa = PBXBuildFile; fileRef = 302FF21071EC930D3870C611; };
 		293051239FE28E93C7B489FF = {isa = PBXBuildFile; fileRef = 169074DA626A34331BA13207; };
 		85C74A1F23B1981E368D528F = {isa = PBXBuildFile; fileRef = 11FEFA9B61DAD70C0C1C3A0F; };
+		B289E81CB91CB5F3CE4A1FAA = {isa = PBXBuildFile; fileRef = 64B05F7FE7383C28006FC608; };
+		697F4384AC5893EBE0A0161C = {isa = PBXBuildFile; fileRef = 98326FBFF19F279E54F1F707; };
+		C02673774DCF41FA97C997CD = {isa = PBXBuildFile; fileRef = B7AA98D80CCA9B9B6F2CA5CA; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +43,9 @@
 		302FF21071EC930D3870C611 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/QemuControl.swift; sourceTree = "<group>"; };
 		169074DA626A34331BA13207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/PreviewController.swift; sourceTree = "<group>"; };
 		11FEFA9B61DAD70C0C1C3A0F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/TerminalKeyRow.swift; sourceTree = "<group>"; };
+		64B05F7FE7383C28006FC608 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/GuestHealth.swift; sourceTree = "<group>"; };
+		98326FBFF19F279E54F1F707 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/UserDataView.swift; sourceTree = "<group>"; };
+		B7AA98D80CCA9B9B6F2CA5CA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Native/BackgroundDataWork.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +62,9 @@
 		A00000000000000000000003 = {
 			isa = PBXGroup;
 			children = (
+				B7AA98D80CCA9B9B6F2CA5CA,
+				98326FBFF19F279E54F1F707,
+				64B05F7FE7383C28006FC608,
 				11FEFA9B61DAD70C0C1C3A0F,
 				169074DA626A34331BA13207,
 				302FF21071EC930D3870C611,
@@ -152,6 +161,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C02673774DCF41FA97C997CD,
+				697F4384AC5893EBE0A0161C,
+				B289E81CB91CB5F3CE4A1FAA,
 				85C74A1F23B1981E368D528F,
 				293051239FE28E93C7B489FF,
 				AF410786348A8E5A207E18AF,

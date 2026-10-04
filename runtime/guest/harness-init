@@ -38,11 +38,6 @@ guide=/root/.dsh/AGENTS.md
 if [ ! -e "$guide" ] || $bb grep -q '^<!-- harness-ipad managed' "$guide"; then
     $bb cp /opt/harness/AGENTS.md "$guide.tmp" && $bb mv "$guide.tmp" "$guide"
 fi
-# Copy the editable example only once; upgrades preserve the user's version.
-if [ ! -e /root/projects/ipad-hello-plugin ]; then
-    $bb cp -R /opt/harness/examples/hello /root/projects/.hello-seed-$$ &&
-    $bb mv /root/projects/.hello-seed-$$ /root/projects/ipad-hello-plugin
-fi
 echo HARNESS_USER_READY
 $bb ifconfig lo 127.0.0.1 up
 $bb udhcpc -q -n -t 5 -T 1 -i eth0 -s /etc/udhcpc/default.script || rescue NETWORK
@@ -50,10 +45,24 @@ $bb cat /etc/harness-runtime.json
 export NODE_COMPILE_CACHE=/root/.cache/node-compile-cache
 export NODE_OPTIONS="--require /opt/harness/compile-cache-flush.cjs"
 cd /opt/harness || rescue SYSTEM_MOUNT
+node backup.cjs --cold-boot || rescue USER_RESTORE
 node clean-locks.cjs --cold-boot || rescue USER_LOCKS
+# Seed once, including across deliberate project deletion and later upgrades.
+if [ ! -e /root/.harness-example-seeded ]; then
+    if [ ! -e /root/projects/ipad-hello-plugin ]; then
+        $bb cp -R /opt/harness/examples/hello /root/projects/.hello-seed-$$ &&
+        $bb mv /root/projects/.hello-seed-$$ /root/projects/ipad-hello-plugin || rescue USER_READONLY
+    fi
+    echo 1 > /root/.harness-example-seeded || rescue USER_READONLY
+    $bb sync
+fi
 echo HARNESS_INIT_READY
-node transfer.cjs &
-node preview.cjs &
-node harness-start.cjs &
+# Control/transfer services stay responsive while /root is frozen. Only the
+# official Harness child uses the persistent compiler cache and flush timers.
+NODE_OPTIONS= NODE_COMPILE_CACHE= node transfer.cjs &
+echo $! > /run/harness-transfer.pid
+NODE_OPTIONS= NODE_COMPILE_CACHE= node preview.cjs &
+echo $! > /run/harness-preview.pid
+NODE_OPTIONS= NODE_COMPILE_CACHE= node harness-start.cjs &
 # Serial shell is a recovery channel, separate from the official browser session.
 while :; do $bb setsid $bb cttyhack $bb sh -i; $bb sleep 1; done

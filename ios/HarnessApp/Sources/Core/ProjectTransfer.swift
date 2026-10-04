@@ -9,6 +9,9 @@ struct ProjectTransfer: Sendable {
         return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }.joined()
     }()
 
+    /// RFC 3986 unreserved set; everything else, including CJK and spaces, is percent-encoded.
+    private static let unreservedASCII = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
     var token = ProjectTransfer.sessionToken
     var base = URL(string: "http://127.0.0.1:\(RuntimePorts.transfer)")!
     var session: URLSession = {
@@ -28,7 +31,7 @@ struct ProjectTransfer: Sendable {
 
     /// Writes `<name>-<timestamp>.tar` and a `sha256sum`-compatible checksum file into `directory`.
     func export(_ name: String, into directory: URL, now: Date = Date()) async throws -> [URL] {
-        guard let encoded = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "._-"))) else {
+        guard let encoded = name.addingPercentEncoding(withAllowedCharacters: Self.unreservedASCII) else {
             throw ProjectTransferError.invalidName
         }
         let (downloaded, response) = try await session.download(for: request("projects/\(encoded)/archive"))

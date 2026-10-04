@@ -44,6 +44,16 @@ final class ProjectTransferTests: XCTestCase {
         XCTAssertNoThrow(try ProjectTransfer.verify(archive: files[0], checksumFile: files[1]))
     }
 
+    func testExportPercentEncodesChineseAndSpaces() async throws {
+        StubProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString,
+                           "http://127.0.0.1:28083/projects/%E6%88%91%E7%9A%84%20app/archive")
+            return (200, Data("tar".utf8))
+        }
+        let files = try await transfer().export("我的 app", into: directory, now: Date(timeIntervalSince1970: 0))
+        XCTAssertTrue(files[0].lastPathComponent.hasPrefix("我的 app-"))
+    }
+
     func testImportRefusesMismatchedChecksumBeforeUploading() async throws {
         let archive = directory.appendingPathComponent("p.tar")
         let checksum = directory.appendingPathComponent("p.tar.sha256")

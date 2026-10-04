@@ -9,7 +9,8 @@ const tar = require('/opt/node/lib/node_modules/npm/node_modules/tar');
 const root = process.env.HARNESS_PROJECTS || '/root/projects';
 const skipped = new Set(['node_modules', '.cache']);
 const token = (fs.readFileSync(process.env.HARNESS_CMDLINE || '/proc/cmdline', 'utf8').match(/(?:^|\s)harness\.transfer=([0-9a-f]{32,})(?:\s|$)/) || [])[1];
-const validName = name => /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(name);
+// Any single visible path component: Chinese, spaces and symbols are fine; hidden and staging entries are not.
+const validName = name => !name.startsWith('.') && !/[\/\x00-\x1f]/.test(name) && Buffer.byteLength(name) <= 200;
 
 function authorized(request) {
   const given = Buffer.from(String(request.headers['x-harness-transfer'] || ''));

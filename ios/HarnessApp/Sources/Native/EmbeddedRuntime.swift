@@ -82,43 +82,63 @@ final class EmbeddedRuntime: RuntimeDriving {
     }
 
     func reconnect() async throws -> URL {
-        guard hasLaunched, !exited, serialReady else { throw RecoveryFailure.control }
+        guard !exited else { throw RecoveryFailure.exited }
+        guard hasLaunched else { throw RecoveryFailure.control }
         let deadline = Date().addingTimeInterval(10)
-        let state = try await QemuControl.shared.command("query-status", timeout: 1.5)
-        guard (state["return"] as? [String: Any])?["running"] as? Bool == true else { throw RecoveryFailure.control }
+        let state: [String: Any]
+        do { state = try await QemuControl.shared.command("query-status", timeout: 1.5) }
+        catch { throw exited ? RecoveryFailure.exited : RecoveryFailure.control }
+        guard (state["return"] as? [String: Any])?["running"] as? Bool == true else { throw RecoveryFailure.vmStopped }
+        publish(.recovery(.vmRunning))
+        guard serialReady else { throw RecoveryFailure.guestControl }
         var health = try await inspectGuest(deadline: deadline)
+        publish(.recovery(.guestResponded))
         guard health.clockMatches(Date()) else { throw RecoveryFailure.clock }
+        publish(.recovery(.clockSynchronized))
         guard health.leased != true else { throw RecoveryFailure.busy }
         guard health.writable else { throw RecoveryFailure.readonly }
         if !health.running {
             guard health.restartable else { throw RecoveryFailure.harness }
+            publish(.recovery(.harnessRestarting))
             health = try await inspectGuest(deadline: deadline, restart: true)
             guard health.running else { throw RecoveryFailure.harness }
         }
-        if let url = launchURL, await pageIsReady(url, timeout: 1.5), !exited { return url }
+        publish(.recovery(.harnessRunning))
+        if let url = launchURL, await pageIsReady(url, timeout: 1.5), !exited {
+            publish(.recovery(.pageReady))
+            return url
+        }
         guard deadline.timeIntervalSinceNow > 3 else { throw RecoveryFailure.connection }
         // Repair only the page forward, retaining the running VM and serial/control descriptors.
+        publish(.recovery(.forwardRepairing))
         _ = try? await QemuControl.shared.monitor("hostfwd_remove net0 tcp:127.0.0.1:\(RuntimePorts.page)", timeout: 1)
-        let added = try await QemuControl.shared.monitor("hostfwd_add net0 tcp:127.0.0.1:\(RuntimePorts.page)-10.0.2.15:2999", timeout: 1)
+        let added: String
+        do { added = try await QemuControl.shared.monitor("hostfwd_add net0 tcp:127.0.0.1:\(RuntimePorts.page)-10.0.2.15:2999", timeout: 1) }
+        catch { throw exited ? RecoveryFailure.exited : RecoveryFailure.control }
         guard added.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RecoveryFailure.connection }
         while Date() < deadline, !Task.isCancelled, !exited {
-            if let url = launchURL, await pageIsReady(url, timeout: min(1.5, deadline.timeIntervalSinceNow)) { return url }
+            if let url = launchURL, await pageIsReady(url, timeout: min(1.5, deadline.timeIntervalSinceNow)), !exited {
+                publish(.recovery(.pageReady))
+                return url
+            }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        throw RecoveryFailure.connection
+        throw exited ? RecoveryFailure.exited : RecoveryFailure.connection
     }
 
     private func inspectGuest(deadline: Date, restart: Bool = false) async throws -> GuestHealth {
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         activeGuestRequests.insert(nonce)
         defer { guestReplies.removeValue(forKey: nonce); activeGuestRequests.remove(nonce); timedGuestRequests.remove(nonce) }
-        send("NODE_OPTIONS= NODE_COMPILE_CACHE= node /opt/harness/control.cjs \(nonce) --handshake \(restart ? "restart" : "health")")
+        guard let serialChannel else { throw RecoveryFailure.guestControl }
+        do { try serialChannel.send("NODE_OPTIONS= NODE_COMPILE_CACHE= node /opt/harness/control.cjs \(nonce) --handshake \(restart ? "restart" : "health")") }
+        catch { throw RecoveryFailure.guestControl }
         let limit = deadline
         while Date() < limit, !Task.isCancelled, !exited {
             if let reply = guestReplies[nonce] { return reply }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
-        throw RecoveryFailure.control
+        throw exited ? RecoveryFailure.exited : RecoveryFailure.guestControl
     }
 
     /// A bounded sync attempt; this does not promise indefinite background execution.

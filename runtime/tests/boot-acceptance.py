@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shlex
 import socket
 import subprocess
@@ -18,6 +19,7 @@ import uuid
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('runtime',type=Path)
 parser.add_argument('--scratch',type=Path,default=Path('/var/tmp'))
+parser.add_argument('--recovery-only',action='store_true',help='Fault injection on a fresh disk; no iPad background claim')
 args=parser.parse_args()
 stage='START'
 token='0123456789abcdef0123456789abcdef'
@@ -102,11 +104,12 @@ def main():
   def transfer(route,method='GET',body=None):
    request=urllib.request.Request('http://127.0.0.1:39083'+route,method=method,data=body,headers=headers)
    with urllib.request.urlopen(request,timeout=180) as response:return response.read()
-  def guest_health():
+  def guest_health(action='health',stamp_override=None):
    nonce=uuid.uuid4().hex
-   console.sendall(f'NODE_OPTIONS= NODE_COMPILE_CACHE= node /opt/harness/control.cjs {nonce} --handshake health\n'.encode())
+   console.sendall(f'NODE_OPTIONS= NODE_COMPILE_CACHE= node /opt/harness/control.cjs {nonce} --handshake {action}\n'.encode())
    read_until(lambda data: ('HARNESS_CONTROL_READY:'+nonce+'\r\n').encode() in data,30)
-   stamp=int(time.time()*1000);console.sendall(f'HARNESS_TIME:{nonce}:{stamp}\n'.encode())
+   stamp=int(time.time()*1000) if stamp_override is None else stamp_override
+   console.sendall(f'HARNESS_TIME:{nonce}:{stamp}\n'.encode())
    read_until(lambda data: re.search(('HARNESS_CONTROL:'+nonce+':[^\r\n]+\r?\n').encode(),data),10)
    reply=re.findall(('HARNESS_CONTROL:'+nonce+':([^\r\n]+)').encode(),buffer)
    return json.loads(reply[-1])
@@ -119,6 +122,61 @@ def main():
    stage='CLOCK';result=guest_health();assert result['clock'] and result['running'] and result['writable']
    assert abs(result['epoch']/1000-time.time())<=2
    print('PASS:GUEST_CLOCK_AND_HEALTH',flush=True)
+   if args.recovery_only:
+    original_auth=latest_auth();original_pid=process.pid
+    shell("echo retained >/root/recovery-sentinel")
+    stage='RECOVERY_SUSPEND'
+    # Freeze the executor process, not a virtual-machine stop/reinitialization.
+    os.kill(original_pid,signal.SIGSTOP)
+    time.sleep(1)
+    os.kill(original_pid,signal.SIGCONT)
+    started=time.monotonic()
+    assert monitor('query-status')['running']
+    result=guest_health();ready_page()
+    assert result['running'] and result['writable'] and abs(result['epoch']/1000-time.time())<=2
+    assert latest_auth()==original_auth and process.pid==original_pid
+    assert time.monotonic()-started<10,'RECOVERY_OVER_TEN_SECONDS'
+    print('PASS:EXECUTOR_SUSPEND_RESUME_SAME_VM_AND_HARNESS',flush=True)
+    stage='RECOVERY_CLOCK_SKEW'
+    stale=guest_health(stamp_override=1700000000000)
+    assert abs(stale['epoch']/1000-time.time())>2,'STALE_CLOCK_NOT_DETECTED'
+    result=guest_health();assert result['clock'] and abs(result['epoch']/1000-time.time())<=2
+    print('PASS:STALE_CLOCK_DETECTED_AND_RESYNCHRONIZED',flush=True)
+    stage='RECOVERY_EXPIRED_HANDSHAKE'
+    nonce=uuid.uuid4().hex
+    console.sendall(f'NODE_OPTIONS= NODE_COMPILE_CACHE= node /opt/harness/control.cjs {nonce} --handshake health\n'.encode())
+    read_until(lambda data: ('HARNESS_CONTROL_READY:'+nonce+'\r\n').encode() in data,10)
+    time.sleep(6) # Guest times out; the next foreground attempt uses a fresh nonce.
+    result=guest_health();assert result['running'] and result['clock']
+    print('PASS:EXPIRED_HANDSHAKE_FRESH_RETRY',flush=True)
+    stage='RECOVERY_FORWARD'
+    monitor('human-monitor-command',{'command-line':'hostfwd_remove net0 tcp:127.0.0.1:39080'})
+    try:page(original_auth);raise RuntimeError('MISSING_FORWARD_WAS_READY')
+    except (OSError,http.client.HTTPException):pass
+    assert monitor('query-status')['running'] and guest_health()['running']
+    assert monitor('human-monitor-command',{'command-line':'hostfwd_add net0 tcp:127.0.0.1:39080-10.0.2.15:2999'}).strip()==''
+    ready_page();assert latest_auth()==original_auth
+    print('PASS:LOST_FORWARD_ISOLATED_AND_REPAIRED',flush=True)
+    stage='RECOVERY_HARNESS_EXIT'
+    kill_harness="const fs=require('node:fs');for(const pid of fs.readdirSync('/proc').filter(x=>/^\\d+$/.test(x))){try{const args=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split('\\0');if(args[1]==='node_modules/@deepseek-ai/dsh/lib/bin.js'&&args.includes('--port'))process.kill(Number(pid),'SIGTERM');}catch{}}"
+    shell('NODE_OPTIONS= NODE_COMPILE_CACHE= node -e '+shlex.quote(kill_harness))
+    deadline=time.monotonic()+15
+    while True:
+     result=guest_health()
+     if not result['running'] and result['restartable']:break
+     assert time.monotonic()<deadline,'HARNESS_EXIT_NOT_RESTARTABLE'
+     time.sleep(.1)
+    assert monitor('query-status')['running']
+    result=guest_health('restart');assert result['running']
+    read_until(lambda data:latest_auth()!=original_auth,90);ready_page()
+    shell("grep -q '^retained$' /root/recovery-sentinel && echo RECOVERY_''DATA_RETAINED")
+    assert b'\nRECOVERY_DATA_RETAINED' in buffer and process.pid==original_pid
+    print('PASS:HARNESS_EXIT_RESTART_WITHOUT_VM_REINITIALIZATION',flush=True)
+    stage='RECOVERY_VM_EXIT'
+    monitor('quit');process.wait(timeout=10)
+    assert process.poll() is not None and disk.exists()
+    print('PASS:CONFIRMED_VM_EXIT_PRESERVES_USER_DISK',flush=True)
+    return
    stage='STORAGE_TOOLS'
    shell("for tool in script node npm corepack pnpm yarn bash git ssh curl xdg-user-dir resize2fs ls find grep sed gawk diff patch ps lsblk less file tar gzip xz zstd zip unzip rg jq nano; do command -v \"$tool\" >/dev/null || exit 1; done; test -f /usr/share/zoneinfo/Etc/UTC && echo TOOLS_''PRESENT")
    assert b'\nTOOLS_PRESENT' in buffer,'TOOLS_INVENTORY_MISSING'
@@ -239,7 +297,9 @@ def main():
    else:print('DIAGNOSTIC:EXCEPTION_TYPE:'+type(error).__name__,flush=True)
    raise
   finally:
-   stop_serial.set();console.close();serial_reader.join(timeout=1);control.close();qmpfile.close();process.kill();process.wait();log.close()
+   if process.poll() is None:
+    os.kill(process.pid,signal.SIGCONT);process.kill();process.wait()
+   stop_serial.set();console.close();serial_reader.join(timeout=1);control.close();qmpfile.close();log.close()
 try:main()
 except Exception:
  print('FAIL:'+stage,flush=True)

@@ -154,3 +154,48 @@ extension View {
             }
     }
 }
+
+/// Touch entry for app-level tools; a small edge tab the user can drag along either side.
+struct HarnessToolsButton: View {
+    @ObservedObject var transfer: ProjectTransferModel
+    let showDiagnostics: () -> Void
+    @AppStorage("toolsButton.y") private var storedY = 0.5
+    @AppStorage("toolsButton.leading") private var leading = false
+    @State private var drag: CGSize = .zero
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size: CGFloat = 40
+            let minY = size / 2 + 8, maxY = geometry.size.height - size / 2 - 8
+            let x = leading ? size / 2 + 4 : geometry.size.width - size / 2 - 4
+            let y = min(max(storedY * geometry.size.height, minY), maxY)
+            Menu {
+                Button { transfer.exporting = true } label: { Label("导出项目…", systemImage: "square.and.arrow.up") }
+                Button { transfer.importing = true } label: { Label("导入项目…", systemImage: "square.and.arrow.down") }
+                Divider()
+                Button { showDiagnostics() } label: { Label("诊断", systemImage: "stethoscope") }
+            } label: {
+                Image(systemName: "shippingbox")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: size, height: size)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Color(uiColor: .separator), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+                    .opacity(drag == .zero ? 0.75 : 1)
+            }
+            .accessibilityLabel("项目工具")
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                    .onChanged { drag = $0.translation }
+                    .onEnded { value in
+                        let endX = x + value.translation.width
+                        leading = endX < geometry.size.width / 2
+                        storedY = min(max(y + value.translation.height, minY), maxY) / max(geometry.size.height, 1)
+                        drag = .zero
+                    }
+            )
+            .position(x: x + drag.width, y: y + drag.height)
+            .animation(.spring(duration: 0.25), value: leading)
+        }
+    }
+}

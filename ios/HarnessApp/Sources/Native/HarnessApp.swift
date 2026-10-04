@@ -9,7 +9,7 @@ struct HarnessApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HarnessRoot(runtime: runtime)
+            HarnessRoot(runtime: runtime, transfer: transfer)
                 .projectTransfer(transfer)
                 .task { await runtime.ensureRunning() }
                 .onChange(of: scenePhase) { phase in
@@ -51,6 +51,7 @@ private final class BackgroundLease {
 
 private struct HarnessRoot: View {
     @ObservedObject var runtime: RuntimeController
+    @ObservedObject var transfer: ProjectTransferModel
     @State private var painted = false
     @State private var showingDiagnostics = false
 
@@ -81,6 +82,8 @@ private struct HarnessRoot: View {
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
+            } else {
+                HarnessToolsButton(transfer: transfer) { showingDiagnostics = true }
             }
         }
         .sheet(isPresented: $showingDiagnostics) {

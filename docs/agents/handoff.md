@@ -9,6 +9,12 @@
 3. 真机任务读 [真机自动化](../validation/ipad-device-automation.md)；其他任务读对应验收记录。先用只读 `probe` 确认连接，按明确缺项推进，减少用户交互。
 4. 完成后更新本文件的状态、验证和下一步；原始日志/设备/签名参数保存到忽略的 `build/`，公开文档只记脱敏结果。
 
+## 2026-10-06 方案500架构决定已确认
+
+用户确认 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)（accepted）：原生 Worker 为主、Linux 为项目兼容插件，9P 共享模式选 `none`，首个正式范围的隔离语义为“事后检测并转为冲突”，独立 uid 加固留作后续。[ADR 0001](../adr/0001-local-linux-emulation.md) 中“Harness 在 Linux 内运行”的部分被取代；`CONTEXT.md` 新增原生工作区、Linux 兼容插件、预热、执行路径、能力声明、写租约、草稿等术语，并改写用户盘定义。
+
+决定随 [PR38](https://github.com/lvivvde/deepseek-harness-ipad/pull/38) 提交，合并仍须用户另行同意；PR38 合并时关闭 #32。#17 的实现须先关闭 ADR 0003 列出的六项前置关口（G2 耐久、G1 增量流、G3/G5 Git/hook、官方工具等价、G7 迁移回退、私有接口检测），任一不通过就收紧兼容范围。确认决定不触发正式 App 安装、用户盘迁移或新设备安装。
+
 ## 2026-10-06 PR / Issue 收尾
 
 用户要求把已完成交付实际合并和关单。本轮 PR36 的研究代码、报告与 proposed ADR 合入 main；架构决定仍未生效。#19 的备份恢复、同身份续签覆盖、83 文件保留及导出修复已交付，关闭为 completed；剩余续签/恢复缺口转入 [#37 维护跟进](https://github.com/lvivvde/deepseek-harness-ipad/issues/37)，不是登记历史故障已修复。旧评论及下方日期记录保留为历史。
@@ -31,7 +37,7 @@
 
 真实模型小闭环（分支 `research/plan500-real-model`）：用户在研究 App 自行输入 Key，`none` 模式 8/8 通过——7 次 HTTP 200、带版本修改 `math.cjs`、一次非精确命令被守卫派发前拒绝后精确 `node test.cjs` 成功、最终回复与 `turn/end(completed)`。SSE 仍缓冲交付，`mapped-xattr` 未跑模型。通过收据 `build/prototypes/plan500-ipad/worker-device-r4/model-result-safe.json`；审查修复（成功收据改脱敏轨迹、错误码允许表、未知工具/重复 callId 判越界）后 10 项判据测试、`make check` 和 macOS 两模式 23 + 9（`worker-host-trace-r3/`）通过，未在真机重跑模型。
 
-下一步：形成供用户确认的方案500架构决定，保留 G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口；#32 OPEN、#17 仍等待。正式数据不变，取消的锁屏测试不重启。
+下一步（已完成）：方案500架构决定已由用户确认，见上方“架构决定已确认”。G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口转为 #17 的前置关口。正式数据不变，取消的锁屏测试不重启。
 
 研究签名继续截止 2026-10-13 01:02:35（北京时间），本轮同身份覆盖安装，未卸载任何 App。私有设备资产在 `build/prototypes/plan500-ipad/worker-device-r1/`；只查看脱敏收据，Key 不从聊天获取、不可读取正式 App 的凭据。代码审查及复审已完成：Standards 无硬违反，Spec 三项模型误判均已修复，5 项判据测试通过。最终源码/资产的真机复跑在 `worker-device-r2/`，macOS 两模式 23 + 9 在 `worker-host-final-r3/`。模型及正式架构确认仍待完成；[ADR 0003](../adr/0003-native-worker-with-project-linux.md) 仅为 proposed，不改变既有决定。
 
@@ -47,8 +53,8 @@
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；当前开放子 Issue 顺序是 37→32→17→18→23→14，已完成 #19/#16 作为历史子项保留。重排不是新架构实施授权，当前 ADR 尚未改选。 |
 | [01｜维护跟进：10 月 12 日前续签与未完成恢复验证](https://github.com/lvivvde/deepseek-harness-ipad/issues/37) | #19 已交付关单。当前正式包 `7956e8c` 须在 2026-10-12 15:49:52 前续签；救援盘、未复现连接故障和历史恢复未知继续在本票保留，取消的锁屏不重启。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。官方 Worker/Swift/Linux 已在独立 iPad 研究 App 两模式各通过 23 项协作 + 9 项进程恢复检查。真实模型小闭环已在 `none` 模式有界通过，**下一步为形成用户架构决定**，入口见[最新报告](../research/plan500-worker-gateway.md)；正式实现、完整 G0–G7 与隔离缺口继续等待。 |
-| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 等待 #32 的可行性证据和用户架构决定。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。官方 Worker/Swift/Linux 已在独立 iPad 研究 App 两模式各通过 23 项协作 + 9 项进程恢复检查。真实模型小闭环已在 `none` 模式有界通过。**用户已确认架构决定（ADR 0003 accepted）**，PR38 合并时关闭本票；完整 G0–G7 与隔离缺口转为 #17 前置关口。 |
+| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 架构决定已确认（ADR 0003），PR38 合并后开工；先关六项前置关口。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
 | [06｜发布前：实际分发组件的许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与后续交互验收并行准备；需要适当法律判断。不是当前维护的前置，本轮不发布 GitHub Release。 |

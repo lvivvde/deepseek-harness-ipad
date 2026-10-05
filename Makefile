@@ -34,4 +34,5 @@ test-device-tools:
 
 test-plan500-ipad:
 	@python3 -m unittest discover -s runtime/prototypes/plan500-ipad -p test_build.py
+	@node --test runtime/prototypes/plan500-ipad/test_model.mjs
 	@swift test --package-path runtime/prototypes/plan500-darwin/gateway

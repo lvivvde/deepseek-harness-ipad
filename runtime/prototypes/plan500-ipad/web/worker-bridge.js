@@ -29,6 +29,39 @@ globalThis.fetch = async (input, options) => {
 };
 const plan500OriginalMessage = prototypeMessage;
 const plan500Installed = new Set();
+let plan500ModelActive = false;
+// Only current-run events are passed here, in the order delivered by the official session.
+function plan500ModelEvidence(events) {
+  const calls = new Map(), tools = [], replies = [], ends = [];
+  events.forEach((event, sequence) => {
+    const data = event.data;
+    if (event.type === 'tool/call') {
+      let args; try { args = JSON.parse(data.arguments); } catch {}
+      calls.set(data.callId, {name: data.name, args, callSequence: sequence, turn: data.turn});
+    } else if (event.type === 'tool/result') {
+      const message = data.message;
+      let value; try { value = JSON.parse(message.content[0]?.text); } catch {}
+      tools.push({...calls.get(message.toolCallId), sequence, isError: message.isError === true,
+        status: value?.status, code: value?.result?.code, stdout: value?.result?.stdout,
+        writerQuiescent: value?.result?.writerQuiescent});
+    } else if (event.type === 'assistant/message') {
+      replies.push({sequence, turn: data.turn, interrupted: data.interrupted === true,
+        text: (data.message?.content ?? []).filter(x => x.type === 'text').map(x => x.text).join('\n')});
+    } else if (event.type === 'turn/end') ends.push({sequence, turn: data.turn, kind: data.reason?.kind});
+  });
+  const fix = tools.find(x => x.name === 'plan500_write' && x.args?.path === 'math.cjs' && !x.isError && x.status === 'WRITTEN');
+  const boundedCalls = [...calls.values()].every(x =>
+    (x.name !== 'plan500_write' || x.args?.path === 'math.cjs') &&
+    (x.name !== 'plan500_linux' || x.args?.command?.trim() === 'node test.cjs'));
+  const tested = boundedCalls && fix && tools.find(x => x.name === 'plan500_linux' && x.args?.command?.trim() === 'node test.cjs'
+    && x.callSequence > fix.sequence && !x.isError && x.status === 'RELEASED' && x.code === 0
+    && x.writerQuiescent === true && x.stdout?.includes('MODEL_TEST_OK'));
+  const final = replies.at(-1), end = ends.at(-1);
+  return {tools, nativeFix: !!fix, linuxTest: !!tested, turnEnd: end?.kind,
+    assistantReturned: !!(tested && final && end && final.sequence > tested.sequence && !final.interrupted
+      && final.text.trim() && end.kind === 'completed' && end.turn === final.turn && final.turn === tested.turn
+      && end.sequence > final.sequence)};
+}
 prototypeMessage = async event => {
   const data = event.data;
   if (!['bridge-install', 'bridge-tool', 'home-snapshot', 'model-run'].includes(data.operation)) return plan500OriginalMessage(event);
@@ -49,28 +82,20 @@ prototypeMessage = async event => {
         const require = host.modules.createRequire('/dsh/config/cordis.yml');
         const {createUserMessage} = require('@deepseek-ai/dsh-llm');
         await ctx.get('credentials').set('DEEPSEEK_API_KEY', 'plan500-native-placeholder');
-        const calls = new Map(), results = [], replies = [];
+        const events = [];
+        const responsesBefore = plan500ModelResponses;
         const dispose = agent.ctx.on('session/event', (session, event) => {
           if (session.id !== agent.id) return;
-          if (event.type === 'tool/call') calls.set(event.data.callId, event.data.name);
-          if (event.type === 'tool/result') {
-            const message = event.data.message;
-            let value;
-            try { value = JSON.parse(message.content[0]?.text); } catch {}
-            results.push({name: calls.get(message.toolCallId), isError: message.isError === true,
-              status: value?.status, code: value?.result?.code, stdout: value?.result?.stdout,
-              writerQuiescent: value?.result?.writerQuiescent});
-          }
-          if (event.type === 'assistant/message') replies.push(...event.data.content ?? []);
+          if (['tool/call', 'tool/result', 'assistant/message', 'turn/end'].includes(event.type)) events.push(event);
         });
         const timeout = setTimeout(() => agent.cancel({kind: 'user'}), 240000);
+        plan500ModelActive = true;
         try {
           agent.followup(createUserMessage({source: {kind: 'user', rpcId: 'plan500-real-model'}, content: [{type: 'text', text:
             'This is an isolated native/Linux integration check. Only use plan500_read, plan500_write and plan500_linux. Read math.cjs and test.cjs from the native workspace. Fix the subtraction bug so add(2,3) returns 5, write math.cjs using the read version, then run node test.cjs through plan500_linux. Do not edit test.cjs. Do not claim success without exit code 0 and MODEL_TEST_OK in Linux stdout. Give a brief Chinese final result including that actual test result.'}]}));
           await agent.whenIdle();
-          result = {http200Responses: plan500ModelResponses, tools: results,
-            assistantReturned: replies.some(x => x.type === 'text' && x.text?.length > 0)};
-        } finally { clearTimeout(timeout); dispose(); }
+          result = {http200Responses: plan500ModelResponses - responsesBefore, ...plan500ModelEvidence(events)};
+        } finally { plan500ModelActive = false; clearTimeout(timeout); dispose(); }
       } else if (data.operation === 'bridge-install') {
         if (plan500Installed.has(data.sessionId)) throw new Error('BRIDGE_ALREADY_INSTALLED');
         const {defineTool} = host.modules.createRequire('/dsh/config/cordis.yml')('@deepseek-ai/dsh-tools');
@@ -85,11 +110,15 @@ prototypeMessage = async event => {
         tools.register(defineTool({...common, name: 'plan500_write',
           description: 'Write a native workspace file using the version returned by read, or null for a new file. A held or conflicting draft is preserved and is not a saved project edit.',
           parameters: {path: {type: 'string', required: true}, text: {type: 'string', required: true}, base: {oneOf: [{type: 'string'}, {type: 'null'}], required: true}},
-          execute: args => plan500Native('write', args)}));
+          execute: args => {
+            if (plan500ModelActive && args.path !== 'math.cjs') throw new Error('MODEL_FIXTURE_WRITE_REFUSED');
+            return plan500Native('write', args);
+          }}));
         tools.register(defineTool({...common, name: 'plan500_linux',
           description: 'Run a Linux shell command in /workspace, the exact same native project directory. Waits for real Linux ready. Returns stdout, stderr, exit code and writer quiescence. Bounded to 30 seconds.',
           parameters: {command: {type: 'string', required: true}, timeoutMs: {type: 'integer'}},
           async execute(args, exec) {
+            if (plan500ModelActive && args.command.trim() !== 'node test.cjs') throw new Error('MODEL_TEST_COMMAND_REFUSED');
             const operationId = String(exec.callId);
             const cancel = () => { plan500Native('cancel', {operationId}).catch(() => {}); };
             exec.signal.addEventListener('abort', cancel, {once: true});

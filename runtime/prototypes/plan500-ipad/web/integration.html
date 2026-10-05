@@ -176,20 +176,21 @@ window.plan500RunModel = async () => {
     verify('official model session opens', created.data.result?.ok === true);
     await instrument(worker, 'bridge-install', {sessionId});
     const read = path => tool(worker, sessionId, 'plan500_read', {path});
-    for (const [path, text] of [['math.cjs', 'module.exports = (a, b) => a - b;\n'],
-        ['test.cjs', "const assert = require('node:assert/strict'); assert.equal(require('./math.cjs')(2, 3), 5); console.log('MODEL_TEST_OK');\n"]]) {
+    const originalTest = "const assert = require('node:assert/strict'); assert.equal(require('./math.cjs')(2, 3), 5); console.log('MODEL_TEST_OK');\n";
+    for (const [path, text] of [['math.cjs', 'module.exports = (a, b) => a - b;\n'], ['test.cjs', originalTest]]) {
       const observed = await read(path);
       const saved = await tool(worker, sessionId, 'plan500_write', {path, text, base: observed.version ?? null});
       verify('synthetic model fixture saved: ' + path, saved.status === 'WRITTEN');
     }
     const outcome = await instrument(worker, 'model-run', {sessionId});
     verify('real official model API returns HTTP 200', outcome.http200Responses > 0);
-    verify('model writes native project through gateway', outcome.tools.some(x => x.name === 'plan500_write' && !x.isError && x.status === 'WRITTEN'));
-    verify('model invokes actual Linux test and receives success', outcome.tools.some(x => x.name === 'plan500_linux' && !x.isError && x.code === 0 && x.writerQuiescent && x.stdout?.includes('MODEL_TEST_OK')));
+    verify('model writes math.cjs through gateway', outcome.nativeFix);
+    verify('original assertion test remains unchanged', (await read('test.cjs')).text === originalTest);
+    verify('model invokes actual node test.cjs after source write and receives success', outcome.linuxTest);
     verify('official agent returns a final result', outcome.assistantReturned);
     await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
     await native('model-done', {result: {passed: true, checks: modelChecks, workerIntegrated: true,
-      modelNetworkVerified: true, tools: outcome.tools, http200Responses: outcome.http200Responses,
+      modelNetworkVerified: true, tools: outcome.tools, turnEnd: outcome.turnEnd, http200Responses: outcome.http200Responses,
       networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'}});
   } catch (error) {
     await native('model-done', {result: {passed: false, checks: modelChecks, error: String(error), modelNetworkVerified: false}});

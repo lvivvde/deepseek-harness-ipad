@@ -258,6 +258,7 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
         super.init()
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.userContentController.add(self, name: "native")
+        config.userContentController.add(self, name: "log")
         config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
     }
@@ -279,8 +280,15 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
         }
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any],
-              let id = body["id"] as? Int, let operation = body["operation"] as? String else { return }
+        guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
+        if message.name == "log" {
+            // Bounded diagnostics stay in the ignored/private research container, never UI or console.
+            if let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 65536 {
+                try? data.write(to: coordinator.probe.root.appendingPathComponent("worker-diagnostics-private.log"), options: .atomic)
+            }
+            return
+        }
+        guard message.name == "native", let id = body["id"] as? Int, let operation = body["operation"] as? String else { return }
         if operation == "model-done" || operation == "done" {
             do {
                 guard var result = body["result"] as? [String: Any] else { throw WorkerBridgeError.refused("RESULT_REFUSED") }
@@ -350,16 +358,28 @@ private final class WorkerResearchModel: ObservableObject {
         guard host == nil else { return }
         do {
             let args = ProcessInfo.processInfo.arguments
+            let defaults = UserDefaults.standard
             let selection: String
             if let index = args.firstIndex(of: "--model"), args.indices.contains(index + 1),
                ["none", "mapped-xattr"].contains(args[index + 1]) { selection = args[index + 1] }
-            else { selection = "none" }
+            else { selection = defaults.string(forKey: "plan500.worker.model") ?? "none" }
+            guard ["none", "mapped-xattr"].contains(selection) else { throw WorkerBridgeError.refused("MODEL_REFUSED") }
+            let projectId: String?
+            if let index = args.firstIndex(of: "--project-id"), args.indices.contains(index + 1) {
+                guard let id = UUID(uuidString: args[index + 1]) else { throw WorkerBridgeError.refused("PROJECT_ID_REFUSED") }
+                projectId = id.uuidString
+            } else if args.contains("--model") { projectId = nil }
+            else { projectId = defaults.string(forKey: "plan500.worker.project") }
+            if let projectId, UUID(uuidString: projectId) == nil { throw WorkerBridgeError.refused("PROJECT_ID_REFUSED") }
+            defaults.set(selection, forKey: "plan500.worker.model")
+            defaults.set(projectId, forKey: "plan500.worker.project")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let probe = try ResearchProbe(model: selection,
-                projectRoot: documents.appendingPathComponent("Plan500Research/worker-" + selection)) { _ in }
+                projectRoot: documents.appendingPathComponent("Plan500Research/worker-" + selection + (projectId.map { "-" + $0 } ?? ""))) { _ in }
             let coordinator = try WorkerCoordinator(probe: probe)
+            let resume = args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path)
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
-                                     resume: args.contains("--resume")) { [weak self] passed in
+                                     resume: resume) { [weak self] passed in
                 self?.finished = passed; self?.modelRunning = false
                 self?.status = passed ? "检查完成；详细范围见研究收据" : "检查未通过；详情见私有收据"
             }

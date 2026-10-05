@@ -28,7 +28,7 @@
 
 研究 App 完成检查后显示 SecureField 和“运行真实模型修改与 Linux 测试”。用户自行在设备输入 DeepSeek API Key，不从聊天取值，不读取正式 App 凭据。Key 仅留 Swift 内存，Worker 的凭据服务只得到占位值；检查结束清除本次 Key。
 
-固定流程：在研究工作区生成有减法缺陷的 `math.cjs` 和断言 `add(2,3) === 5` 的 `test.cjs`；官方 Agent 读取并带版本修改前者，调用 Linux `node test.cjs`，接收退出码 0 / `MODEL_TEST_OK`，再返回结果。验收要同时看到真实模型 HTTP 200、官方 session/tool 事件中的写入及 Linux 成功、最终回复；不能用手写工具序列或模拟模型代替。
+固定流程：在研究工作区生成有减法缺陷的 `math.cjs` 和断言 `add(2,3) === 5` 的 `test.cjs`；官方 Agent 读取并带版本修改前者，调用 Linux `node test.cjs`，接收退出码 0 / `MODEL_TEST_OK`，再返回结果。验收要同时看到真实模型 HTTP 200、官方 session/tool 事件中的 `math.cjs` 带版本写入、其后精确 `node test.cjs` 成功、原断言文件字节未变、成功工具结果之后的最终文本和 `turn/end(completed)`；不能用手写工具序列或模拟模型代替。本次模型工具范围只允许写 `math.cjs`、运行该测试命令，拒绝临时替换测试或其他 shell 命令。
 
 研究网络桥只接受 `https://api.deepseek.com/anthropic/v1/messages`，拒绝重定向，不记录 Key；每次检查最多 12 次请求、每次最多 2048 输出 token。当前原型缓冲 HTTPS SSE body 再交官方 adapter 解析，**不是增量流式交付的验收**。HTTP/模型失败保留为未通过。
 
@@ -51,11 +51,11 @@ python3 runtime/prototypes/plan500-ipad/build.py \
   --output build/prototypes/plan500-ipad/worker-unsigned-new
 ```
 
-设备首次协作检查用 `--worker-probe --model none --run-id <本轮随机值>`，恢复用相同模式加 `--resume`、新的 run-id；另一模式为 `mapped-xattr`。首次检查要求新的合成样本，不能对已被 Linux 修改的旧样本冒充首次检查。独立 `--plan500-probe` 原有 15 项协议入口继续保留。
+设备首次协作检查用 `--worker-probe --model none --project-id <新的 UUID> --run-id <本轮随机值>`，恢复用相同模式和 project-id、新的 run-id；另一模式为 `mapped-xattr`。研究 App 保存上次模式和项目选择，普通图标重开自动根据 `/dsh/home` 检查点进入恢复；`--resume` 仍可明确要求恢复检查。首次检查要求新的合成样本，不能对已被 Linux 修改的旧样本冒充首次检查。独立 `--plan500-probe` 原有 15 项协议入口继续保留。
 
 ## 回归与审查
 
-29 项正式 Swift、32 项 runtime（固定官方依赖，无跳过）、11 项设备工具、4 项研究输入拒绝、17 项 Swift 网关测试及 `make check` 通过。新增两个网关测试均有红绿证据：Linux 冷状态原生读写、冲突草稿跨网关恢复。最终 macOS 复跑入口两模式各 23 + 9，通过并记录源码/Worker 资产摘要。代码审查以本轮起点 `776020f` 为固定基线，结果待追加。
+29 项正式 Swift、32 项 runtime（固定官方依赖，无跳过）、11 项设备工具、4 项研究输入拒绝、17 项 Swift 网关测试、5 项模型验收判据测试及 `make check` 通过。新增两个网关测试均有红绿证据：Linux 冷状态原生读写、冲突草稿跨网关恢复。最终 macOS 复跑入口两模式各 23 + 9，通过并记录源码/Worker 资产摘要。代码审查以本轮起点 `776020f` 为固定基线，Standards 无硬违反；低优先状态字符串建模建议保留。Spec 最初发现测试标记和中途评论会误判，复审又发现临时替换测试后恢复的误判；均已修复，5 项反例/正例测试红后绿，最终聚焦复审无新增发现。另补齐 WebKit 私有日志入口和普通图标重开自动恢复。
 
 ## 尚未解除的关口
 
@@ -63,4 +63,4 @@ python3 runtime/prototypes/plan500-ipad/build.py \
 
 下一步完成真机真实模型小闭环，再把受支持范围、剩余隔离风险、插件生命周期和迁移边界作为可审阅的方案500架构决定提交用户确认。#32 OPEN，#17 继续等待；不据这四项检查直接改选正式架构。
 
-私有证据入口：`build/prototypes/plan500-ipad/worker-device-r1/signing-safe.json`、`worker-none-first/latest-result-safe.json`、`worker-none-resume/latest-result-safe.json`、`worker-mapped-xattr-first/latest-result-safe.json`、`worker-mapped-xattr-resume/latest-result-safe.json`。macOS 收据与编译来源在 `worker-host-final/worker-host-safe.json`；原始网络、串口、设备和签名信息均不提交。
+私有证据入口：`build/prototypes/plan500-ipad/worker-device-r1/signing-safe.json`、`worker-none-first/latest-result-safe.json`、`worker-none-resume/latest-result-safe.json`、`worker-mapped-xattr-first/latest-result-safe.json`、`worker-mapped-xattr-resume/latest-result-safe.json`。最终审查修复后的真机收据与签名/编译摘要同结构位于 `worker-device-r2/`；两种模式恢复均使用不带 `--worker-probe`、`--model` 或 `--resume` 的普通入口启动（仅传新 run-id 关联收据）。macOS 最终收据与编译来源在 `worker-host-final-r3/worker-host-safe.json`；原始网络、串口、设备和签名信息均不提交。

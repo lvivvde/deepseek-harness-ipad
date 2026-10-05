@@ -23,7 +23,7 @@
 
 下一步：在研究 App 中由用户自行输入 API Key，运行真实模型修改 `math.cjs` → Linux `node test.cjs` → 官方会话返回结果；模型尚未通过。然后形成供用户确认的方案500架构决定，保留 G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口；#32 OPEN、#17 仍等待。正式数据不变，取消的锁屏测试不重启。
 
-研究签名继续截止 2026-10-13 01:02:35（北京时间），本轮同身份覆盖安装，未卸载任何 App。私有设备资产在 `build/prototypes/plan500-ipad/worker-device-r1/`；只查看脱敏收据，Key 不从聊天获取、不可读取正式 App 的凭据。待本轮模型和代码审查完成后更新此处最终状态。
+研究签名继续截止 2026-10-13 01:02:35（北京时间），本轮同身份覆盖安装，未卸载任何 App。私有设备资产在 `build/prototypes/plan500-ipad/worker-device-r1/`；只查看脱敏收据，Key 不从聊天获取、不可读取正式 App 的凭据。代码审查及复审已完成：Standards 无硬违反，Spec 三项模型误判均已修复，5 项判据测试通过。最终源码/资产的真机复跑在 `worker-device-r2/`，macOS 两模式 23 + 9 在 `worker-host-final-r3/`。模型及正式架构确认仍待完成；[ADR 0003](../adr/0003-native-worker-with-project-linux.md) 仅为 proposed，不改变既有决定。
 
 ## 当前代码与交付
 

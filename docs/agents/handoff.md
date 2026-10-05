@@ -56,3 +56,10 @@
 ## 本轮工具验证
 
 真机工具的 11 项无设备行为测试通过；实际生成的签名 xctestrun 已确认只有独立 runner/测试 bundle 依赖。无签名与个人团队签名 build-for-testing 成功。只读 probe 实际识别已配对 iPad、确认 Harness 已安装，初次 probe 返回锁定并正确停止；用户正常解锁后，新 CLI 和最新独立 runner 的 `page` 真机检查通过，页面检查阶段约 7.145 秒。固定状态复制返回 `recovery:pageReady`，`settings` 真机检查也通过（容量、备份/恢复入口可见并关闭设置）。GUI 辅助脚本类型检查通过。该数不是首次解锁恢复耗时，旧 runner 的锁屏验收边界继续保留。
+
+
+## 2026-10-05 Issue #19 本机维护
+
+新增只读 `runtime/check-signing.py`，检查新旧 IPA 的 SHA256/ZIP、签名、应用身份、钥匙串组、描述文件设备与 profile/证书有效期；不调用设备工具或修改原资产。16 项 CLI 测试、27 Swift、14 guest（无跳过）、11 真机工具及 `make check` 通过。真实 da2d0aa IPA 预检通过，截止仍为 2026-10-10 21:11:14（北京时间），未延长；真机现有页面检查通过，约 3.650 秒不作为首次解锁恢复耗时。
+
+没有打包、续签、安装或锁屏；历史恢复、实际时差及完整真机备份/救援/重签后的数据验收仍未验证，#19 保持 OPEN。下一步在明确重签任务中生成同身份候选，预检确认有效期延长后再按授权覆盖安装和核验数据。详细边界见 [维护与重签前校验](../validation/ipad-signing-maintenance.md)，私有日志/安全收据在忽略的 `build/signing-check/` 和 `build/device-acceptance/`。接手时保留本轮开始前已有的任务重排文档改动。

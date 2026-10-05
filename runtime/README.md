@@ -62,7 +62,7 @@ python3 runtime/package-ipa.py \
   /path/to/HarnessApp-0.1.0-dev.ipa
 ```
 
-签名配置仍在忽略的 `ios/HarnessApp/Signing.local.xcconfig`，不要提交签名身份、描述文件或设备标识。打包器检查资源完整性、开发描述文件和签名；拒绝覆盖已有 IPA，保留符号链接。当前个人开发签名只覆盖配置中的设备，其他用户的重签安装链路尚未验收。
+签名配置仍在忽略的 `ios/HarnessApp/Signing.local.xcconfig`，不要提交签名身份、描述文件或设备标识。打包器检查资源完整性、开发描述文件和签名；拒绝覆盖已有 IPA，保留符号链接。重签候选安装前用 `runtime/check-signing.py` 比较可信旧 IPA 与新包的摘要、身份和有效期，见 [维护与重签前校验](../docs/validation/ipad-signing-maintenance.md)。预检不安装，也不代表续签或数据保留已经验收。当前个人开发签名只覆盖配置中的设备，其他用户的重签安装链路尚未验收。
 
 此前 M1 本地 IPA 实测约 **311 MB**，最终字节数和 SHA256 随本机包的 sidecar 记录；该旧版未压缩的两个 raw 文件分别为 1 GiB 和 512 MiB（本轮新种子缩为 8 MiB，首次启动仍扩到 8 GiB；不会更改已有用户盘），内核 10,387,968 字节、小 initramfs 1,673,827 字节。App bundle 的本机磁盘占用约 1.5 GiB，不等于设备安装占用；设备实际占用、冷启动和内存需要真机另测。构建默认不能当作之前包体/性能估计的验收结果。
 

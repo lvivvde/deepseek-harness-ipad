@@ -17,7 +17,7 @@ function events(command = 'node test.cjs', path = 'math.cjs') {
 test('accepts ordered native fix, real test, post-test final reply and completed turn', () => {
   const proof = scope.plan500ModelEvidence(events());
   assert.equal(proof.nativeFix, true); assert.equal(proof.linuxTest, true); assert.equal(proof.assistantReturned, true);
-  assert.equal(proof.tools[1].args.command, 'node test.cjs');
+  assert.equal(proof.trace[1].exactTestCommand, true);
 });
 test('refuses marker-only command and writing the test instead of the source', () => {
   assert.equal(scope.plan500ModelEvidence(events('printf MODEL_TEST_OK')).linuxTest, false);
@@ -43,4 +43,49 @@ test('refuses test before the saved source edit and unconfirmed writer drain', (
   assert.equal(scope.plan500ModelEvidence([original[2], original[3], original[0], original[1], reply, end('completed')]).linuxTest, false);
   const active = events(); active[3] = result('l', {status: 'WRITER_UNKNOWN', result: {code: 0, stdout: 'MODEL_TEST_OK', writerQuiescent: false}});
   assert.equal(scope.plan500ModelEvidence(active).linuxTest, false);
+});
+test('failure trace explains rejection without file text, commands or stdout', () => {
+  const refusedFirst = [call('x', 'plan500_linux', {command: 'cd /workspace && node test.cjs'}),
+    {type: 'tool/result', data: {turn: 1, message: {toolCallId: 'x', isError: true, content: [{text: 'Error: MODEL_TEST_COMMAND_REFUSED'}]}}},
+    ...events()];
+  const proof = scope.plan500ModelEvidence(refusedFirst);
+  assert.equal(proof.linuxTest, true); assert.equal(proof.boundedCalls, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(proof.trace)), [
+    {name: 'plan500_linux', turn: 1, callOrder: 0, resultOrder: 1, isError: true, errorCode: 'MODEL_TEST_COMMAND_REFUSED', exactTestCommand: false},
+    {name: 'plan500_write', turn: 1, callOrder: 2, resultOrder: 3, isError: false, status: 'WRITTEN', fixturePath: true},
+    {name: 'plan500_linux', turn: 1, callOrder: 4, resultOrder: 5, isError: false, status: 'RELEASED', code: 0,
+      markerSeen: true, writerQuiescent: true, exactTestCommand: true}]);
+  const serialized = JSON.stringify(proof.trace);
+  for (const leaked of ['a+b', 'cd /workspace', 'MODEL_TEST_OK\\n']) assert.equal(serialized.includes(leaked), false);
+});
+test('bridge-refused out-of-scope attempts are allowed, executed or other failures are not', () => {
+  const refused = (id, name, args, code) => [call(id, name, args),
+    {type: 'tool/result', data: {turn: 1, message: {toolCallId: id, isError: true, content: [{text: 'Error: ' + code}]}}}];
+  const ok = [...refused('x', 'plan500_write', {path: 'test.cjs', text: 'fake'}, 'MODEL_FIXTURE_WRITE_REFUSED'), ...events()];
+  assert.equal(scope.plan500ModelEvidence(ok).assistantReturned, true);
+  const otherError = [...refused('x', 'plan500_linux', {command: 'ls'}, 'LINUX_NOT_READY'), ...events()];
+  assert.equal(scope.plan500ModelEvidence(otherError).linuxTest, false);
+  const wrongCode = [...refused('x', 'plan500_write', {path: 'test.cjs', text: 'fake'}, 'MODEL_TEST_COMMAND_REFUSED'), ...events()];
+  assert.equal(scope.plan500ModelEvidence(wrongCode).linuxTest, false);
+  const unanswered = [call('x', 'plan500_linux', {command: 'ls'}), ...events()];
+  assert.equal(scope.plan500ModelEvidence(unanswered).linuxTest, false);
+});
+test('refusal and trace codes are exact allowlisted texts, never echoed content', () => {
+  const failed = (id, name, args, text) => [call(id, name, args),
+    {type: 'tool/result', data: {turn: 1, message: {toolCallId: id, isError: true, content: [{text}]}}}];
+  const echoed = [...failed('x', 'plan500_linux', {command: 'ls'}, 'Invalid timeoutMs: MODEL_TEST_COMMAND_REFUSED'), ...events()];
+  const proof = scope.plan500ModelEvidence(echoed);
+  assert.equal(proof.boundedCalls, false); assert.equal(proof.trace[0].errorCode, 'OTHER');
+  const leaky = scope.plan500ModelEvidence([...failed('y', 'plan500_read', {path: 'x'}, 'Error: SECRET_TOKEN_FROM_FILE'), ...events()]);
+  assert.equal(leaky.trace[0].errorCode, 'OTHER'); assert.equal(JSON.stringify(leaky.trace).includes('SECRET'), false);
+});
+test('unknown tools and reused call ids are out of scope', () => {
+  assert.equal(scope.plan500ModelEvidence([call('z', 'shell', {command: 'ls'}), result('z', {}), ...events()]).linuxTest, false);
+  const reused = [...events().slice(0, 4), call('l', 'plan500_linux', {command: 'node test.cjs'}), ...events().slice(4)];
+  assert.equal(scope.plan500ModelEvidence(reused).boundedCalls, false);
+});
+test('model evidence exposes only the redacted trace and a reply count', () => {
+  const proof = scope.plan500ModelEvidence(events());
+  assert.equal('tools' in proof, false); assert.equal(proof.replyCount, 1);
+  assert.equal(JSON.stringify(proof).includes('a+b'), false);
 });

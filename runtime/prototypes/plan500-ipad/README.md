@@ -73,4 +73,4 @@ python3 runtime/prototypes/plan500-ipad/build.py \
 
 设备参数 `--worker-probe --model none --run-id <本轮标识>` 运行协作检查；同模式新 App 进程加 `--resume` 验证恢复。两模式各 23 + 9 项已通过，首次样本不可复用已修改过的目录。签名、安装和收据复制遵循现有工具及授权。完整恢复、官方 fs/Git/hook provider、隔离与性能仍未通过。
 
-检查完成后原生 SecureField 可输入 DeepSeek Key 并运行真实模型小闭环。Key 仅留 Swift 内存，Worker 只有占位凭据；只发固定官方 Messages URL，拒绝重定向，缓冲 SSE body 交官方 adapter 解析。当前模型结果尚未通过，不把此入口当作网络或流式验收。
+检查完成后原生 SecureField 可输入 DeepSeek Key 并运行真实模型小闭环。Key 仅留 Swift 内存，Worker 只有占位凭据；只发固定官方 Messages URL，拒绝重定向，缓冲 SSE body 交官方 adapter 解析。`none` 模式已在 iPad 通过 8/8 模型检查（7 次 HTTP 200、带版本修改、精确 `node test.cjs` 成功、最终回复与 `turn/end(completed)`），收据只含脱敏轨迹；不把此入口当作流式验收，`mapped-xattr` 未跑模型。判据测试：`node --test runtime/prototypes/plan500-ipad/test_model.mjs`。

@@ -166,7 +166,11 @@ window.plan500RunModel = async () => {
     document.querySelector('#state').textContent = JSON.stringify(modelChecks, null, 2);
     if (!passed) throw new Error(name);
   }
-  let worker;
+  let worker, outcome;
+  // Redacted trace only; JSON round trip drops undefined fields before WebKit bridges the receipt to Foundation.
+  const plan500SafeModelResult = (passed, extra) => JSON.parse(JSON.stringify({passed, checks: modelChecks, ...extra,
+    trace: outcome?.trace, boundedCalls: outcome?.boundedCalls, turnEnd: outcome?.turnEnd,
+    http200Responses: outcome?.http200Responses, replyCount: outcome?.replyCount}));
   try {
     const restored = await native('restore');
     const opened = await boot(restored.snapshot ?? undefined);
@@ -182,18 +186,17 @@ window.plan500RunModel = async () => {
       const saved = await tool(worker, sessionId, 'plan500_write', {path, text, base: observed.version ?? null});
       verify('synthetic model fixture saved: ' + path, saved.status === 'WRITTEN');
     }
-    const outcome = await instrument(worker, 'model-run', {sessionId});
+    outcome = await instrument(worker, 'model-run', {sessionId});
     verify('real official model API returns HTTP 200', outcome.http200Responses > 0);
     verify('model writes math.cjs through gateway', outcome.nativeFix);
     verify('original assertion test remains unchanged', (await read('test.cjs')).text === originalTest);
     verify('model invokes actual node test.cjs after source write and receives success', outcome.linuxTest);
     verify('official agent returns a final result', outcome.assistantReturned);
     await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
-    await native('model-done', {result: {passed: true, checks: modelChecks, workerIntegrated: true,
-      modelNetworkVerified: true, tools: outcome.tools, turnEnd: outcome.turnEnd, http200Responses: outcome.http200Responses,
-      networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'}});
+    await native('model-done', {result: plan500SafeModelResult(true, {workerIntegrated: true, modelNetworkVerified: true,
+      networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'})});
   } catch (error) {
-    await native('model-done', {result: {passed: false, checks: modelChecks, error: String(error), modelNetworkVerified: false}});
+    await native('model-done', {result: plan500SafeModelResult(false, {error: String(error), modelNetworkVerified: false})});
   } finally { worker?.terminate(); }
 };
 </script>

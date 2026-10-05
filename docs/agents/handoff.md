@@ -21,8 +21,8 @@
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
 | [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断已修复（`7956e8c`），真机复测通过：冷启动后首次导出和重启后立即导出都一次成功。须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（用户阻塞）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | **持续阻塞**，无人认领、无 `ready-for-agent`；仅用户明确解除后可研究/原型/实现。项目启用后打开即异步预热，触及 Linux 指令/hook 时等待并自动继续。作为新架构决策关口；500 是方案编号，GitHub 为 #32。 |
-| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 被 #32 阻塞。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | **2026-10-05 用户已明确解除阻塞，授权可行性研究和架构决策**；已认领，无 `ready-for-agent`，保持 OPEN。研究分支 `research/plan500-feasibility`，报告见 `docs/research/plan500-feasibility.md`。项目打开即异步预热、任务/hook 就绪门禁的偏好保留；正式实现与用户架构决定仍待完成。 |
+| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 等待 #32 的可行性证据和用户架构决定。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
 | [06｜发布前：实际分发组件的许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与后续交互验收并行准备；需要适当法律判断。不是当前维护的前置，本轮不发布 GitHub Release。 |
@@ -106,3 +106,12 @@
   1. 在 2026-10-12 15:49:52（北京时间）前获取新 profile，从 `7956e8c` 或之后的 main 重签。
   2. 另获安装授权后再安装，安装前后照旧做真实备份和 83 文件比较。
 - **私有资产**：`build/maintenance19/r2-7956e8c/`，从 `delivery-receipt-safe.json` 开始看。导出用例超时可能截断冷启动，可用同目录的 900 秒版本 `run-check-long-private.py`。
+
+## 2026-10-05 方案500研究授权与维护收尾
+
+- 用户已授权合并 [PR #35](https://github.com/lvivvde/deepseek-harness-ipad/pull/35)，已进入 main `0edae81`；这是交付记录，正式 iPad 的代码基线和签名截止仍为 `7956e8c`、2026-10-12 15:49:52（北京时间）。#19 正文已同步安装版本、真实导出结果与 83 文件比较，保持 OPEN。
+- 用户随后明确回答“解除阻塞，进入可行性研究和架构决策”。此授权取代上述历史 #32 人工阻塞，已移除 `blocked` 并认领研究；#17/#18/#23/#14 的技术依赖继续有效，架构决定前不更新 ADR/CONTEXT。
+- 研究分支：[research/plan500-feasibility](https://github.com/lvivvde/deepseek-harness-ipad/tree/research/plan500-feasibility)。报告保存为 [方案500可行性研究](../research/plan500-feasibility.md)，区分固定源码事实、方案推断和未通过的 iPad 验证关口。
+- 本轮不打包或安装，不读取、迁移或替换正式用户盘；取消的锁屏测试继续取消。实际 QEMU 二进制仅作只读静态字符串检查，不能登记共享目录可用。脱敏收据在忽略的 `build/research/plan500/`。
+- 已核实：固定官方源码有实验 Worker/packer 接缝，但目前面向预览；现成 mobile Node 为 18.20.4，不满足固定上游 Node 版本要求。官方 plugin-manager、stdio MCP、JSONL 锁/验证线程存在独立平台依赖；hook 基础设施失败可能默认非阻断，因此 Linux 就绪门禁必须位于调用 hook 之前。研究报告提供精确源码链接和未知项，不登记 iPad 可用性通过。
+- 下一步建议：先评估官方 Worker + iPad 工作区桥 + Linux 能力网关候选，优先验证无 VM 的核心与耐久存储、同一工作区双向语义和预热就绪门禁。候选范围待用户决定，#32 不因研究完成自动关闭，#17 不自动启动。

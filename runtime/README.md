@@ -1,6 +1,8 @@
 # 内置运行时与开发 IPA
 
-实现 [内置运行时任务](https://github.com/lvivvde/deepseek-harness-ipad/issues/17)。采用已确认的 [运行时交付决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/12)：Debian 13 arm64 固定快照、Alpine 6.18.52-0-virt、Node 24.21.0、官方 dsh 0.2.0-rc.2；小 initramfs、只读 ext4 系统盘、独立 ext4 `/root` 用户盘。首次启动不下载运行时。
+本文记录已交付的内置 Linux 运行时及其构建流程；#17 当前范围已改为新架构实现，等待方案500 #32 的架构决定。现有运行时采用已确认的 [运行时交付决策](https://github.com/lvivvde/deepseek-harness-ipad/issues/12)：Debian 13 arm64 固定快照、Alpine 6.18.52-0-virt、Node 24.21.0、官方 dsh 0.2.0-rc.2；小 initramfs、只读 ext4 系统盘、独立 ext4 `/root` 用户盘。首次启动不下载运行时。
+
+方案500的隔离研究入口见[Worker 持久化探针](prototypes/plan500-worker/README.md)与[共享工作区/真实 Linux RPC 探针](prototypes/plan500-sharing/README.md)。原型没有接入本节正式运行时；研究进度与当前下一步见[结果报告](../docs/research/plan500-sharing-rpc.md)。
 
 ## 固定输入
 
@@ -76,7 +78,7 @@ Linux 测试 VM 中真实 QEMU 已启动新镜像，按官方 token/cookie 流�
 
 故障验收可在 Linux 执行 `python3 runtime/check-boot.py /path/to/new-guest`，需要 QEMU、mke2fs、debugfs。它只创建自有临时盘：未来布局 v2 必须进入 USER_LAYOUT 救援且完整 raw 哈希不变；数据块满但 inode/目录尚可用时，必须进入 USER_SPACE 救援，不能尝试启动 Harness。两项真实 QEMU 验收已通过。正常启动还执行非空同步写入探测，空间不足或 I/O 失败有明确故障码。
 
-正式 M1–M3 已合入 main，并生成过一次 main IPA；设备仍是旧 dev9，新包未安装。工具与存储补齐分支本轮不打包、不安装。S 仓库、模型/插件调用、键盘、长后台、重签、存储与性能仍需集中真机验收；相关 issue 保持开放。
+截至 2026-10-05，正式 M1–M3 与后续工具/存储及导出修复已合入 main，最近验证的设备安装基线为 `7956e8c`。同身份覆盖安装前后 83 个文件一致，修复后冷启动首次导出和重启后立即导出均一次成功；签名截止仍为 2026-10-12 15:49:52（北京时间）。真机闭环、交互和历史恢复缺项按对应 Issue 保留，详细边界见[开发交接](../docs/agents/handoff.md)及[维护记录](../docs/validation/ipad-signing-maintenance.md)。方案500研究不表示这些缺项通过，也未安装新的原型包。
 
 原生仅把固定阶段和启动时长写到自己的 `Library/Application Support/HarnessRuntime/RuntimeStatus.json`，页面绘制打印固定标记。原始串口、完整启动 URL、凭据和设备标识不写入该记录或公开收据。
 

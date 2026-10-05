@@ -37,4 +37,6 @@ python3 runtime/prototypes/plan500-worker/run.py --unadapted
 
 14 项真实 WebKit 检查涵盖官方接口、模块加载、schema 拒绝、会话创建/中文标题、文件写入、Swift 确认、Worker 重建恢复和注入保存失败。会话列表缓存可能滞后；重开官方会话后校验 JSONL 的权威标题，不能把列表缓存当成恢复完成。
 
-这只是有界文件/会话检查点。没有跨 App/系统崩溃证明、目录 fsync、损坏日志恢复、并发写、外部写者、hardlink/symlink 身份保留、压缩日志迁移或实时 POSIX 共享协议。snapshot base64 与主线程写入也不适合直接用于大型工作区。没有 iPad、模型流式请求、完整 UI、真实 Linux 预热或 Git hook 验收。完整 G0–G7 门槛见研究报告；任何部分通过均不关闭 #32 或自动启动 #17。
+这只是有界文件/会话检查点。没有跨 App/系统崩溃证明、目录 fsync、损坏日志恢复、并发写、外部写者、hardlink/symlink 身份保留、压缩日志迁移或实时 POSIX 共享协议。snapshot base64 与主线程写入也不适合直接用于大型工作区。本探针没有 iPad、模型流式请求、完整 UI、真实 Linux 预热或 Git hook 验收。
+
+后续已增加独立[共享工作区/真实 Linux RPC 探针](../plan500-sharing/README.md)：两种模式各通过 23 项协议检查，但跨域锁、通知及 mapped-xattr 元数据仍有缺口；并未连接本 Worker 的产品调度。当前下一步见[共享/RPC 报告](../../../docs/research/plan500-sharing-rpc.md)。完整 G0–G7 门槛见[研究报告](../../../docs/research/plan500-feasibility.md)，部分通过不关闭 #32 或自动启动 #17。

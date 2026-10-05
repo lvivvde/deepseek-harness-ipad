@@ -198,8 +198,7 @@ const server = http.createServer(async (request, response) => {
       return send(response,200,await supervisorRequest(url.pathname.slice(1),body));
     }
     if (request.method === 'GET' && url.pathname === '/userdata/archive') return await mutate(async () => {
-      response.writeHead(200, {'content-type':'application/x-tar'});
-      await backup.export(response);
+      await backup.export(response, {started:() => response.writeHead(200, {'content-type':'application/x-tar'})});
     });
     if (request.method === 'POST' && url.pathname === '/userdata/restore') return await mutate(async () => {
       const result=await backup.restore(request);send(response,200,result);

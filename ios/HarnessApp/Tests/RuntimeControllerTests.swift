@@ -158,6 +158,20 @@ final class RuntimeControllerTests: XCTestCase {
         XCTAssertEqual(runtime.phase, .ready)
     }
 
+    func testDataOperationFailureKeepsOnlyItsFixedCodeInDiagnostics() async {
+        XCTAssertEqual(RuntimeEvent.dataFailure(serialLine: "HARNESS_BACKUP_FAILURE:PAUSE")?.diagnosticStage, "userDataOperationFailed:BACKUP:PAUSE")
+        XCTAssertEqual(RuntimeEvent.dataFailure(serialLine: "HARNESS_TRANSFER_FAILURE:WRITERS_BUSY")?.diagnosticStage, "userDataOperationFailed:TRANSFER:WRITERS_BUSY")
+        XCTAssertEqual(RuntimeEvent.dataFailure(serialLine: "HARNESS_TRANSFER_FAILURE:/root/secret path")?.diagnosticStage, "userDataOperationFailed:TRANSFER:UNKNOWN")
+        XCTAssertNil(RuntimeEvent.dataFailure(serialLine: "HARNESS_PROCESS_STOPPED"))
+        let driver = RecordingDriver()
+        let runtime = RuntimeController(driver: driver)
+        await runtime.ensureRunning()
+        driver.onEvent?(.ready(driver.endpoint))
+        driver.onEvent?(RuntimeEvent.dataFailure(serialLine: "HARNESS_BACKUP_FAILURE:PAUSE")!)
+        XCTAssertEqual(runtime.phase, .ready, "A refused backup must not mark the page failed")
+        XCTAssertEqual(runtime.diagnostics.last, "userDataOperationFailed:BACKUP:PAUSE")
+    }
+
     func testClockAcknowledgementMustMatchCurrentHostTimeWithinTwoSeconds() throws {
         let health = try JSONDecoder().decode(GuestHealth.self, from: Data(#"{"clock":true,"epoch":100000,"running":true,"writable":true,"restartable":false}"#.utf8))
         XCTAssertTrue(health.clockMatches(Date(timeIntervalSince1970: 101)))

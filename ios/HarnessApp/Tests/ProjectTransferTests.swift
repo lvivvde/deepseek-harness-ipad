@@ -44,6 +44,18 @@ final class ProjectTransferTests: XCTestCase {
         XCTAssertNoThrow(try ProjectTransfer.verify(archive: files[0], checksumFile: files[1]))
     }
 
+    func testFullBackupReportsARefusedPauseInsteadOfAConnectionError() async throws {
+        StubProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/userdata/archive")
+            return (500, Data(#"{"error":"WRITERS_BUSY"}"#.utf8))
+        }
+        do {
+            _ = try await transfer().exportUserData(into: directory)
+            XCTFail("expected error")
+        } catch { XCTAssertEqual(error as? ProjectTransferError, .writersBusy) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("HarnessBackup.tar").path))
+    }
+
     func testExportPercentEncodesChineseAndSpaces() async throws {
         StubProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString,

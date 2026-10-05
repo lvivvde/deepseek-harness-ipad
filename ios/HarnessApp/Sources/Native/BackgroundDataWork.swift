@@ -35,7 +35,8 @@ final class BackgroundDataWork {
         self.cancel = cancel
         reporter = DataProgressReporter()
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 120
+        // The guest replies only after Harness stops, which can take minutes right after launch.
+        configuration.timeoutIntervalForRequest = 300
         configuration.timeoutIntervalForResource = 3600
         session = URLSession(configuration: configuration, delegate: reporter, delegateQueue: nil)
         reporter.changed = { [weak self] sent, total in

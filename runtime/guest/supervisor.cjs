@@ -5,6 +5,9 @@ const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
 const {diskCapacityBytes, growFilesystem} = require('./user-disk.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Shortly after starting, dsh can take minutes to honour SIGTERM on the iPad's emulated CPU
+// (98 s measured on a throttled QEMU), far longer than other writers. Pause waits for it within this bound.
+const HARNESS_EXIT_TIMEOUT_MS = 180000;
 
 function processTable() {
   const table = new Map();
@@ -129,14 +132,15 @@ class HarnessSupervisor {
   async stop() {
     const child = this.child;
     this.capture();
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    const deadline=Date.now()+8000;
-    while (Date.now()<deadline) {
+    const exiting=() => child && child.exitCode === null && child.signalCode === null;
+    if (exiting()) child.kill('SIGTERM');
+    const started=Date.now(), deadline=started+(this.options.stopTimeoutMs ?? 8000);
+    const harnessDeadline=started+(this.options.childExitTimeoutMs ?? HARNESS_EXIT_TIMEOUT_MS);
+    for (;;) {
       const alive=this.liveWriters();
       for (const [pid] of alive) if (pid!==child?.pid) { try { process.kill(pid, 'SIGTERM'); } catch {} }
-      if (!child || child.exitCode !== null || child.signalCode !== null) {
-        if (!alive.length) { this.child=undefined; this.owned.clear(); return; }
-      }
+      if (!exiting() && !alive.length) { this.child=undefined; this.owned.clear(); return; }
+      if (Date.now()>=(exiting() ? Math.max(deadline, harnessDeadline) : deadline)) break;
       await delay(50);
     }
     // Refuse a backup when a known writer did not exit; don't SIGKILL an active write.
@@ -189,7 +193,7 @@ function supervisorRequest(operation, body={}) {
         catch(error) { reject(error); }
       });
     });
-    request.setTimeout(operation==='storage/finish' ? 100000 : operation==='pause' ? 10000 : 1500, () => request.destroy());
+    request.setTimeout(operation==='storage/finish' ? 100000 : operation==='pause' ? HARNESS_EXIT_TIMEOUT_MS+15000 : 1500, () => request.destroy());
     request.on('error', reject); request.end(JSON.stringify(body));
   });
 }

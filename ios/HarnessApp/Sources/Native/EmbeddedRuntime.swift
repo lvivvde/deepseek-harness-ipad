@@ -235,7 +235,7 @@ final class EmbeddedRuntime: RuntimeDriving {
                 guestReplies[String(fields[0])] = health
             }
         }
-        if line.hasPrefix("HARNESS_TRANSFER_FAILURE:") || line.hasPrefix("HARNESS_BACKUP_FAILURE:") { publish(.dataOperationFailed) }
+        if let failure = RuntimeEvent.dataFailure(serialLine: line) { publish(failure) }
         if line == "HARNESS_PROCESS_STOPPED" { publish(.harnessStopped) }
 
         if let failure = RuntimeBootFailure.fromSerialLine(line) {

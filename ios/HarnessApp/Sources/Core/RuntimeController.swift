@@ -7,7 +7,7 @@ enum RuntimeEvent {
     case ready(URL)
     case exited
     case harnessStopped
-    case dataOperationFailed
+    case dataOperationFailed(String)
     case connectionUnavailable
     case recovery(RecoveryStage)
     case bootFailed(RuntimeBootFailure)
@@ -17,13 +17,25 @@ enum RuntimeEvent {
         case .booting: return "booting"
         case .loadingHarness: return "loadingHarness"
         case .ready: return "ready"
-        case .dataOperationFailed: return "userDataOperationFailed"
+        case .dataOperationFailed(let code): return "userDataOperationFailed:" + code
         case .harnessStopped: return "harnessStopped"
         case .exited: return "runtimeExited"
         case .connectionUnavailable: return "connectionUnavailable"
         case .recovery(let stage): return "recovery:" + stage.rawValue
         case .bootFailed(let failure): return "bootFailed:" + failure.rawValue
         }
+    }
+
+    /// `HARNESS_BACKUP_FAILURE:PAUSE` keeps its fixed code (`BACKUP:PAUSE`); anything else becomes `UNKNOWN`.
+    static func dataFailure(serialLine line: String) -> RuntimeEvent? {
+        for kind in ["TRANSFER", "BACKUP"] {
+            let prefix = "HARNESS_\(kind)_FAILURE:"
+            guard line.hasPrefix(prefix) else { continue }
+            let code = line.dropFirst(prefix.count)
+            let fixed = !code.isEmpty && code.count <= 32 && code.allSatisfy { ("A"..."Z").contains($0) || $0 == "_" }
+            return .dataOperationFailed(kind + ":" + (fixed ? String(code) : "UNKNOWN"))
+        }
+        return nil
     }
 }
 

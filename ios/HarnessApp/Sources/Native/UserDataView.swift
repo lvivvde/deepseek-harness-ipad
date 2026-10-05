@@ -111,7 +111,7 @@ struct UserDataView: View {
         FileManager.default.temporaryDirectory.appendingPathComponent("HarnessData-\(UUID().uuidString)", isDirectory: true)
     }
     private func export() {
-        busy = "正在停止写入并生成完整备份…"; message = nil
+        busy = "正在停止写入并生成完整备份；刚启动时停止 Harness 可能需要几分钟…"; message = nil
         workTask = Task {
             let work = BackgroundDataWork(title: "用户数据备份") { workTask?.cancel() }
             var completed = false

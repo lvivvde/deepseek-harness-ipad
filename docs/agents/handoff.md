@@ -20,7 +20,7 @@
 | 开放任务 | 下一步与边界 |
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
-| [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断根因、历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
+| [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断根因已在隔离 QEMU 确认，修复分支 `codex/issue19-export-diagnosis` 待合并、未上真机；须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
 | [02｜方案500：原生优先架构与项目级 Linux 插件预热（用户阻塞）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | **持续阻塞**，无人认领、无 `ready-for-agent`；仅用户明确解除后可研究/原型/实现。项目启用后打开即异步预热，触及 Linux 指令/hook 时等待并自动继续。作为新架构决策关口；500 是方案编号，GitHub 为 #32。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 被 #32 阻塞。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
@@ -79,3 +79,15 @@
 真实备份 651776 字节，SHA256、布局和排除项通过；安装前备份在禁外网的临时 Linux 用户盘恢复成功，全部 83 个文件摘要一致，损坏归档被拒绝后有效副本仍保留。安装后再次导出，与安装前全部 83 个文件摘要一致，原空草稿保留。新运行时原有 16 项 QEMU 检查通过。新包固定冷启动 ready 约 175.224 秒，UI 观察约 196.371 秒，均不作首次解锁耗时证据。
 
 导出曾出现连接/网络中断，固定诊断为 userDataOperationFailed，重试成功；根因未确认，不能写成已修复。下一步优先诊断可复现的导出问题，按新截止继续维护；历史长后台、首次解锁、时差和救援盘仍未验，#19 保持 OPEN，不重启取消的锁屏/8 小时测试，不解除 #32。原 App 仅在有界同步后冷重开，未同进程重建 QEMU；未直接读/换正式原盘。原始证据、签名缓存备份及安装前后 tar 留在私有 `build/maintenance19/`，接手从 `delivery-receipt-safe.json` 与[维护记录](../validation/ipad-signing-maintenance.md)开始。
+
+
+## 2026-10-05 Issue #19 导出中断诊断与修复
+
+- **根因**：完整备份前 supervisor 只等 dsh 退出 8 秒。dsh 刚启动或重启后可能很久才处理 SIGTERM：隔离 QEMU 实测 14–98 秒。超时后暂停失败，而传输服务已发出 200 响应头，只能断开连接，于是 App 显示“网络连接已断开”。重试时 dsh 已退出，所以成功。
+- **修复**：只对 Harness 本身最多等 180 秒；暂停成功后才发响应头；暂停被拒时返回固定错误，诊断记录固定代码；宿主空闲超时 300 秒。
+- **当前状态**：runtime 32 项、Swift 29 项、Linux supervisor 用例和修复后 guest 循环导出均已通过。代码在分支 `codex/issue19-export-diagnosis`，合并另需用户同意。详情和边界见[维护记录](../validation/ipad-signing-maintenance.md)的“导出中断诊断与修复”。
+- **未完成**：`Could not connect to the server.` 未复现；没有打包或安装，真机未复测。
+- **下一步**：
+  1. PR 合并后，在 2026-10-12 15:49:52（北京时间）前打包，并另获安装授权，一次完成续签和真机导出复测：冷启动后立即导出、导出后重启再导出。
+  2. 安装前后照旧做真实备份与 83 文件比较。
+- **私有资产**：反馈循环 `build/export-diagnosis/export-loop.py`、实验 guest 生成脚本与变体、Lima 实验盘 `/var/tmp/export-diag/`（可删）。Lima 内另有一个不属于本任务的 QEMU，不要动。

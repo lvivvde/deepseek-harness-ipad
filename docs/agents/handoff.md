@@ -11,20 +11,27 @@
 
 ## 当前代码与交付
 
-- 本交接的代码基线：PR30 后的 main `5a5f93d`，PR27–PR30 已合并且 CI 通过；PR31 合并后的当前 main SHA 以开始工作时的 Git 查询为准。PR30 修复原生菜单打开时隐藏行文字、hello 示例工具未进入模型工具面。
-- 真机工具及本交接由 [PR31](https://github.com/lvivvde/deepseek-harness-ipad/pull/31) 交付；用户已同意合并。未合并时从 `codex/device-automation-handoff` 分支接手，合并后直接从 main 接手。
-- 当前安装包仍是 **da2d0aa**：`build/HarnessApp-0.1.0-main-da2d0aa.ipa`，293.2 MiB，旁有 SHA256、receipt 和 acceptance。PR30 修复尚未重新打包或安装。不要把源码合并当作设备已升级。
-- 最后已知正式包签名截止：**2026-10-10 21:11:14（北京时间）**。后续签名以实际新 profile 为准，不沿用旧截止。本轮无需立即重包。
-- #1 规划地图、#16 原 M1 入口已关闭；#16 后续交互回归转 #23，恢复转 #19，资源测量留 #17，整体验收由 #15 跟踪。
+- 当前交付代码基线：main `3dd1301`，PR27–PR31 已合并并完成本机只读签名预检；接手时仍查询实际 Git 状态。PR30 修复已随本轮新包交付，既有用户项目不以更新示例为由覆盖。
+- 真机工具及本交接由已合并的 [PR31](https://github.com/lvivvde/deepseek-harness-ipad/pull/31) 交付，新会话直接从 main 接手。本轮任务重排只更新 GitHub 和交接文档，不改变代码基线。
+- 当前安装包为 **3dd1301**：`build/maintenance19/HarnessApp-0.1.0-main-3dd1301-renewed.ipa`，293.2 MiB；已同身份覆盖安装，真实备份与安装前后内容核验通过，详见末尾续签交付记录。
+- 当前正式包签名截止：**2026-10-12 15:49:52（北京时间）**。已核验实际新 profile；后续仍以真实签名检查为准。
+- #1 保持关闭并改名为历史规划归档；#16 原 M1 入口保持关闭。当前总路线图改由 #15 承载，历史证据与已完成状态不变；尚未通过的旧验收在对应新范围中保留，不自动扩展测试。
 
 | 开放任务 | 下一步与边界 |
 | --- | --- |
-| [#17 运行时与用户盘](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 真机安装占用/峰值内存/8 GB 下限、容量/低空间/删除后宿主回收仍未完整测量。 |
-| [#18 Git 开发闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 缺真实模型修改、用户差异审阅、外部授权远端推送及整套 iPad 冷启动。ARM64 guest Vite production build 180 秒超时，根因未知。 |
-| [#19 恢复与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 保持开放。首次真实解锁恢复 ≤10 秒、时差 ±2 秒、完整真机备份救援/重签未验证。用户已取消后续锁屏，不能自行重启。 |
-| [#23 插件/预览/辅助键](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 新包交互回归、社区插件外部模型/升级、实体辅助键与中文组合输入、原生预览回退待验。 |
-| [#15 整体交付](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 汇总完整 Spec 的实际交付和未验项。 |
-| [#14 许可证发布判断](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 公开发布前的判断仍开放。本轮不发布 GitHub Release。 |
+| [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
+| [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断根因、历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（用户阻塞）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | **持续阻塞**，无人认领、无 `ready-for-agent`；仅用户明确解除后可研究/原型/实现。项目启用后打开即异步预热，触及 Linux 指令/hook 时等待并自动继续。作为新架构决策关口；500 是方案编号，GitHub 为 #32。 |
+| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 被 #32 阻塞。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
+| [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
+| [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
+| [06｜发布前：实际分发组件的许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与后续交互验收并行准备；需要适当法律判断。不是当前维护的前置，本轮不发布 GitHub Release。 |
+
+### 2026-10-05 用户授权的任务重排
+
+用户已授权调整标题、范围和执行顺序。7 个开放任务改为上表范围，旧代码、验证、失败和取消记录保留；#1 历史归档与 #16 原入口均不重开。#15 为当前父路线图；#14 从旧地图移入当前路线图。旧认领与不合适的就绪标签已清理，未开始实现、打包、安装或锁屏。
+
+调度除检查 GitHub 技术依赖外，还必须检查 `blocked` 和本票人工约束。#32 没有技术前置，但人工阻塞始终有效；#17←#32、#18←#17、#23←#18、#14←#17 使用原生 blocked-by。#19 的旧 #17 依赖移除，当前维护不等重构。未来关口通过前不更新 ADR/CONTEXT，不以重排或前置关闭自动解除用户阻塞。详细对应源码与移植可行性仍待后续获准验证。
 
 ## 已有证据
 
@@ -56,3 +63,19 @@
 ## 本轮工具验证
 
 真机工具的 11 项无设备行为测试通过；实际生成的签名 xctestrun 已确认只有独立 runner/测试 bundle 依赖。无签名与个人团队签名 build-for-testing 成功。只读 probe 实际识别已配对 iPad、确认 Harness 已安装，初次 probe 返回锁定并正确停止；用户正常解锁后，新 CLI 和最新独立 runner 的 `page` 真机检查通过，页面检查阶段约 7.145 秒。固定状态复制返回 `recovery:pageReady`，`settings` 真机检查也通过（容量、备份/恢复入口可见并关闭设置）。GUI 辅助脚本类型检查通过。该数不是首次解锁恢复耗时，旧 runner 的锁屏验收边界继续保留。
+
+
+## 2026-10-05 Issue #19 本机维护：工具阶段
+
+新增只读 `runtime/check-signing.py`，检查新旧 IPA 的 SHA256/ZIP、签名、应用身份、钥匙串组、描述文件设备与 profile/证书有效期；不调用设备工具或修改原资产。16 项 CLI 测试、27 Swift、14 guest（无跳过）、11 真机工具及 `make check` 通过。真实 da2d0aa IPA 预检通过，截止仍为 2026-10-10 21:11:14（北京时间），未延长；真机现有页面检查通过，约 3.650 秒不作为首次解锁恢复耗时。
+
+以上为工具阶段的历史记录，随后实际备份、续签覆盖与数据核验见下节。历史恢复、实际时差和救援盘仍未验证，#19 保持 OPEN。详细边界见 [维护与重签前校验](../validation/ipad-signing-maintenance.md)，私有日志/安全收据在忽略的 `build/signing-check/` 和 `build/device-acceptance/`。接手时保留本轮开始前已有的任务重排文档改动。
+
+
+## 2026-10-05 Issue #19 授权续签交付
+
+实际已从 `da2d0aa` 同身份覆盖到代码基线 `3dd1301`；候选 IPA 及 SHA256 在 `build/maintenance19/`，新签名截止 **2026-10-12 15:49:52（北京时间）**。真实预检、候选 App 与归档逐文件一致及系统覆盖安装成功；未卸载或发布 Release。
+
+真实备份 651776 字节，SHA256、布局和排除项通过；安装前备份在禁外网的临时 Linux 用户盘恢复成功，全部 83 个文件摘要一致，损坏归档被拒绝后有效副本仍保留。安装后再次导出，与安装前全部 83 个文件摘要一致，原空草稿保留。新运行时原有 16 项 QEMU 检查通过。新包固定冷启动 ready 约 175.224 秒，UI 观察约 196.371 秒，均不作首次解锁耗时证据。
+
+导出曾出现连接/网络中断，固定诊断为 userDataOperationFailed，重试成功；根因未确认，不能写成已修复。下一步优先诊断可复现的导出问题，按新截止继续维护；历史长后台、首次解锁、时差和救援盘仍未验，#19 保持 OPEN，不重启取消的锁屏/8 小时测试，不解除 #32。原 App 仅在有界同步后冷重开，未同进程重建 QEMU；未直接读/换正式原盘。原始证据、签名缓存备份及安装前后 tar 留在私有 `build/maintenance19/`，接手从 `delivery-receipt-safe.json` 与[维护记录](../validation/ipad-signing-maintenance.md)开始。

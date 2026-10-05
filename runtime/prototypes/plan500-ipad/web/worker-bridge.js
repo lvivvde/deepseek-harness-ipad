@@ -30,18 +30,36 @@ globalThis.fetch = async (input, options) => {
 const plan500OriginalMessage = prototypeMessage;
 const plan500Installed = new Set();
 let plan500ModelActive = false;
+// The real-model run's only allowed tool uses; each guard refuses anything else with its fixed code before dispatch.
+const plan500ModelScope = {
+  plan500_read: {allows: () => true},
+  plan500_write: {allows: args => args?.path === 'math.cjs', refusal: 'MODEL_FIXTURE_WRITE_REFUSED'},
+  plan500_linux: {allows: args => args?.command?.trim() === 'node test.cjs', refusal: 'MODEL_TEST_COMMAND_REFUSED'},
+};
+const plan500KnownErrors = ['MODEL_FIXTURE_WRITE_REFUSED', 'MODEL_TEST_COMMAND_REFUSED', 'ABORTED_BEFORE_DISPATCH',
+  'BRIDGE_REQUEST_FAILED'];
+// Exact match only: an error that merely echoes a code (or file text) is not that code.
+const plan500ErrorCode = text => plan500KnownErrors.find(code => text?.trim() === 'Error: ' + code) ?? 'OTHER';
+function plan500ModelGuard(name, args) {
+  const rule = plan500ModelScope[name];
+  if (plan500ModelActive && !rule.allows(args)) throw new Error(rule.refusal);
+}
 // Only current-run events are passed here, in the order delivered by the official session.
 function plan500ModelEvidence(events) {
   const calls = new Map(), tools = [], replies = [], ends = [];
+  let reusedCallId = false;
   events.forEach((event, sequence) => {
     const data = event.data;
     if (event.type === 'tool/call') {
       let args; try { args = JSON.parse(data.arguments); } catch {}
-      calls.set(data.callId, {name: data.name, args, callSequence: sequence, turn: data.turn});
+      if (calls.has(data.callId)) reusedCallId = true;
+      calls.set(data.callId, {callId: data.callId, name: data.name, args, callSequence: sequence, turn: data.turn});
     } else if (event.type === 'tool/result') {
       const message = data.message;
       let value; try { value = JSON.parse(message.content[0]?.text); } catch {}
-      tools.push({...calls.get(message.toolCallId), sequence, isError: message.isError === true,
+      const isError = message.isError === true;
+      tools.push({...calls.get(message.toolCallId), sequence, isError,
+        errorCode: isError ? plan500ErrorCode(message.content[0]?.text) : undefined,
         status: value?.status, code: value?.result?.code, stdout: value?.result?.stdout,
         writerQuiescent: value?.result?.writerQuiescent});
     } else if (event.type === 'assistant/message') {
@@ -49,15 +67,28 @@ function plan500ModelEvidence(events) {
         text: (data.message?.content ?? []).filter(x => x.type === 'text').map(x => x.text).join('\n')});
     } else if (event.type === 'turn/end') ends.push({sequence, turn: data.turn, kind: data.reason?.kind});
   });
-  const fix = tools.find(x => x.name === 'plan500_write' && x.args?.path === 'math.cjs' && !x.isError && x.status === 'WRITTEN');
-  const boundedCalls = [...calls.values()].every(x =>
-    (x.name !== 'plan500_write' || x.args?.path === 'math.cjs') &&
-    (x.name !== 'plan500_linux' || x.args?.command?.trim() === 'node test.cjs'));
-  const tested = boundedCalls && fix && tools.find(x => x.name === 'plan500_linux' && x.args?.command?.trim() === 'node test.cjs'
+  const allowed = x => plan500ModelScope[x.name]?.allows(x.args) === true;
+  const fix = tools.find(x => x.name === 'plan500_write' && allowed(x) && !x.isError && x.status === 'WRITTEN');
+  // Out-of-scope attempts are acceptable only when the tool's own model-run guard refused them before dispatch.
+  const boundedCalls = !reusedCallId && [...calls.values()].every(x => {
+    const answer = tools.find(t => t.callId === x.callId);
+    return allowed(x) || (answer?.isError === true && plan500ModelScope[x.name]?.refusal === answer.errorCode);
+  });
+  const tested = boundedCalls && fix && tools.find(x => x.name === 'plan500_linux' && allowed(x)
     && x.callSequence > fix.sequence && !x.isError && x.status === 'RELEASED' && x.code === 0
     && x.writerQuiescent === true && x.stdout?.includes('MODEL_TEST_OK'));
   const final = replies.at(-1), end = ends.at(-1);
-  return {tools, nativeFix: !!fix, linuxTest: !!tested, turnEnd: end?.kind,
+  // Redacted for the safe receipt: order, outcome and fixed codes only, never text, commands or output.
+  const trace = tools.map(x => {
+    const entry = {name: x.name, turn: x.turn, callOrder: x.callSequence, resultOrder: x.sequence, isError: x.isError};
+    if (x.isError) entry.errorCode = x.errorCode;
+    else { entry.status = x.status; if (x.name === 'plan500_linux') Object.assign(entry, {code: x.code,
+      markerSeen: x.stdout?.includes('MODEL_TEST_OK') === true, writerQuiescent: x.writerQuiescent}); }
+    if (x.name === 'plan500_write') entry.fixturePath = allowed(x);
+    if (x.name === 'plan500_linux') entry.exactTestCommand = allowed(x);
+    return entry;
+  });
+  return {trace, boundedCalls, nativeFix: !!fix, linuxTest: !!tested, turnEnd: end?.kind, replyCount: replies.length,
     assistantReturned: !!(tested && final && end && final.sequence > tested.sequence && !final.interrupted
       && final.text.trim() && end.kind === 'completed' && end.turn === final.turn && final.turn === tested.turn
       && end.sequence > final.sequence)};
@@ -111,14 +142,14 @@ prototypeMessage = async event => {
           description: 'Write a native workspace file using the version returned by read, or null for a new file. A held or conflicting draft is preserved and is not a saved project edit.',
           parameters: {path: {type: 'string', required: true}, text: {type: 'string', required: true}, base: {oneOf: [{type: 'string'}, {type: 'null'}], required: true}},
           execute: args => {
-            if (plan500ModelActive && args.path !== 'math.cjs') throw new Error('MODEL_FIXTURE_WRITE_REFUSED');
+            plan500ModelGuard('plan500_write', args);
             return plan500Native('write', args);
           }}));
         tools.register(defineTool({...common, name: 'plan500_linux',
           description: 'Run a Linux shell command in /workspace, the exact same native project directory. Waits for real Linux ready. Returns stdout, stderr, exit code and writer quiescence. Bounded to 30 seconds.',
           parameters: {command: {type: 'string', required: true}, timeoutMs: {type: 'integer'}},
           async execute(args, exec) {
-            if (plan500ModelActive && args.command.trim() !== 'node test.cjs') throw new Error('MODEL_TEST_COMMAND_REFUSED');
+            plan500ModelGuard('plan500_linux', args);
             const operationId = String(exec.callId);
             const cancel = () => { plan500Native('cancel', {operationId}).catch(() => {}); };
             exec.signal.addEventListener('abort', cancel, {once: true});

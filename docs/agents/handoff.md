@@ -13,7 +13,7 @@
 
 用户要求把已完成交付实际合并和关单。本轮 PR36 的研究代码、报告与 proposed ADR 合入 main；架构决定仍未生效。#19 的备份恢复、同身份续签覆盖、83 文件保留及导出修复已交付，关闭为 completed；剩余续签/恢复缺口转入 [#37 维护跟进](https://github.com/lvivvde/deepseek-harness-ipad/issues/37)，不是登记历史故障已修复。旧评论及下方日期记录保留为历史。
 
-当前开放任务为 #15、#37、#32、#17、#18、#23、#14；#1/#16/#19 已关闭。路线图维护入口改为 #37，其余依赖保持 #17←#32、#18←#17、#23←#18、#14←#17。#37 独立于研究，正式签名须在 2026-10-12 15:49:52 前续签；研究下一步仍为用户在研究 App 输入 Key 后完成真实模型小闭环，再确认架构。完整 G0–G7、正式实现和取消锁屏的边界保留。
+当前开放任务为 #15、#37、#32、#17、#18、#23、#14；#1/#16/#19 已关闭。路线图维护入口改为 #37，其余依赖保持 #17←#32、#18←#17、#23←#18、#14←#17。#37 独立于研究，正式签名须在 2026-10-12 15:49:52 前续签；研究的真实模型小闭环已在 iPad `none` 模式有界通过，下一步为用户确认方案500架构决定。完整 G0–G7、正式实现和取消锁屏的边界保留。
 
 合并只结算研究交付，不启动 #17、不迁移正式用户盘、不新增设备安装。后续新 PR 合并仍按已有约定另获用户同意。
 
@@ -21,7 +21,7 @@
 
 继续方案500 #32 时，先读 [iPad 研究 App 真机报告](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。PR36 已合入 main；新研究工作从含该交付的 main 接手，原 `research/plan500-feasibility` 分支保留作历史证据链接。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；Darwin/macOS 与 Swift 网关原型也完成了有界验证。**独立研究 App 已签名、安装并在 iPad 上运行：`none` 和 `mapped-xattr` 各 15/15 必需检查通过。** iPad 研究容器样本保留大小写不同的名称；`none` 不能建 FIFO/socket，`mapped-xattr` 宿主 mode/symlink 不普通。私有 `pthread_fchdir_np` 符号存在且实际 9P backend 可运行，完整语义与私有接口条件仍未解决。Worker 与 Swift 网关协作现已通过两模式的有界真机检查，**当前下一步是实际模型小闭环，再形成用户架构决定**；详见下方本轮入口。同 uid 经 /proc、SCM_RIGHTS、CAS TOCTOU 及完整 G0–G7 缺口保留。#32 OPEN，#17 等待架构决定。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；Darwin/macOS 与 Swift 网关原型也完成了有界验证。**独立研究 App 已签名、安装并在 iPad 上运行：`none` 和 `mapped-xattr` 各 15/15 必需检查通过。** iPad 研究容器样本保留大小写不同的名称；`none` 不能建 FIFO/socket，`mapped-xattr` 宿主 mode/symlink 不普通。私有 `pthread_fchdir_np` 符号存在且实际 9P backend 可运行，完整语义与私有接口条件仍未解决。Worker 与 Swift 网关协作现已通过两模式的有界真机检查，真实模型小闭环也已在 `none` 模式有界通过，**当前下一步是形成并由用户确认架构决定**；详见下方本轮入口。同 uid 经 /proc、SCM_RIGHTS、CAS TOCTOU 及完整 G0–G7 缺口保留。#32 OPEN，#17 等待架构决定。
 
 用户于 2026-10-06 明确允许删除三个占位项目 App 及后续项目 IPA，不重复询问卸载；本次只移除独立验收 runner，Harness 与 LinuxPrototype 保留。签名安装授权继续有效。真机收据从忽略的 `build/prototypes/plan500-ipad/device-r1/device-validation-safe.json` 接手；原始日志不公开。下方历史状态以本入口及 GitHub 当前状态为准。
 
@@ -29,7 +29,9 @@
 
 本轮详见[Worker/Swift/Linux 接缝报告](../research/plan500-worker-gateway.md)。独立研究 App 中，官方 Worker 工具注册器接三个研究工具；项目唯一权威目录通过 Swift Gateway 和真实 9P 共享。iPad 两模式各 23 项协作检查 + 9 项真实 App 进程恢复检查通过。会话只检查点 `/dsh/home`，原生项目和草稿分别持久化；不是完整 fs provider 或跨文件事务。
 
-下一步：在研究 App 中由用户自行输入 API Key，运行真实模型修改 `math.cjs` → Linux `node test.cjs` → 官方会话返回结果；模型尚未通过。然后形成供用户确认的方案500架构决定，保留 G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口；#32 OPEN、#17 仍等待。正式数据不变，取消的锁屏测试不重启。
+真实模型小闭环（分支 `research/plan500-real-model`）：用户在研究 App 自行输入 Key，`none` 模式 8/8 通过——7 次 HTTP 200、带版本修改 `math.cjs`、一次非精确命令被守卫派发前拒绝后精确 `node test.cjs` 成功、最终回复与 `turn/end(completed)`。SSE 仍缓冲交付，`mapped-xattr` 未跑模型。通过收据 `build/prototypes/plan500-ipad/worker-device-r4/model-result-safe.json`；审查修复（成功收据改脱敏轨迹、错误码允许表、未知工具/重复 callId 判越界）后 10 项判据测试、`make check` 和 macOS 两模式 23 + 9（`worker-host-trace-r3/`）通过，未在真机重跑模型。
+
+下一步：形成供用户确认的方案500架构决定，保留 G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口；#32 OPEN、#17 仍等待。正式数据不变，取消的锁屏测试不重启。
 
 研究签名继续截止 2026-10-13 01:02:35（北京时间），本轮同身份覆盖安装，未卸载任何 App。私有设备资产在 `build/prototypes/plan500-ipad/worker-device-r1/`；只查看脱敏收据，Key 不从聊天获取、不可读取正式 App 的凭据。代码审查及复审已完成：Standards 无硬违反，Spec 三项模型误判均已修复，5 项判据测试通过。最终源码/资产的真机复跑在 `worker-device-r2/`，macOS 两模式 23 + 9 在 `worker-host-final-r3/`。模型及正式架构确认仍待完成；[ADR 0003](../adr/0003-native-worker-with-project-linux.md) 仅为 proposed，不改变既有决定。
 
@@ -45,7 +47,7 @@
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；当前开放子 Issue 顺序是 37→32→17→18→23→14，已完成 #19/#16 作为历史子项保留。重排不是新架构实施授权，当前 ADR 尚未改选。 |
 | [01｜维护跟进：10 月 12 日前续签与未完成恢复验证](https://github.com/lvivvde/deepseek-harness-ipad/issues/37) | #19 已交付关单。当前正式包 `7956e8c` 须在 2026-10-12 15:49:52 前续签；救援盘、未复现连接故障和历史恢复未知继续在本票保留，取消的锁屏不重启。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。官方 Worker/Swift/Linux 已在独立 iPad 研究 App 两模式各通过 23 项协作 + 9 项进程恢复检查。**下一步为用户输入 Key 后的真实模型小闭环，再形成用户架构决定**，入口见[最新报告](../research/plan500-worker-gateway.md)；正式实现、完整 G0–G7 与隔离缺口继续等待。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。官方 Worker/Swift/Linux 已在独立 iPad 研究 App 两模式各通过 23 项协作 + 9 项进程恢复检查。真实模型小闭环已在 `none` 模式有界通过，**下一步为形成用户架构决定**，入口见[最新报告](../research/plan500-worker-gateway.md)；正式实现、完整 G0–G7 与隔离缺口继续等待。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 等待 #32 的可行性证据和用户架构决定。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |

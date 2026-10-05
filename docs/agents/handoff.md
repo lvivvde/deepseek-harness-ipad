@@ -15,6 +15,33 @@
 
 [PR38](https://github.com/lvivvde/deepseek-harness-ipad/pull/38) 只含真实模型闭环提交，已先合入 main；架构决定提交 `e2e888c` 随后直接推到 main（本地已在 main，非经 PR 审阅）。用户要求合并后关闭 #32，#17 解除技术阻塞。#17 的实现须先关闭 ADR 0003 列出的六项前置关口（G2 耐久、G1 增量流、G3/G5 Git/hook、官方工具等价、G7 迁移回退、私有接口检测），任一不通过就收紧兼容范围。确认决定不触发正式 App 安装、用户盘迁移或新设备安装。
 
+## 2026-10-06 #17 按 ADR 0003 重整与前置关口拆分
+
+本轮只整理 Issue 与交接，未写代码、未连设备、未打包安装。[#17](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) 正文已按 ADR 0003 重写（范围、非范围、完成条件、保留约束），并移除 `needs-triage`，只留 `wayfinder:task`；原正文备份与本轮草稿在忽略的 `build/issue-drafts/`。
+
+六项前置关口拆为 #17 的有序子 Issue，各含验收判据、真机与 macOS 证据分工及不可替代说明：
+
+| 顺序 | Issue | 原生阻塞 | 标签 |
+| --- | --- | --- | --- |
+| 03.1 | [#39 G2 原生工作区、会话与草稿的崩溃耐久](https://github.com/lvivvde/deepseek-harness-ipad/issues/39) | 无 | `ready-for-agent` |
+| 03.2 | [#40 `pthread_fchdir_np` 启动检测与 Linux 插件不可用](https://github.com/lvivvde/deepseek-harness-ipad/issues/40) | 无 | `ready-for-agent` |
+| 03.3 | [#41 官方 fs、编辑、搜索与原生只读 Git 接入原生工作区](https://github.com/lvivvde/deepseek-harness-ipad/issues/41) | #39 | `blocked` |
+| 03.4 | [#42 G1 模型回复增量流式、取消、认证与网络错误](https://github.com/lvivvde/deepseek-harness-ipad/issues/42) | 无 | `ready-for-agent` |
+| 03.5 | [#43 G3/G5 Git 写操作与 hook 的一致性和提交前拦截](https://github.com/lvivvde/deepseek-harness-ipad/issues/43) | #40、#41 | `blocked` |
+| 03.6 | [#44 G7 从隔离备份迁入、逐文件核验与回退旧包](https://github.com/lvivvde/deepseek-harness-ipad/issues/44) | #39 | `blocked` |
+
+用户确认的决定（写入各子 Issue）：
+
+- 真机证据只来自独立 bundle ID 的候选 App；G7 用专用测试 bundle ID 演练旧包→新包→回旧包，数据为合成数据加一份由用户在 iPad“文件”App 导出的真实备份副本（不经 Mac）。正式 App 升级与真实数据迁移不属 #17，须另获授权。凭据不迁移。
+- 崩溃恢复以工作区为准、不回滚：会话回到最后完整检查点，未记录完成的工具调用标“结果未知”且不重放，草稿保留，change generation 不一致在会话中标出。
+- 原生 Git 只读；所有修改仓库的 Git 操作和全部 hook 走 `linux` 路径，原生不写 `.git/index`。
+- G2、G7、私有接口检测为硬关口；工具等价、G1、G3/G5 不通过时可收紧兼容范围，每次须用户确认。
+- 关口之后的集成实现暂留 #17 正文，不预先拆票。
+
+#18、#23、#14、#15 正文已与 ADR 0003 对齐（只改正文，评论未动）：#18 补“与 ADR 0003 对齐”节（`/root/projects`、凭据库与 Landlock 参数转为历史；Git 写与 hook 走 `linux`，凭据存储随 #43）；#23 明确“重试”是重提任务、同进程不重启 QEMU，dev server 按能力声明默认 `linux`，阈值改由本票开工前提出并经用户确认（#32 未给阈值）；#14 增列 Worker bundle、适配补丁、原生只读 Git（#41）与原生搜索；#15 改为 #32 已关闭、#17 经 #39–#44 推进。#18、#23、#14 仍带 `needs-triage`，本轮未处理。
+
+下一步：可并行开工的前沿是 #39、#40、#42。正式包 `7956e8c` 续签由 #37 处理（截止 2026-10-12 15:49:52），不在 #17 范围。上方“PR / Issue 收尾”节中的开放任务与依赖描述为当时历史，以本节和 GitHub 为准。
+
 ## 2026-10-06 PR / Issue 收尾
 
 用户要求把已完成交付实际合并和关单。本轮 PR36 的研究代码、报告与 proposed ADR 合入 main；架构决定仍未生效。#19 的备份恢复、同身份续签覆盖、83 文件保留及导出修复已交付，关闭为 completed；剩余续签/恢复缺口转入 [#37 维护跟进](https://github.com/lvivvde/deepseek-harness-ipad/issues/37)，不是登记历史故障已修复。旧评论及下方日期记录保留为历史。
@@ -51,13 +78,12 @@
 
 | 开放任务 | 下一步与边界 |
 | --- | --- |
-| [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；当前开放子 Issue 顺序是 37→32→17→18→23→14，已完成 #19/#16 作为历史子项保留。重排不是新架构实施授权，当前 ADR 尚未改选。 |
+| [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；开放子 Issue 顺序 37→17→18→23→14，#32 已关闭，#19/#16 作为历史子项保留。架构基线为 ADR 0003（accepted）。 |
 | [01｜维护跟进：10 月 12 日前续签与未完成恢复验证](https://github.com/lvivvde/deepseek-harness-ipad/issues/37) | #19 已交付关单。当前正式包 `7956e8c` 须在 2026-10-12 15:49:52 前续签；救援盘、未复现连接故障和历史恢复未知继续在本票保留，取消的锁屏不重启。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。官方 Worker/Swift/Linux 已在独立 iPad 研究 App 两模式各通过 23 项协作 + 9 项进程恢复检查。真实模型小闭环已在 `none` 模式有界通过。**用户已确认架构决定（ADR 0003 accepted）**，已关闭；完整 G0–G7 与隔离缺口转为 #17 前置关口。 |
-| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 架构决定已确认（ADR 0003），技术阻塞已解除；开工先关六项前置关口。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
-| [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
-| [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
-| [06｜发布前：实际分发组件的许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与后续交互验收并行准备；需要适当法律判断。不是当前维护的前置，本轮不发布 GitHub Release。 |
+| [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 架构决定已确认（ADR 0003），#32 阻塞已解除；先按子 Issue #39–#44 关闭前置关口（前沿 #39、#40、#42），再做原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
+| [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。正文已对齐 ADR 0003：按能力声明区分原生/插件路径，Git 写与 hook 走 `linux`（#41、#43）；真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。仍带 `needs-triage`。 |
+| [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；同进程不重启 QEMU，阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
+| [06｜发布前：实际分发组件的许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与后续交互验收并行准备；新增 Worker bundle、适配补丁、原生只读 Git 与原生搜索的审查。需要适当法律判断，本轮不发布 GitHub Release。仍带 `needs-triage`。 |
 
 ### 2026-10-05 用户授权的任务重排
 

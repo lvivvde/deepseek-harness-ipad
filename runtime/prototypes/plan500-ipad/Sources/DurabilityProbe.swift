@@ -290,15 +290,16 @@ enum DurabilityProbe {
         }
 
         let noSpace = NativeWorkspace.WorkspaceError.io("write", ENOSPC)
-        func inject(_ store: WorkspaceStore, _ point: FaultPoint, occurrence: Int = 1) {
+        func inject(_ store: WorkspaceStore, _ point: FaultPoint, occurrence: Int = 1, persistent: Bool = false) {
             var seen = 0
             store.fault = { reached in
                 guard reached == point else { return }
                 seen += 1
-                if seen == occurrence { throw noSpace }
+                if seen == occurrence || (persistent && seen > occurrence) { throw noSpace }
             }
         }
-        for stage: FaultPoint.Stage in [.beforeTemp, .halfWritten, .beforeSync, .beforeRename] {
+        // afterRename is the directory sync after the rename: the new file is undone, not kept.
+        for stage: FaultPoint.Stage in [.beforeTemp, .halfWritten, .beforeSync, .beforeRename, .afterRename] {
             let paths = try fresh(support.appendingPathComponent("nospace-workspace-" + stage.rawValue))
             let store = try WorkspaceStore(workspace: paths.workspace, state: paths.state)
             let version = try base(store)
@@ -309,19 +310,19 @@ enum DurabilityProbe {
             checks["enospc.workspace.\(stage.rawValue)"] = try failed && disk(paths) == "base"
                 && reopened.version(notes) == version && (reopened.audit().isEmpty) && reopened.recovery.anomalies.isEmpty
         }
-        for occurrence in [1, 2] {
-            // 1: the intent append fails (nothing written); 2: the commit append fails after the rename landed.
-            let paths = try fresh(support.appendingPathComponent("nospace-journal-\(occurrence)"))
+        // 1: the intent append fails (nothing written); 2: the commit append fails after the rename,
+        // which is undone; full: every append from the commit on fails, so not even the undo is recorded.
+        for (label, occurrence, persistent) in [("1", 1, false), ("2", 2, false), ("full", 2, true)] {
+            let paths = try fresh(support.appendingPathComponent("nospace-journal-" + label))
             let store = try WorkspaceStore(workspace: paths.workspace, state: paths.state)
-            inject(store, FaultPoint(.journal, .beforeSync), occurrence: occurrence)
-            let result = try store.nativeWrite(notes, Data("new".utf8), base: try base(store))
+            let version = try base(store)
+            inject(store, FaultPoint(.journal, .beforeSync), occurrence: occurrence, persistent: persistent)
+            let result = try store.nativeWrite(notes, Data("new".utf8), base: version)
             let reopened = try WorkspaceStore(workspace: paths.workspace, state: paths.state)
             let consistent = try reopened.audit().isEmpty && reopened.recovery.anomalies.isEmpty
-            switch result {
-            case .failed: checks["enospc.journal.\(occurrence)"] = occurrence == 1 && disk(paths) == "base" && consistent
-            case .written: checks["enospc.journal.\(occurrence)"] = occurrence == 2 && disk(paths) == "new" && consistent
-            default: checks["enospc.journal.\(occurrence)"] = false
-            }
+                && reopened.version(notes) == version && reopened.recovery.recoveredDrafts.isEmpty
+            if case .failed = result { checks["enospc.journal." + label] = consistent && disk(paths) == "base" }
+            else { checks["enospc.journal." + label] = false }
         }
         do {
             let paths = try fresh(support.appendingPathComponent("nospace-draft"))

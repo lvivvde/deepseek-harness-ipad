@@ -47,7 +47,8 @@ public enum WriteResult: Equatable {
     case draftHeld(String)
     case conflict(draft: String, current: String?)
     case refused(String)
-    /// Nothing was committed; the bytes on disk are whatever the next read reports.
+    /// Nothing was committed and the previous bytes are back in place. Only if even that undo
+    /// failed are the bytes on disk left for the next read or reopen to settle.
     case failed(String)
 }
 
@@ -261,17 +262,22 @@ public final class WorkspaceStore {
 
     // MARK: Journal
 
+    /// Durably appends `record`, then applies it. Once the append succeeds the record is committed,
+    /// so a failed compaction afterwards is not the caller's failure: the journal just keeps growing
+    /// and the next record tries again.
     private func record(_ record: Record) throws {
         let payload = try JSONEncoder().encode(record)
         try journal.append(payload)
         state.apply(record)
-        if journal.recordCount >= compactionThreshold { try compact() }
+        if journal.recordCount >= compactionThreshold { try? compact() }
     }
+
+    struct Snapshot: Codable { let through: UInt64; let state: State }
+    struct CheckpointBody: Codable { let serial: Int; let generation: Int; let snapshot: Data }
 
     /// Folds the journal into a checksummed snapshot, then empties the journal. A crash between
     /// the two leaves records the snapshot already covers; recovery skips them by sequence.
     public func compact() throws {
-        struct Snapshot: Codable { let through: UInt64; let state: State }
         let body = try JSONEncoder().encode(Snapshot(through: journal.lastSequence, state: state))
         let directory = try openDirectory(stateDirectory)
         defer { close(directory) }
@@ -281,7 +287,6 @@ public final class WorkspaceStore {
     }
 
     private func loadSnapshot() throws -> UInt64? {
-        struct Snapshot: Codable { let through: UInt64; let state: State }
         let path = stateDirectory + "/state.snapshot"
         guard FileManager.default.fileExists(atPath: path) else { return 0 }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -313,10 +318,7 @@ public final class WorkspaceStore {
             let scanned = try files.scan()
             try record(.baseline(versions: scanned.keys.sorted().map { PathVersion(path: $0, fingerprint: scanned[$0]) }))
         }
-        if var lease = state.lease, lease.state == .active {
-            try record(.leaseUnknown(fence: lease.fence))
-            lease.state = .writerUnknown
-        }
+        if let lease = state.lease, lease.state == .active { try record(.leaseUnknown(fence: lease.fence)) }
         recovery.writerUnknown = state.lease
         for call in state.tools where call.outcome == nil {
             try record(.toolEnd(id: call.id, outcome: Self.unknownOutcome))
@@ -337,8 +339,12 @@ public final class WorkspaceStore {
     private func resolveIntents() throws -> [String: RecoveryReport.IntentOutcome] {
         var outcomes: [String: RecoveryReport.IntentOutcome] = [:]
         for intent in state.intents.values.sorted(by: { $0.id < $1.id }) {
+            let disk = try files.fingerprint(intent.path)
             if let leftover = try files.fingerprint(intent.temporary), leftover != "D" {
-                if leftover == intent.new {
+                if leftover == intent.old && disk == intent.new {
+                    // The previous file, swapped out by a write that landed: superseded like any replaced file.
+                    files.dropPrevious(intent.temporary)
+                } else if leftover == intent.new {
                     let id = Self.newIdentifier()
                     try files.moveOut(intent.temporary, to: drafts + "/" + id)
                     try record(.draftAdd(Draft(id: id, path: intent.path, base: state.versions[intent.path]?.token,
@@ -350,7 +356,6 @@ public final class WorkspaceStore {
                     recovery.quarantined.append(kept)
                 }
             }
-            let disk = try files.fingerprint(intent.path)
             let outcome: RecoveryReport.IntentOutcome
             if disk == intent.new {
                 outcome = .landed
@@ -477,10 +482,13 @@ public final class WorkspaceStore {
             try record(.commit(generation: state.generation + 1, origin: "native", paths: [PathVersion(path: path, fingerprint: new)],
                                intent: id))
         } catch {
-            // Settle the intent by what is on disk; a write that landed and is now recorded succeeded.
-            if (try? resolveIntents())?[id] == .landed, let landed = version(path) { return .success(landed) }
+            // Only the commit record acknowledges a write. Without it, put the previous file back so
+            // "failed" is true even when the journal stays full; reopen settles whatever is left.
+            if (try? files.fingerprint(path)) == new { try? files.restorePrevious(path, temporary: temporary) }
+            _ = try? resolveIntents()
             throw error
         }
+        files.dropPrevious(temporary)
         try? fault?(FaultPoint(.workspace, .afterCommit))
         return .success(version(path)!)
     }
@@ -489,13 +497,15 @@ public final class WorkspaceStore {
         let id = Self.newIdentifier()
         let directory = try openDirectory(drafts)
         defer { close(directory) }
-        try atomicReplace(directory: directory, name: Array(id.utf8), temporary: temporaryName(), data: data, mode: 0o600,
-                          site: .draft, fault: fault)
         do {
+            try atomicReplace(directory: directory, name: Array(id.utf8), temporary: temporaryName(), data: data, mode: 0o600,
+                              site: .draft, fault: fault)
             try record(.draftAdd(Draft(id: id, path: path, base: base, status: status, sha256: sha256(data))))
         } catch {
-            // Unacknowledged: move the blob aside so the draft list and the disk never disagree.
-            _ = try? quarantine.move(drafts + "/" + id, label: "draft-" + id)
+            // Unacknowledged: move any blob aside so the draft list and the disk never disagree.
+            if FileManager.default.fileExists(atPath: drafts + "/" + id) {
+                _ = try? quarantine.move(drafts + "/" + id, label: "draft-" + id)
+            }
             throw error
         }
         return id
@@ -552,9 +562,8 @@ public final class WorkspaceStore {
     /// Durably replaces the `/dsh/home` checkpoint. The file is replaced atomically, so an
     /// interrupted replacement leaves the previous checkpoint readable.
     public func checkpointSession(_ snapshot: Data) throws -> Int {
-        struct Body: Codable { let serial: Int; let generation: Int; let snapshot: Data }
         let serial = max(state.checkpointSerial, (try? readCheckpoint()?.serial) ?? 0) + 1
-        let body = try JSONEncoder().encode(Body(serial: serial, generation: state.generation, snapshot: snapshot))
+        let body = try JSONEncoder().encode(CheckpointBody(serial: serial, generation: state.generation, snapshot: snapshot))
         let directory = try openDirectory(session)
         defer { close(directory) }
         try atomicReplace(directory: directory, name: Array("home.checkpoint".utf8), temporary: temporaryName(),
@@ -564,11 +573,10 @@ public final class WorkspaceStore {
     }
 
     private func readCheckpoint() throws -> (serial: Int, generation: Int, snapshot: Data)? {
-        struct Body: Codable { let serial: Int; let generation: Int; let snapshot: Data }
         let path = session + "/home.checkpoint"
         guard FileManager.default.fileExists(atPath: path) else { return nil }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        guard let body = Self.unsealed(Self.checkpointMagic, data), let decoded = try? JSONDecoder().decode(Body.self, from: body) else {
+        guard let body = Self.unsealed(Self.checkpointMagic, data), let decoded = try? JSONDecoder().decode(CheckpointBody.self, from: body) else {
             let kept = try quarantine.move(path, label: "home.checkpoint")
             recovery.anomalies.append(JournalAnomaly(kind: .badCheckpoint, offset: 0, quarantined: kept))
             return nil

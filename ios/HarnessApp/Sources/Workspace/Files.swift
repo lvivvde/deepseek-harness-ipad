@@ -11,9 +11,12 @@ func withCName<T>(_ bytes: [UInt8], _ body: (UnsafePointer<CChar>) throws -> T) 
 
 /// Durable on Darwin storage: plain fsync hands data to the drive but does not flush its cache,
 /// so a power loss can still drop or reorder it. F_FULLFSYNC asks the drive to flush; it fails on
-/// file systems that do not support it, and then fsync is the best remaining guarantee.
+/// file systems that do not support it, and then fsync is the best remaining guarantee. Any other
+/// F_FULLFSYNC error (EIO) is a failed sync and is reported, not papered over by fsync.
 func fullSync(_ descriptor: Int32) throws {
     if fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+    let code = errno
+    guard code == ENOTSUP || code == EINVAL || code == ENOTTY else { throw WorkspaceError.io("F_FULLFSYNC", code) }
     if fsync(descriptor) != 0 { throw WorkspaceError.io("fsync", errno) }
 }
 
@@ -36,8 +39,10 @@ func openDirectory(_ path: String) throws -> Int32 {
 
 /// Atomically replace `name` in `directory`: O_EXCL temporary `temporary`, full sync, rename,
 /// directory sync. An interruption at any stage leaves the previous `name` intact.
+/// With `keepPrevious`, an existing `name` is swapped rather than replaced: the previous file stays
+/// under `temporary` until the caller drops it or swaps it back (`restorePrevious`).
 func atomicReplace(directory: Int32, name: [UInt8], temporary: [UInt8], data: Data, mode: mode_t?,
-                   site: FaultPoint.Site, fault: FaultHook?) throws {
+                   site: FaultPoint.Site, fault: FaultHook?, keepPrevious: Bool = false) throws {
     try fault?(FaultPoint(site, .beforeTemp))
     let descriptor = withCName(temporary) { openat(directory, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644) }
     guard descriptor >= 0 else { throw WorkspaceError.io("openat", errno) }
@@ -49,12 +54,17 @@ func atomicReplace(directory: Int32, name: [UInt8], temporary: [UInt8], data: Da
         if let mode, fchmod(descriptor, mode) != 0 { throw WorkspaceError.io("fchmod", errno) }
         try fault?(FaultPoint(site, .beforeSync))
         try fullSync(descriptor)
-        close(descriptor)
-        try fault?(FaultPoint(site, .beforeRename))
     } catch {
         close(descriptor); _ = withCName(temporary) { unlinkat(directory, $0, 0) }; throw error
     }
-    let renamed = withCName(temporary) { from in withCName(name) { to in renameat(directory, from, directory, to) } }
+    close(descriptor)
+    do { try fault?(FaultPoint(site, .beforeRename)) } catch { _ = withCName(temporary) { unlinkat(directory, $0, 0) }; throw error }
+    var renamed = withCName(temporary) { from in
+        withCName(name) { to in keepPrevious ? renameatx_np(directory, from, directory, to, UInt32(RENAME_SWAP)) : -1 }
+    }
+    if renamed != 0 && (!keepPrevious || errno == ENOENT || errno == ENOTSUP) {
+        renamed = withCName(temporary) { from in withCName(name) { to in renameat(directory, from, directory, to) } }
+    }
     guard renamed == 0 else {
         let code = errno; _ = withCName(temporary) { unlinkat(directory, $0, 0) }; throw WorkspaceError.io("renameat", code)
     }
@@ -171,21 +181,17 @@ public final class WorkspaceFiles {
 
     /// Every non-directory entry (files, symlinks including symlinked directories, special files),
     /// keyed by exact bytes. Empty directories and the store's own temporaries are not tracked.
-    public func scan() throws -> [RelativePath: String] {
-        var found: [RelativePath: String] = [:], temporaries: [RelativePath] = []
-        let directory = try openDirectory(root)
-        defer { close(directory) }
-        try walk(directory, RelativePath(bytes: []), &found, &temporaries)
-        return found
-    }
+    public func scan() throws -> [RelativePath: String] { try walk().found }
 
     /// Store temporaries left anywhere in the workspace by an interrupted write.
-    public func temporaries() throws -> [RelativePath] {
+    public func temporaries() throws -> [RelativePath] { try walk().temporaries.sorted() }
+
+    private func walk() throws -> (found: [RelativePath: String], temporaries: [RelativePath]) {
         var found: [RelativePath: String] = [:], temporaries: [RelativePath] = []
         let directory = try openDirectory(root)
         defer { close(directory) }
         try walk(directory, RelativePath(bytes: []), &found, &temporaries)
-        return temporaries.sorted()
+        return (found, temporaries)
     }
 
     private func walk(_ directory: Int32, _ prefix: RelativePath, _ found: inout [RelativePath: String],
@@ -222,12 +228,34 @@ public final class WorkspaceFiles {
         }
     }
 
-    /// Atomic replace of a regular file through the caller-chosen temporary name.
+    /// Atomic replace of a regular file through the caller-chosen temporary name. The previous file
+    /// stays under `temporary` until `dropPrevious` or `restorePrevious` settles the write.
     func write(_ path: RelativePath, _ data: Data, mode: mode_t?, temporary: [UInt8], fault: FaultHook?) throws {
         guard let (directory, name) = try openParent(path, create: true) else { throw WorkspaceError.io("openParent", ENOENT) }
         defer { close(directory) }
         try atomicReplace(directory: directory, name: name, temporary: temporary, data: data, mode: mode,
-                          site: .workspace, fault: fault)
+                          site: .workspace, fault: fault, keepPrevious: true)
+    }
+
+    /// The write is committed: the previous file kept under `temporary` is no longer needed.
+    func dropPrevious(_ temporary: RelativePath) {
+        guard let (directory, name) = try? openParent(temporary, create: false) else { return }
+        defer { close(directory) }
+        _ = withCName(name) { unlinkat(directory, $0, 0) }
+    }
+
+    /// Undoes a write that landed but could not be committed: the previous file (or no file, when
+    /// there was none) goes back under `path`, and the new bytes are discarded.
+    func restorePrevious(_ path: RelativePath, temporary: RelativePath) throws {
+        guard let (directory, name) = try openParent(path, create: false) else { return }
+        defer { close(directory) }
+        let leaf = temporary.components.last!
+        let swapped = withCName(leaf) { from in withCName(name) { to in renameatx_np(directory, from, directory, to, UInt32(RENAME_SWAP)) } }
+        if swapped != 0 && errno != ENOENT { throw WorkspaceError.io("renameatx_np", errno) }
+        // After the swap the temporary holds the new bytes; without a previous file the new bytes are under `name`.
+        let discard = swapped == 0 ? leaf : name
+        if withCName(discard, { unlinkat(directory, $0, 0) }) != 0 && errno != ENOENT { throw WorkspaceError.io("unlinkat", errno) }
+        try fullSync(directory)
     }
 
     /// Moves a store temporary out of the workspace (same volume) so Linux never sees it.

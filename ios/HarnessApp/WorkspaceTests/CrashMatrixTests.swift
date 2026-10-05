@@ -151,6 +151,19 @@ final class CrashMatrixTests: XCTestCase {
         }
     }
 
+    func testIntentWrittenButNotSyncedWhenKilled() throws {
+        for attempt in 1...repeats {
+            let label = "journal.beforeSync run \(attempt)"
+            try fresh()
+            // The first append of a write is its intent: the frame is complete but not yet synced.
+            try killed(["write", "notes.md", "native bytes"], at: "journal.beforeSync")
+            let store = try reopen(label)
+            XCTAssertEqual(Array(store.recovery.intents.values), [.notLanded], label)
+            XCTAssertEqual(disk("notes.md"), "base", label)
+            XCTAssertEqual(store.generation, 0, label)
+        }
+    }
+
     func testAppKilledWhileLinuxWriterHoldsLease() throws {
         for attempt in 1...repeats {
             let label = "lease run \(attempt)"

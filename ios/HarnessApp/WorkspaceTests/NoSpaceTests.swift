@@ -20,13 +20,13 @@ final class NoSpaceTests: XCTestCase {
         return try WorkspaceStore(workspace: workspace, state: state)
     }
 
-    /// Throws ENOSPC at the `occurrence`-th time `point` is reached, once.
-    func inject(_ store: WorkspaceStore, _ point: FaultPoint, occurrence: Int = 1) {
+    /// Throws ENOSPC at the `occurrence`-th time `point` is reached, once (or every time from then on).
+    func inject(_ store: WorkspaceStore, _ point: FaultPoint, occurrence: Int = 1, persistent: Bool = false) {
         var seen = 0
         store.fault = { [noSpace] reached in
             guard reached == point else { return }
             seen += 1
-            if seen == occurrence { throw noSpace }
+            if seen == occurrence || (persistent && seen > occurrence) { throw noSpace }
         }
     }
 
@@ -43,7 +43,8 @@ final class NoSpaceTests: XCTestCase {
         return reopened
     }
 
-    let workspaceStages: [FaultPoint.Stage] = [.beforeTemp, .halfWritten, .beforeSync, .beforeRename]
+    /// `afterRename` is the directory sync after the rename: the file is in place but not durable.
+    let workspaceStages: [FaultPoint.Stage] = [.beforeTemp, .halfWritten, .beforeSync, .beforeRename, .afterRename]
 
     func testNativeWriteFailsCleanly() throws {
         for stage in workspaceStages {
@@ -62,24 +63,50 @@ final class NoSpaceTests: XCTestCase {
 
     func testJournalFullBeforeOrAfterTheWrite() throws {
         for stage: FaultPoint.Stage in [.halfWritten, .beforeSync] {
-            // Occurrence 1 is the intent (nothing written); 2 is the commit after the rename landed.
+            // Occurrence 1 is the intent (nothing written); 2 is the commit after the rename landed,
+            // which is undone because only the commit record acknowledges a write.
             for occurrence in [1, 2] {
                 let label = "journal.\(stage) #\(occurrence)"
                 let store = try fresh()
                 let (_, version) = try read(store)
                 inject(store, FaultPoint(.journal, stage), occurrence: occurrence)
-                let result = try store.nativeWrite(RelativePath("notes.md"), Data("new".utf8), base: version)
-                let (text, current) = try read(store)
-                switch result {
-                case .written(let written):
-                    XCTAssertEqual(occurrence, 2, label); XCTAssertEqual(text, "new", label); XCTAssertEqual(written, current, label)
-                case .failed:
-                    XCTAssertEqual(occurrence, 1, label); XCTAssertEqual(text, "base", label); XCTAssertEqual(current, version, label)
-                default: XCTFail(label)
+                guard case .failed = try store.nativeWrite(RelativePath("notes.md"), Data("new".utf8), base: version) else {
+                    XCTFail(label); continue
                 }
-                _ = try assertConsistentAfterReopen(label)
+                XCTAssertEqual(try read(store).0, "base", label)
+                XCTAssertEqual(store.version(RelativePath("notes.md")), version, label)
+                let reopened = try assertConsistentAfterReopen(label)
+                XCTAssertEqual(reopened.version(RelativePath("notes.md")), version, label)
+                XCTAssertEqual(reopened.recovery.recoveredDrafts, [], label)
             }
         }
+    }
+
+    func testJournalStaysFullAfterTheRename() throws {
+        let store = try fresh()
+        let (_, version) = try read(store)
+        // The intent fits; the commit and every later append fail, so not even the rollback is recorded.
+        inject(store, FaultPoint(.journal, .beforeSync), occurrence: 2, persistent: true)
+        guard case .failed = try store.nativeWrite(RelativePath("notes.md"), Data("new".utf8), base: version) else {
+            return XCTFail("write")
+        }
+        XCTAssertEqual(try String(contentsOfFile: workspace + "/notes.md", encoding: .utf8), "base")
+        let reopened = try assertConsistentAfterReopen("journal full")
+        XCTAssertEqual(Array(reopened.recovery.intents.values), [.notLanded], "a write reported failed never lands later")
+        XCTAssertEqual(reopened.version(RelativePath("notes.md")), version)
+    }
+
+    func testCompactionFailureDoesNotFailCommittedWork() throws {
+        let store = try fresh()
+        store.compactionThreshold = 1
+        let (_, version) = try read(store)
+        inject(store, FaultPoint(.snapshot, .beforeSync), persistent: true)
+        guard case .written(let written) = try store.nativeWrite(RelativePath("notes.md"), Data("new".utf8), base: version),
+              case .granted = try store.acquireLease("build"),
+              case .draftHeld(let draft) = try store.nativeWrite(RelativePath("notes.md"), Data("held".utf8), base: written)
+        else { return XCTFail("committed work was reported as failed") }
+        let reopened = try assertConsistentAfterReopen("compaction failing", drafts: [draft: Data("held".utf8)])
+        XCTAssertEqual(reopened.version(RelativePath("notes.md")), written)
     }
 
     func testDraftSaveFailsWithoutLosingEarlierDrafts() throws {

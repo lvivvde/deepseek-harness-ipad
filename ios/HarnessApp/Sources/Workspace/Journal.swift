@@ -33,7 +33,7 @@ final class Quarantine {
         let directory = try openDirectory(self.directory)
         defer { close(directory) }
         try atomicReplace(directory: directory, name: Array(name.utf8), temporary: temporaryName(), data: data,
-                          mode: 0o600, site: .snapshot, fault: nil)
+                          mode: 0o600, site: .journal, fault: nil)
         return name
     }
 
@@ -168,15 +168,28 @@ final class Journal {
     }
 
     /// Replaces the journal with an empty one after a snapshot covering `lastSequence` is durable.
+    /// Whether or not the replacement got as far as the rename, appends continue on whatever file
+    /// is now at the journal path, never on an unlinked one.
     func reset() throws {
         let handle = try openDirectory(directory)
         defer { close(handle) }
-        try atomicReplace(directory: handle, name: Array(name.utf8), temporary: temporaryName(), data: Data(Self.magic),
-                          mode: 0o600, site: .journal, fault: fault)
+        do {
+            try atomicReplace(directory: handle, name: Array(name.utf8), temporary: temporaryName(), data: Data(Self.magic),
+                              mode: 0o600, site: .journal, fault: fault)
+        } catch {
+            try reopen()
+            throw error
+        }
+        try reopen()
+    }
+
+    private func reopen() throws {
+        let next = Darwin.open(directory + "/" + name, O_WRONLY | O_CLOEXEC)
+        guard next >= 0 else { throw WorkspaceError.io("open", errno) }
+        var info = stat()
+        guard fstat(next, &info) == 0 else { let code = errno; close(next); throw WorkspaceError.io("fstat", code) }
         close(descriptor)
-        descriptor = Darwin.open(directory + "/" + name, O_WRONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw WorkspaceError.io("open", errno) }
-        length = Self.magic.count
-        recordCount = 0
+        descriptor = next
+        if Int(info.st_size) != length { length = Int(info.st_size); recordCount = 0 }
     }
 }

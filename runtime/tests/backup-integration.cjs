@@ -27,9 +27,9 @@ const {BackupManager, recoverRestore} = require('../guest/backup.cjs');
   try {
     const manager=new BackupManager({root:source,tar,coordinator,freeze});
     const chunks=[];
-    await manager.export(new Writable({write(chunk,_encoding,callback){chunks.push(chunk); callback();}}));
+    await manager.export(new Writable({write(chunk,_encoding,callback){chunks.push(chunk); callback();}}),{started:()=>calls.push('started')});
     const archive=Buffer.concat(chunks);
-    assert.deepEqual(calls,['pause','freeze','thaw','resume']);
+    assert.deepEqual(calls,['pause','started','freeze','thaw','resume']);
     const archiveFile=path.join(base,'backup.tar');fs.writeFileSync(archiveFile,archive);
     const names=[];await tar.t({file:archiveFile,onentry:entry=>names.push(entry.path)});
     assert.ok(names.includes('.dsh/state.json'));assert.ok(!names.some(name=>name.includes('node_modules')||name.includes('.cache')||name.includes('.git-credentials')));

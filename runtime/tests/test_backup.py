@@ -9,3 +9,8 @@ class BackupTests(unittest.TestCase):
         result=subprocess.run(['node',str(Path(__file__).with_name('backup-integration.cjs'))],env=dict(os.environ,HARNESS_NPM_ROOT=str(Path(shutil.which('npm')).resolve().parents[1])),capture_output=True,text=True,timeout=20)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('PASS:backup',result.stdout)
+
+    def test_refused_pause_is_reported_before_the_archive_starts(self):
+        result=subprocess.run(['node',str(Path(__file__).with_name('transfer-backup-integration.cjs'))],env=dict(os.environ,HARNESS_NPM_ROOT=str(Path(shutil.which('npm')).resolve().parents[1])),capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('PASS:transfer-backup',result.stdout)

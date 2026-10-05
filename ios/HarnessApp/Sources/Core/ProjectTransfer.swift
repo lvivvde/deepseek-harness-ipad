@@ -33,7 +33,7 @@ struct ProjectTransfer: Sendable {
     func export(_ name: String, into directory: URL, now: Date = Date()) async throws -> [URL] {
         let (downloaded, response) = try await session.download(for: request("projects/\(try encode(name))/archive"))
         defer { try? FileManager.default.removeItem(at: downloaded) }
-        try check(response, nil)
+        try checkDownload(response, downloaded)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -95,7 +95,7 @@ struct ProjectTransfer: Sendable {
     func exportUserData(into directory: URL) async throws -> [URL] {
         let (downloaded, response) = try await session.download(for: request("userdata/archive"))
         defer { try? FileManager.default.removeItem(at: downloaded) }
-        try check(response, nil)
+        try checkDownload(response, downloaded)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let archive = directory.appendingPathComponent("HarnessBackup.tar")
         try FileManager.default.moveItem(at: downloaded, to: archive)
@@ -177,6 +177,12 @@ struct ProjectTransfer: Sendable {
         var request = URLRequest(url: URL(string: path, relativeTo: base)!)
         request.setValue(token, forHTTPHeaderField: "X-Harness-Transfer")
         return request
+    }
+
+    /// A refused download carries the guest's small JSON error as its body.
+    private func checkDownload(_ response: URLResponse, _ file: URL) throws {
+        let failed = !(200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0)
+        try check(response, failed ? try? Data(contentsOf: file) : nil)
     }
 
     private func check(_ response: URLResponse, _ data: Data?) throws {

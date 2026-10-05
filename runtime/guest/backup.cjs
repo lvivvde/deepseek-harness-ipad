@@ -80,10 +80,12 @@ class BackupManager {
     this.coordinator=coordinator || {pause:async()=>(await supervisorRequest('pause')).lease,
       resume:async lease=>supervisorRequest('resume',{lease})};
   }
-  async export(destination) {
+  // `started` runs once writers have stopped, so a refused pause can still be reported to the client.
+  async export(destination,{started}={}) {
     let lease;
     try {lease=await this.coordinator.pause();}
     catch(error) {console.log('HARNESS_BACKUP_FAILURE:PAUSE');throw error;}
+    started?.();
     let thaw,timer,phase='FREEZE';
     try {
       thaw=await this.freeze(this.root);phase="ARCHIVE";

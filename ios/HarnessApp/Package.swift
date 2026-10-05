@@ -4,9 +4,16 @@ import PackageDescription
 let package = Package(
     name: "HarnessRuntime",
     platforms: [.macOS(.v13), .iOS(.v16)],
-    products: [.library(name: "HarnessRuntime", targets: ["HarnessRuntime"])],
+    products: [
+        .library(name: "HarnessRuntime", targets: ["HarnessRuntime"]),
+        .library(name: "NativeWorkspace", targets: ["NativeWorkspace"])
+    ],
     targets: [
         .target(name: "HarnessRuntime", path: "Sources/Core"),
-        .testTarget(name: "HarnessRuntimeTests", dependencies: ["HarnessRuntime"], path: "Tests")
+        .testTarget(name: "HarnessRuntimeTests", dependencies: ["HarnessRuntime"], path: "Tests"),
+        .target(name: "NativeWorkspace", path: "Sources/Workspace"),
+        .executableTarget(name: "workspace-crash-probe", dependencies: ["NativeWorkspace"], path: "Tools/WorkspaceCrashProbe"),
+        .testTarget(name: "NativeWorkspaceTests", dependencies: ["NativeWorkspace", "workspace-crash-probe"],
+                    path: "WorkspaceTests")
     ]
 )

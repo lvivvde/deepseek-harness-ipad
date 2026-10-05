@@ -10,7 +10,9 @@ struct Plan500ResearchApp: App {
     @StateObject private var model = ResearchModel()
     var body: some Scene {
         WindowGroup {
-            if ProcessInfo.processInfo.arguments.contains("--worker-probe") ||
+            if ProcessInfo.processInfo.arguments.contains("--durability-probe") {
+                DurabilityProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--worker-probe") ||
                 (!ProcessInfo.processInfo.arguments.contains("--plan500-probe") &&
                  FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb/integration.html").path)) {
                 WorkerResearchView()

@@ -13,7 +13,7 @@
 
 继续方案500 #32 时，先读 [iPad 安装前预检](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。**独立 iPad 研究 App 已完成未签名设备构建，Swift gate 与同一份 15 项 App 检查在 macOS 两种模式均通过；没有 iPad 执行。** 当前下一关口是 **签名安装研究 App 并验证 9P backend 与连接闸门（安装前须另获用户同意），Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。**独立研究 App 已获签名安装授权并完成真实签名核验，但安装因免费开发 App 名额已满被拒；没有 iPad 执行。** Swift gate 与同一份 15 项检查在 macOS 两种模式均通过。当前下一关口是 **另获卸载独立验收 runner 的同意以处理名额，安装研究 App 并验证 9P/backend/连接闸门，然后接官方 Worker 与模型/网络**。既有签名安装授权保留，不重复索要；不自动卸载任何 App。#32 保持 OPEN，#17 继续等待架构决定。下方历史状态以此入口及 GitHub 当前状态为准。
 
 ## 当前代码与交付
 
@@ -178,3 +178,11 @@
 - **未完成**：真机 9P/backend/沙箱/私有符号运行、VM 退出等完整合同、官方 Worker 接入、模型/网络、性能。既有同 uid /proc 绕过、SCM_RIGHTS 与 CAS TOCTOU 缺口保持；G3/G4 及完整 G0–G7 未通过，#32 OPEN、#17 继续依赖。
 - **下一步**：另获独立研究 App 的签名及安装同意，确认 profile 后安装；分别运行两模式，只重启研究 App 进程并取回其独立容器收据。不能为名额自动卸载正式 Harness、LinuxPrototype 或其他 App；锁屏测试继续取消。之后接官方 Worker。
 - **私有资产**：`build/prototypes/plan500-ipad/unsigned-final/build-safe.json`、同目录独立 Xcode 工程与未签名 App；`host-none-final/`、`host-mapped-final/` 的随机子目录收据/串口，自己的 macOS QEMU 完成后退出。token、设备与签名参数不公开；不要将此包作为已验证 iPad 交付。
+
+## 2026-10-06 研究 App 签名完成，安装名额待处理
+
+- 用户已明确同意本机现有团队为独立研究 App 签名、安装并运行两模式隔离检查。授权保留，后续不重复询问同一签名安装动作；当前没有任何卸载授权。
+- 独立私有工程经 Xcode GUI Build 取得新 profile，真实深度严格签名、团队/应用标识/钥匙串/证书/当前设备授权及 guest 输入摘要均已核验。研究 App 截止为 **2026-10-13 01:02:35（北京时间）**；正式 Harness 的截止仍为 2026-10-12 15:49:52。
+- 实际安装失败：免费开发 App 名额已满。只读清单确认正式 Harness、LinuxPrototype、DeviceAcceptance runner 已安装，研究 App 未安装。没有启动或卸载已有 App、运行研究 guest、操作正式数据。
+- 下一步：明确获准后，仅卸载独立验收 runner `org.lvivvde.harness.acceptance.xctrunner`，删除其测试容器以腾出名额，再继续已获授权的研究安装与检查；不能卸载 Harness/LinuxPrototype。若用户不同意卸载，保留签名研究包，等待其他名额解决办法。
+- 私有入口：`build/prototypes/plan500-ipad/device-r1/signing-safe.json`、`slot-audit-safe.json`，签名包在 `gui-products/Release-iphoneos/Plan500Research.app`；原始日志/profile/设备信息只留此目录。#32 OPEN、#17 继续依赖，真机证据尚未取得。

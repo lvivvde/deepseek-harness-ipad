@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-05，北京时间。此文件是接手入口，GitHub Issues 是任务状态源；旧聊天和临时目录不作为接手前提。
+最后更新：2026-10-06，北京时间。此文件是接手入口，GitHub Issues 是任务状态源；旧聊天和临时目录不作为接手前提。
 
 ## 开始工作
 
@@ -11,9 +11,9 @@
 
 ## 当前研究接手
 
-继续方案500 #32 时，先读 [Darwin 最新报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及四个原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
+继续方案500 #32 时，先读 [iPad 安装前预检](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。当前下一关口是 **iPad 研究 App 验证 9P backend 与连接闸门（安装前须另获用户同意），Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。**独立 iPad 研究 App 已完成未签名设备构建，Swift gate 与同一份 15 项 App 检查在 macOS 两种模式均通过；没有 iPad 执行。** 当前下一关口是 **签名安装研究 App 并验证 9P backend 与连接闸门（安装前须另获用户同意），Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
 
 ## 当前代码与交付
 
@@ -169,3 +169,12 @@
 - **未完成**：没有 iPad 运行；Swift 网关未进 App/QemuBridge/官方 Worker；同 uid /proc 绕过、SCM_RIGHTS、CAS TOCTOU 仍在；模型/网络未做。G3 未通过，G0–G7 未完整通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
 - **下一步**：经用户另行同意（含签名与安装细节）后，用独立 bundle ID、独立容器、合成工作区与 guest 的研究 App 在 iPad 上验证 9P backend、`pthread_fchdir_np` 与连接闸门，不接触正式 Harness 数据；随后把 Swift 网关接入官方 Worker，再做模型/网络。
 - **私有收据**：`build/prototypes/plan500-darwin/runs/`、`repeat/`；调试目录 `build/prototypes/plan500-darwin/debug*/`（含抓包，可删）。inputs 只从运行时清单抄录 user 盘 SHA256，没有打开原盘。探针 QEMU 与稀疏镜像均已清理，Lima 与无关 QEMU 未动。正式 iPad 仍为 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。
+
+## 2026-10-06 方案500独立 iPad 研究 App 安装前预检
+
+- 用户要求“继续执行”，继续现有研究分支及 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。源码见 [研究 App](../../runtime/prototypes/plan500-ipad/README.md)，结果见 [预检报告](../research/plan500-ipad-preflight.md)。没有修改正式 App 目标、ADR/CONTEXT 或启动 #17。
+- **已完成**：独立 bundle ID `org.lvivvde.harness.plan500.research` 的 iPhoneOS Release 未签名构建；输入/最终 bundle 校验。Swift 网关 15/15、构建输入拒绝 4/4；同一 App 检查逻辑在真实 macOS QEMU 上两模式各 15/15，直接使用 Swift gate，无 Python 中继。默认卷兼容性限制继续单列，不计入协议通过。
+- **设备**：只读 probe 确认已连接、已配对、已解锁、正式 Harness 已安装。没有研究 App 签名、安装、启动或正式数据访问；正式签名截止仍为 2026-10-12 15:49:52（北京时间）。
+- **未完成**：真机 9P/backend/沙箱/私有符号运行、VM 退出等完整合同、官方 Worker 接入、模型/网络、性能。既有同 uid /proc 绕过、SCM_RIGHTS 与 CAS TOCTOU 缺口保持；G3/G4 及完整 G0–G7 未通过，#32 OPEN、#17 继续依赖。
+- **下一步**：另获独立研究 App 的签名及安装同意，确认 profile 后安装；分别运行两模式，只重启研究 App 进程并取回其独立容器收据。不能为名额自动卸载正式 Harness、LinuxPrototype 或其他 App；锁屏测试继续取消。之后接官方 Worker。
+- **私有资产**：`build/prototypes/plan500-ipad/unsigned-final/build-safe.json`、同目录独立 Xcode 工程与未签名 App；`host-none-final/`、`host-mapped-final/` 的随机子目录收据/串口，自己的 macOS QEMU 完成后退出。token、设备与签名参数不公开；不要将此包作为已验证 iPad 交付。

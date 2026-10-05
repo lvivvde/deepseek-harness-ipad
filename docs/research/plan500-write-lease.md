@@ -71,6 +71,8 @@
 - **G5**：只有一次持租 Git 提交，hook 顺序未完整验证。
 - G0–G7 均未完整通过。
 
+> 后续：Darwin 宿主 9P 与 Swift 网关已在 macOS 上运行本合同，并发现 FIFO/socket、hostfwd 重置和大小写合并三项约束，见 [Darwin 报告](plan500-darwin.md)。
+
 下一步应在 Darwin/iPad 上验证文件行为与 9P backend 的可行性，并把网关移植到 Swift，接入官方 Worker 的原生写入路径；随后验证模型与网络路径，再在 #32 形成用户的架构决定。ADR/CONTEXT 未改选，#32 保持 OPEN，#17 继续依赖。正式 App 仍为 `7956e8c`，签名截止 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试保持取消。
 
 本地收据：忽略的 `build/prototypes/plan500-lease/result-safe.json`。公共交付只包含复跑源码和上述脱敏结论。

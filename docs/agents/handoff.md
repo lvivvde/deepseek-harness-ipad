@@ -11,9 +11,9 @@
 
 ## 当前研究接手
 
-继续方案500 #32 时，先读[写租约最新报告](../research/plan500-write-lease.md)，再按需读[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及三个原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
+继续方案500 #32 时，先读 [Darwin 最新报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及四个原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26），同 uid 经 /proc 的绕过仍是缺口。当前下一关口是 **Darwin/iPad 文件行为与 9P backend、Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。当前下一关口是 **iPad 研究 App 验证 9P backend 与连接闸门（安装前须另获用户同意），Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
 
 ## 当前代码与交付
 
@@ -27,7 +27,7 @@
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
 | [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断已修复（`7956e8c`），真机复测通过：冷启动后首次导出和重启后立即导出都一次成功。须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。Worker、真实共享/RPC 与写租约原型已完成有界验证。**下一步为 Darwin/iPad 文件行为、Swift 网关和模型/网络**，入口见[最新报告](../research/plan500-write-lease.md)；正式实现与用户架构决定仍待完成。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。Worker、真实共享/RPC、写租约与 macOS Darwin 9P/Swift 网关原型已完成有界验证。**下一步为 iPad 研究 App、Swift 网关接入官方 Worker 和模型/网络**，入口见[最新报告](../research/plan500-darwin.md)；正式实现与用户架构决定仍待完成。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 等待 #32 的可行性证据和用户架构决定。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
@@ -156,3 +156,16 @@
 - **未完成**：同 uid 无租进程经 `/proc/<leased>/cwd` 写入未被阻止，只能在释放时检测；SCM_RIGHTS 未直接构造；原生 CAS 存在 TOCTOU；只有整工作区租约；网关不是 Swift；Darwin/iPad、模型、网络和官方 Worker 接入均未验证。G3 未通过，G0–G7 未完整通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
 - **下一步**：验证 Darwin/iPad 文件行为与 9P backend 的可行性（含 `pthread_fchdir_np` 私有接口条件），把网关移植为 Swift 并接入官方 Worker 的原生写入，再做模型/网络路径，之后在 #32 形成用户架构决定。
 - **私有收据**：`build/prototypes/plan500-lease/result-safe.json`；原始串口只留在 Lima 的 `/var/tmp/plan500-lease-*`（可删）。本次探针 QEMU 残留数为 0，无关的既有 QEMU 未动。正式 iPad 仍为 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。
+
+## 2026-10-05 方案500 Darwin 9P 与 Swift 网关
+
+- 用户要求“继续下一步”，按上节完成 macOS 宿主上的 Darwin 9P 与 Swift 网关探针；继续研究分支及 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)，PR 合并仍需另获同意。源码见 [Darwin 探针](../../runtime/prototypes/plan500-darwin/README.md)，结论见 [Darwin 报告](../research/plan500-darwin.md)。
+- **已验证**：Homebrew QEMU 11.1.2 在 macOS 上用 Darwin local fsdev 原样运行写租约 26 项检查，覆盖区分大小写 APFS 稀疏镜像与默认卷、Python 与 Swift 网关、`none` 与 `mapped-xattr`，结果见报告。Swift 网关崩溃用真实 SIGKILL；`swift test` 与 iOS 模拟器单元测试通过。
+- **新约束**：
+  - `none` 下 guest 无法在共享工作区建 FIFO（ENXIO）或 Unix socket（ENOTSUP）。原因在 QEMU Darwin backend 源码（无 O_PATH，打开特殊文件失败后删除节点），UTM 10.0.12 相同；`mapped-xattr` 把它们模拟成普通文件，且宿主 mode/symlink 不再普通。
+  - libslirp hostfwd `listen(s, 1)`（IPA 内 4.9.1 相同）遇到 XNU 会对溢出连接回 RST，并发 RPC 随机重置；Linux 不会。`backlog.py` 无 VM 复现。探针加了单上游连接闸门后不再出现。正式 App 的页面/传输/预览 hostfwd 可能受影响，未验证。
+  - 大小写不敏感卷上只差大小写的文件名静默合并。
+  - 正式 IPA 静态检查：QEMU 10.0.12 iOS 构建含 9P backend，weak import 私有 `pthread_fchdir_np`。
+- **未完成**：没有 iPad 运行；Swift 网关未进 App/QemuBridge/官方 Worker；同 uid /proc 绕过、SCM_RIGHTS、CAS TOCTOU 仍在；模型/网络未做。G3 未通过，G0–G7 未完整通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
+- **下一步**：经用户另行同意（含签名与安装细节）后，用独立 bundle ID、独立容器、合成工作区与 guest 的研究 App 在 iPad 上验证 9P backend、`pthread_fchdir_np` 与连接闸门，不接触正式 Harness 数据；随后把 Swift 网关接入官方 Worker，再做模型/网络。
+- **私有收据**：`build/prototypes/plan500-darwin/runs/`、`repeat/`；调试目录 `build/prototypes/plan500-darwin/debug*/`（含抓包，可删）。inputs 只从运行时清单抄录 user 盘 SHA256，没有打开原盘。探针 QEMU 与稀疏镜像均已清理，Lima 与无关 QEMU 未动。正式 iPad 仍为 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。

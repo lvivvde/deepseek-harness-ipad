@@ -42,7 +42,7 @@
 
 #18、#23、#14、#15 正文已与 ADR 0003 对齐（只改正文，评论未动）：#18 补“与 ADR 0003 对齐”节（`/root/projects`、凭据库与 Landlock 参数转为历史；Git 写与 hook 走 `linux`，凭据存储随 #39 关口 5）；#23 明确“重试”是重提任务、同进程不重启 QEMU，dev server 按能力声明默认 `linux`，阈值改由本票开工前提出并经用户确认（#32 未给阈值）；#14 增列 Worker bundle、适配补丁、原生只读 Git（#39 关口 3）与原生搜索；#15 改为 #32 已关闭、#17 经 #39 前置关口推进。#18、#23、#14 仍带 `needs-triage`，本轮未处理。
 
-分支清理（用户要求）：已合入 main 的 13 个远端分支及对应本地分支、一个干净的旧 worktree 已删除；PR 合并后其分支一并删除。7 个从未合并、各含 1 个提交的旧分支（`codex/ipad-architecture-baseline`、`docs/runtime-delivery`、`research/{ipa-distribution,ipad-local-runtime,runtime-licensing,upstream-android,utm-se-embedding}`）保留，待用户决定。
+分支清理（用户要求）：已合入 main 的 13 个远端分支及对应本地分支、一个干净的旧 worktree 已删除；PR 合并后其分支一并删除。另 7 个从未合并的旧分支也按用户要求删除：5 份早期研究报告先原样归档到 `docs/research/`（ipa-distribution、ipad-local-runtime、runtime-licensing、upstream-android、utm-se-embedding，文首注明原分支与提交）；`codex/ipad-architecture-baseline`、`docs/runtime-delivery` 只含 main 已有文件的旧版本，直接删除。对应的干净 worktree 一并移除。远端现只剩 `main` 与本 PR 分支。
 
 下一步：#39 的关口 1、2、4 可并行开工。正式包 `7956e8c` 续签由 #37 处理（截止 2026-10-12 15:49:52），不在 #17 范围。上方“PR / Issue 收尾”节中的开放任务与依赖描述为当时历史，以本节和 GitHub 为准。
 

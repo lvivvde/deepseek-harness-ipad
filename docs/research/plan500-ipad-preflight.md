@@ -70,3 +70,8 @@ G3/G4 与完整 G0–G7 未通过；#32 OPEN、#17 保持依赖。正式安装�
 - 两份完成收据的输入清单与签名包一致；七个编译源文件与仓库源码一致（QEMU 桥只有类名替换），二进制摘要与签名收据一致。签名仍截止 2026-10-13 01:02:35（北京时间）。
 - 运行完成后研究 App 进程已停止；guest 位于该进程内，没有留下本次研究 VM。未进行锁屏、后台、8 小时或正式 App 验收。
 - 私有总入口为 `build/prototypes/plan500-ipad/device-r1/device-validation-safe.json`，两份完整收据为 `device-none/latest-result-safe.json` 与 `device-mapped-xattr/latest-result-safe.json`；卸载、安装、停止收据和原始串口留同一忽略目录。
+
+
+## 2026-10-06 官方 Worker / Swift / Linux 协作追加
+
+原“未接官方 Worker”是上轮边界；本轮已在同一研究 App 内完成，两模式各 23 项协作检查与 9 项真实进程恢复检查通过。包括冷状态会话与原生文件、实际 ready 等待自动执行、统一租约及冲突草稿、取消写者停止后释放、官方会话及项目恢复。[详细报告与复跑入口](plan500-worker-gateway.md)区分三个研究工具适配与完整官方 fs provider。真实模型入口已安装，实际模型闭环仍未通过；完整 G0–G7 和架构决定继续保留。

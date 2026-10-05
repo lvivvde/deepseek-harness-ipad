@@ -10,6 +10,9 @@ struct Plan500ResearchApp: App {
     @StateObject private var model = ResearchModel()
     var body: some Scene {
         WindowGroup {
+            if ProcessInfo.processInfo.arguments.contains("--worker-probe") {
+                WorkerResearchView()
+            } else {
             VStack(alignment: .leading, spacing: 16) {
                 Text("方案500 · iPad 研究").font(.title)
                 Text("独立合成工作区；每个 App 进程只启动一次 VM。")
@@ -28,6 +31,7 @@ struct Plan500ResearchApp: App {
                        ["none", "mapped-xattr"].contains(arguments[index + 1]) { model.securityModel = arguments[index + 1] }
                     model.start()
                 }
+            }
             }
         }
     }
@@ -79,7 +83,7 @@ final class ResearchProbe {
     let workspace: URL
     let state: URL
     let inputs: URL
-    let identity = UUID().uuidString
+    let identity: String
     let transport: GatedTransport
     let reportProgress: (String) -> Void
     let vmLock = NSLock()
@@ -93,16 +97,23 @@ final class ResearchProbe {
     var hostProcess: Process?
     #endif
 
-    init(model: String, scratch: URL? = nil, inputs: URL? = nil, progress: @escaping (String) -> Void) throws {
+    init(model: String, scratch: URL? = nil, inputs: URL? = nil, projectRoot: URL? = nil, progress: @escaping (String) -> Void) throws {
         self.model = model; reportProgress = progress
         let documents = scratch ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         self.inputs = inputs ?? Bundle.main.bundleURL.appendingPathComponent("ProbeInputs")
-        root = documents.appendingPathComponent("Plan500Research/" + UUID().uuidString)
+        root = projectRoot ?? documents.appendingPathComponent("Plan500Research/" + UUID().uuidString)
         workspace = root.appendingPathComponent("workspace"); state = root.appendingPathComponent("state")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: workspace.path)
-        try Data(identity.utf8).write(to: workspace.appendingPathComponent(".plan500-identity"))
-        try Data("初始笔记".utf8).write(to: workspace.appendingPathComponent("笔记.txt"))
+        let identityFile = workspace.appendingPathComponent(".plan500-identity")
+        if FileManager.default.fileExists(atPath: identityFile.path) {
+            identity = try String(contentsOf: identityFile, encoding: .utf8)
+            guard UUID(uuidString: identity) != nil else { throw ProbeFailure.failed("PROJECT_IDENTITY_INVALID") }
+        } else {
+            identity = UUID().uuidString
+            try Data(identity.utf8).write(to: identityFile)
+            try Data("初始笔记".utf8).write(to: workspace.appendingPathComponent("笔记.txt"))
+        }
         let token = try String(contentsOf: self.inputs.appendingPathComponent("token-private"), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         transport = GatedTransport(port: 29450, token: token, timeout: 35)

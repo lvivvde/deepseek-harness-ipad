@@ -32,6 +32,16 @@ final class GatewayTests: XCTestCase {
     func gateway() throws -> Gateway { try Gateway(workspace: workspace, state: state, identity: "identity", transport: fake) }
     func status(_ result: [String: Any]) -> String? { result["status"] as? String }
 
+    func testNativeFilesWorkBeforeLinuxIsAttached() throws {
+        let g = try gateway()
+        fake.handler = { _, _ in XCTFail("native files must not wait for Linux"); throw TransportError.unreachable("cold") }
+        let before = try g.nativeRead(RelativePath("notes.md"))
+        XCTAssertEqual(before["text"] as? String, "base-notes")
+        let saved = try g.nativeWrite(RelativePath("notes.md"), Data("原生修改".utf8), base: before["version"] as? String)
+        XCTAssertEqual(status(saved), "WRITTEN")
+        XCTAssertEqual(try g.nativeRead(RelativePath("notes.md"))["text"] as? String, "原生修改")
+    }
+
     func testVersionCASRefusesStaleBaseAndCreateOverExisting() throws {
         let g = try gateway()
         let v0 = g.version(RelativePath("notes.md"))
@@ -44,6 +54,18 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(status(try g.nativeWrite(RelativePath("new/deep/file"), Data("n".utf8), base: nil)), "WRITTEN")
         XCTAssertEqual(try read("new/deep/file"), "n")
         XCTAssertEqual(g.s.log.map(\.origin), ["native", "native"])
+    }
+
+    func testConflictKeepsDraftAcrossGatewayRestart() throws {
+        let g = try gateway(), path = RelativePath("notes.md")
+        let old = g.version(path)
+        _ = try g.nativeWrite(path, Data("first".utf8), base: old)
+        let result = try g.nativeWrite(path, Data("keep-my-draft".utf8), base: old)
+        let identifier = try XCTUnwrap(result["draft"] as? String)
+        let restarted = try gateway()
+        XCTAssertEqual(restarted.snapshot().0.drafts.last?.status, "CONFLICT")
+        XCTAssertEqual(try restarted.readDraft(identifier)["text"] as? String, "keep-my-draft")
+        XCTAssertEqual(try restarted.nativeRead(path)["text"] as? String, "first")
     }
 
     func testExistingModeIsKeptAcrossNativeWrite() throws {

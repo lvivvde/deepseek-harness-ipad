@@ -84,6 +84,7 @@ public final class Gateway {
     let lock = NSRecursiveLock()
     public private(set) var s: GatewayState
     public private(set) var guestAck = 0
+    private var attached = false
 
     var drafts: String { stateDirectory + "/drafts" }
 
@@ -118,11 +119,13 @@ public final class Gateway {
         lock.lock(); defer { lock.unlock() }
         let bound = try transport.rpc("/bind", ["epoch": s.epoch])
         guestAck = bound["generation"] as? Int ?? 0
+        attached = true
         notify()
         return bound
     }
 
     @discardableResult func notify() -> Bool {
+        guard attached else { return false }
         let entries = s.log.filter { $0.generation > guestAck }
         if entries.isEmpty { return true }
         let body: [String: Any] = ["entries": entries.map {
@@ -168,21 +171,54 @@ public final class Gateway {
         return ["status": "WRITTEN", "version": versionToken(s.versions[path]) ?? NSNull()]
     }
 
+    /// Native text observation and its CAS token come from the same locked gateway.
+    /// Reads during an active Linux lease are refused rather than exposing a partial write.
+    public func nativeRead(_ path: RelativePath) throws -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        try path.validate()
+        guard s.lease == nil else { return ["status": "LEASE_BUSY"] }
+        let before = try workspace.fingerprint(path)
+        if before != s.versions[path]?.fp { _ = try commitOne(path, origin: "external") }
+        guard before != nil else { return ["status": "ABSENT", "version": NSNull()] }
+        let data = try workspace.readData(path)
+        guard before == (try workspace.fingerprint(path)) else { return ["status": "RETRY_READ"] }
+        guard let text = String(data: data, encoding: .utf8) else { return ["status": "NOT_TEXT"] }
+        return ["status": "READ", "text": text, "version": versionToken(s.versions[path]) ?? NSNull()]
+    }
+
     public func nativeWrite(_ path: RelativePath, _ data: Data, base: String?) throws -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         do { try path.validate() } catch WorkspaceError.pathRefused(let reason) { return ["status": "REFUSED", "reason": reason] }
         if s.lease != nil {
-            let identifier = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
-            let directory = open(drafts, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            guard directory >= 0 else { throw WorkspaceError.io("open", errno) }
-            defer { close(directory) }
-            try atomicReplace(directory: directory, name: Array(identifier.utf8), data: data, mode: 0o600)
-            s.drafts.append(Draft(id: identifier, path: path, base: base, status: "HELD"))
-            try persist()
-            return ["status": "DRAFT_HELD", "draft": identifier]
+            return ["status": "DRAFT_HELD", "draft": try keepDraft(path, data, base: base, status: "HELD")]
         }
-        do { return try writeNow(path, data, base: base) }
+        do {
+            var answer = try writeNow(path, data, base: base)
+            if answer["status"] as? String == "CONFLICT" {
+                answer["draft"] = try keepDraft(path, data, base: base, status: "CONFLICT")
+            }
+            return answer
+        }
         catch WorkspaceError.pathRefused(let reason) { return ["status": "REFUSED", "reason": reason] }
+    }
+
+    public func readDraft(_ identifier: String) throws -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        guard let draft = s.drafts.first(where: { $0.id == identifier }) else { return ["status": "NOT_FOUND"] }
+        let data = try Workspace(root: drafts).readData(RelativePath(draft.id))
+        guard let text = String(data: data, encoding: .utf8) else { return ["status": "NOT_TEXT"] }
+        return ["status": draft.status, "text": text, "path": draft.path.json]
+    }
+
+    private func keepDraft(_ path: RelativePath, _ data: Data, base: String?, status: String) throws -> String {
+        let identifier = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let directory = open(drafts, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard directory >= 0 else { throw WorkspaceError.io("open", errno) }
+        defer { close(directory) }
+        try atomicReplace(directory: directory, name: Array(identifier.utf8), data: data, mode: 0o600)
+        s.drafts.append(Draft(id: identifier, path: path, base: base, status: status))
+        try persist()
+        return identifier
     }
 
     public func acquire(_ operation: String) throws -> Lease? {

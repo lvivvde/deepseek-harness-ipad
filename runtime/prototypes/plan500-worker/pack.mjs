@@ -45,8 +45,31 @@ if (useWebkitSchemas) {
     workspaces.set('@deepseek-ai/' + name, scratch);
   }
 }
+let config = readFileSync(join(root, 'composed-web.yml'), 'utf8');
+const integrated = process.argv.includes('--integration');
+if (integrated) {
+  // Scoped subagent tools survive an inherited-tool mask; disable their plugin rows
+  // in this research image before session composition. Never change installed upstream.
+  const lines = config.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const match = /^([ \t]*)name: '@deepseek-ai\/dsh-tool-subagent'$/.exec(lines[index]);
+    if (!match) continue;
+    const indent = match[1];
+    let end = index + 1;
+    while (end < lines.length) {
+      const row = /^([ \t]*)- /.exec(lines[end]);
+      if (row && row[1].length < indent.length) break;
+      end++;
+    }
+    for (let cursor = end - 1; cursor > index; cursor--) {
+      if (lines[cursor].startsWith(indent + 'disabled:')) lines.splice(cursor, 1);
+    }
+    lines.splice(index + 1, 0, indent + 'disabled: true');
+  }
+  config = lines.join('\n');
+}
 const packed = packVfsImage({
-  config: readFileSync(join(root, 'composed-web.yml'), 'utf8'),
+  config,
   profile: 'web', workspaces, resolveFrom: packageRoot,
 });
 mkdirSync(join(root, 'web'), {recursive: true});
@@ -54,7 +77,8 @@ writeFileSync(join(root, 'web/vfs-image.tar.gz'), packed.image);
 const receipt = {
   harnessVersion: '0.2.0-rc.2', nodeVersion: process.version,
   zodVersion: JSON.parse(readFileSync(join(packageRoot, 'node_modules/zod/package.json'), 'utf8')).version,
-  configSha256: createHash('sha256').update(readFileSync(join(root, 'composed-web.yml'))).digest('hex'),
+  configSha256: createHash('sha256').update(config).digest('hex'),
+  integrated,
   harnessLockSha256: createHash('sha256').update(readFileSync(join(packageRoot, 'package-lock.json'))).digest('hex'),
   contract: packed.contract, imageBytes: packed.image.byteLength,
   sha256: createHash('sha256').update(packed.image).digest('hex'),

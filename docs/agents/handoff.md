@@ -13,9 +13,17 @@
 
 继续方案500 #32 时，先读 [iPad 研究 App 真机报告](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；Darwin/macOS 与 Swift 网关原型也完成了有界验证。**独立研究 App 已签名、安装并在 iPad 上运行：`none` 和 `mapped-xattr` 各 15/15 必需检查通过。** iPad 研究容器样本保留大小写不同的名称；`none` 不能建 FIFO/socket，`mapped-xattr` 宿主 mode/symlink 不普通。私有 `pthread_fchdir_np` 符号存在且实际 9P backend 可运行，完整语义与私有接口条件仍未解决。当前下一步是 **接官方 Worker 与 Swift 网关，验证原生/Linux 写者协调，再做模型/网络**。同 uid 经 /proc、SCM_RIGHTS、CAS TOCTOU 及完整 G0–G7 缺口保留。#32 OPEN，#17 等待架构决定。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；Darwin/macOS 与 Swift 网关原型也完成了有界验证。**独立研究 App 已签名、安装并在 iPad 上运行：`none` 和 `mapped-xattr` 各 15/15 必需检查通过。** iPad 研究容器样本保留大小写不同的名称；`none` 不能建 FIFO/socket，`mapped-xattr` 宿主 mode/symlink 不普通。私有 `pthread_fchdir_np` 符号存在且实际 9P backend 可运行，完整语义与私有接口条件仍未解决。Worker 与 Swift 网关协作现已通过两模式的有界真机检查，**当前下一步是实际模型小闭环，再形成用户架构决定**；详见下方本轮入口。同 uid 经 /proc、SCM_RIGHTS、CAS TOCTOU 及完整 G0–G7 缺口保留。#32 OPEN，#17 等待架构决定。
 
 用户于 2026-10-06 明确允许删除三个占位项目 App 及后续项目 IPA，不重复询问卸载；本次只移除独立验收 runner，Harness 与 LinuxPrototype 保留。签名安装授权继续有效。真机收据从忽略的 `build/prototypes/plan500-ipad/device-r1/device-validation-safe.json` 接手；原始日志不公开。下方历史状态以本入口及 GitHub 当前状态为准。
+
+## 2026-10-06 Worker 与 Swift 网关协作接手
+
+本轮详见[Worker/Swift/Linux 接缝报告](../research/plan500-worker-gateway.md)。独立研究 App 中，官方 Worker 工具注册器接三个研究工具；项目唯一权威目录通过 Swift Gateway 和真实 9P 共享。iPad 两模式各 23 项协作检查 + 9 项真实 App 进程恢复检查通过。会话只检查点 `/dsh/home`，原生项目和草稿分别持久化；不是完整 fs provider 或跨文件事务。
+
+下一步：在研究 App 中由用户自行输入 API Key，运行真实模型修改 `math.cjs` → Linux `node test.cjs` → 官方会话返回结果；模型尚未通过。然后形成供用户确认的方案500架构决定，保留 G0–G7 / 私有接口 / 完整隔离与 Git/hook 缺口；#32 OPEN、#17 仍等待。正式数据不变，取消的锁屏测试不重启。
+
+研究签名继续截止 2026-10-13 01:02:35（北京时间），本轮同身份覆盖安装，未卸载任何 App。私有设备资产在 `build/prototypes/plan500-ipad/worker-device-r1/`；只查看脱敏收据，Key 不从聊天获取、不可读取正式 App 的凭据。待本轮模型和代码审查完成后更新此处最终状态。
 
 ## 当前代码与交付
 

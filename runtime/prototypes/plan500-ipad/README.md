@@ -10,7 +10,7 @@
 - 使用已有、摘要核验的 lease guest 与 device executor，复用 Swift 网关库和仅重命名的 QEMU 桥。每个 App 进程只调用一次 QEMU。换模式需结束研究 App 进程再打开，不能同进程重启。
 - 只绑定 loopback `29450` → guest `4500`。准备好的 token 只留私有 bundle/日志，不显示或提交。Swift `GatedTransport` 在同一实例上串行建立连接并完成一次未认证 403 往返，随后释放闸门，让长命令、取消与通知并发；不自动重试副作用请求。
 - build 脚本只生成**未签名 `.app`**，不申请 profile、不签名、不安装、不启动 App。签名/安装需当前用户授权；卸载按[交接](../../../docs/agents/handoff.md)保留已有授权，当前用户已允许清理本项目三个占位 App 及后续项目 IPA，无需重复询问。
-- 没有官方 Worker、模型请求、产品 UI 或正式数据迁移。通过这里的检查不等于完整 G3/G4 或 G0–G7 通过。
+- 原有 `--plan500-probe` 是 9P 协议检查；可选 `--worker-probe` 新增官方 Worker 协作与模型入口，见下文。没有正式数据迁移；这些检查不等于完整 G3/G4 或 G0–G7 通过。
 
 ## 一条命令构建
 
@@ -53,3 +53,24 @@ python3 -m unittest discover -s runtime/prototypes/plan500-ipad -p test_build.py
 ```
 
 两模式必须串行运行。主程序把原始错误留私有文件；完成/失败后均停止自己启动的 QEMU。CLI 收据明确 `physicalDevice=false`。
+
+
+## 官方 Worker / Swift / Linux 集成
+
+新增 [协作报告](../../../docs/research/plan500-worker-gateway.md)和 `run-worker.py`。真实官方 Worker 的工具注册器接原生读取、带版本的原生写入和 Linux 命令；三者访问同一个宿主权威目录，工作区不做 VFS 批量同步。原生冷操作不会等待 guest 通知。会话仅检查点 `/dsh/home`，冲突草稿保存在网关状态目录。
+
+```sh
+python3 runtime/prototypes/plan500-ipad/run-worker.py \
+  --inputs build/prototypes/plan500-darwin/inputs \
+  --output build/prototypes/plan500-ipad/worker-host-new
+python3 runtime/prototypes/plan500-ipad/run-worker.py --prepare-only
+python3 runtime/prototypes/plan500-ipad/build.py \
+  --inputs build/prototypes/plan500-darwin/inputs \
+  --executor ios/LinuxPrototype/.runtime \
+  --worker-web build/prototypes/plan500-worker/web \
+  --output build/prototypes/plan500-ipad/worker-unsigned-new
+```
+
+设备参数 `--worker-probe --model none --run-id <本轮标识>` 运行协作检查；同模式新 App 进程加 `--resume` 验证恢复。两模式各 23 + 9 项已通过，首次样本不可复用已修改过的目录。签名、安装和收据复制遵循现有工具及授权。完整恢复、官方 fs/Git/hook provider、隔离与性能仍未通过。
+
+检查完成后原生 SecureField 可输入 DeepSeek Key 并运行真实模型小闭环。Key 仅留 Swift 内存，Worker 只有占位凭据；只发固定官方 Messages URL，拒绝重定向，缓冲 SSE body 交官方 adapter 解析。当前模型结果尚未通过，不把此入口当作网络或流式验收。

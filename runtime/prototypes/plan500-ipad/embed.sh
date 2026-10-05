@@ -2,6 +2,12 @@
 set -euo pipefail
 bundle="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
 frameworks="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+if [[ -n "${PLAN500_WORKER_WEB:-}" ]]; then
+    mkdir -p "$bundle/WorkerWeb"
+    for name in integration.html worker.js client.js apply-injections.js vfs-image.tar.gz; do
+        ditto "$PLAN500_WORKER_WEB/$name" "$bundle/WorkerWeb/$name"
+    done
+fi
 if [[ "$PLATFORM_NAME" != "iphoneos" ]]; then
     echo "warning: Simulator checks only compile the probe shell; they cannot run device QEMU."
     exit 0

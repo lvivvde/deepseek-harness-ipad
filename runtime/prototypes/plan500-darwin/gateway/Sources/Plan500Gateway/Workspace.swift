@@ -241,6 +241,25 @@ public final class Workspace {
         }
     }
 
+    /// Bounded regular-file read without following a leaf or parent symlink.
+    public func readData(_ path: RelativePath, limit: Int = 1 << 20) throws -> Data {
+        guard let (directory, name) = try openParent(path, create: false) else { throw WorkspaceError.io("read", ENOENT) }
+        defer { close(directory) }
+        let descriptor = withCName(name) { openat(directory, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else { throw WorkspaceError.io("openat", errno) }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw WorkspaceError.pathRefused("NOT_REGULAR") }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress!, $0.count) }
+            if count < 0 { if errno == EINTR { continue }; throw WorkspaceError.io("read", errno) }
+            if count == 0 { return data }
+            guard data.count + count <= limit else { throw WorkspaceError.pathRefused("READ_TOO_LARGE") }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+    }
+
     /// Atomic replace of a regular file. An existing regular file keeps its mode.
     public func write(_ path: RelativePath, _ data: Data, mode: mode_t?) throws {
         guard let (directory, name) = try openParent(path, create: true) else { throw WorkspaceError.io("openParent", ENOENT) }

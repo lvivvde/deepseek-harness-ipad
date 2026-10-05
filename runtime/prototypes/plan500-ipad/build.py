@@ -57,7 +57,8 @@ def project(output):
     """Small generated project: research sources only, no dependency on the production target."""
     stage = output / 'project'; stage.mkdir()
     sources = stage / 'Sources'; sources.mkdir()
-    shutil.copyfile(SOURCE / 'Sources/ResearchApp.swift', sources / 'ResearchApp.swift')
+    for name in ('ResearchApp.swift', 'WorkerBridge.swift'):
+        shutil.copyfile(SOURCE / 'Sources' / name, sources / name)
     for path in GATEWAY.glob('*.swift'):
         shutil.copyfile(path, sources / path.name)
     bridge = REPO / 'ios/HarnessApp/Sources/Native'
@@ -123,6 +124,7 @@ def main():
     parser.add_argument('--inputs', required=True, type=Path)
     parser.add_argument('--executor', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--worker-web', type=Path, help='Prepared integrated Worker assets; no credentials')
     parser.add_argument('--sdk', choices=['iphoneos', 'iphonesimulator'], default='iphoneos')
     args = parser.parse_args()
     inputs, executor, output = args.inputs.resolve(), args.executor.resolve(), args.output.resolve()
@@ -130,11 +132,25 @@ def main():
     if not output.is_relative_to(REPO / 'build'):
         raise ValueError('OUTPUT_MUST_BE_IN_IGNORED_BUILD')
     manifest, frameworks = validate(inputs, executor)
+    worker_manifest = None
+    if args.worker_web:
+        worker_web = args.worker_web.resolve()
+        names = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
+        pack = json.loads((worker_web.parent / 'pack-safe.json').read_text())
+        if pack.get('integrated') is not True or digest(worker_web / 'vfs-image.tar.gz') != pack['sha256']:
+            raise ValueError('WORKER_IMAGE_REFUSED')
+        if (worker_web / 'integration.html').read_bytes() != (SOURCE / 'web/integration.html').read_bytes():
+            raise ValueError('WORKER_PROBE_SOURCE_MISMATCH')
+        worker_manifest = {'files': {name: digest(worker_web / name) for name in names}, 'pack': pack,
+                           'bridgeSourceSha256': digest(SOURCE / 'web/worker-bridge.js')}
+
     output.mkdir(parents=True, exist_ok=False)
     xcode = project(output)
     command = ['xcodebuild', '-project', str(xcode), '-scheme', 'Plan500Research', '-configuration', 'Release',
                '-sdk', args.sdk, '-derivedDataPath', str(output / 'derived'), 'CODE_SIGNING_ALLOWED=NO',
                'PLAN500_INPUT_DIR=' + str(inputs), 'PLAN500_EXECUTOR_DIR=' + str(executor), 'build']
+    if args.worker_web:
+        command.insert(-1, 'PLAN500_WORKER_WEB=' + str(worker_web))
     with (output / 'build-private.log').open('w') as log:
         code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
     app = output / f'derived/Build/Products/Release-{args.sdk}/Plan500Research.app'
@@ -152,7 +168,11 @@ def main():
                 raise ValueError('BUNDLED_INPUT_SET_REFUSED')
             if set(p.name for p in (app / 'Frameworks').iterdir()) != {x['framework'] for x in frameworks}:
                 raise ValueError('BUNDLED_EXECUTOR_SET_REFUSED')
-    receipt = {'completed': completed, 'sdk': args.sdk, 'bundleId': BUNDLE_ID, 'signed': False, 'installed': False,
+    if completed and worker_manifest:
+        for name, expected in worker_manifest['files'].items():
+            if digest(app / 'WorkerWeb' / name) != expected:
+                raise ValueError('BUNDLED_WORKER_HASH_MISMATCH')
+    receipt = {'worker': worker_manifest, 'completed': completed, 'sdk': args.sdk, 'bundleId': BUNDLE_ID, 'signed': False, 'installed': False,
                'deviceVerified': False, 'inputs': manifest, 'frameworks': frameworks,
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sorted(SOURCE.rglob('*')) if p.is_file() and '__pycache__' not in p.parts},
                'gatewaySha256': {p.name: digest(p) for p in sorted(GATEWAY.glob('*.swift'))},

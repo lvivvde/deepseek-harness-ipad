@@ -38,3 +38,10 @@ copyFileSync(join(lib, 'client.js'), join(root, 'web/client.js'));
 copyFileSync(join(root, 'dependencies/node_modules/@deepseek-ai/dsh-client-web/lib/apply-injections.js'),
   join(root, 'web/apply-injections.js'));
 copyFileSync('runtime/prototypes/plan500-worker/probe.html', join(root, 'web/index.html'));
+
+if (process.argv.includes('--integration')) {
+  const integration = 'runtime/prototypes/plan500-ipad/web/';
+  const workerPath = join(root, 'web/worker.js');
+  writeFileSync(workerPath, readFileSync(workerPath, 'utf8') + '\n' + readFileSync(integration + 'worker-bridge.js', 'utf8'));
+  copyFileSync(integration + 'integration.html', join(root, 'web/integration.html'));
+}

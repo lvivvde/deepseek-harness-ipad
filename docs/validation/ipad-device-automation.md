@@ -73,7 +73,7 @@ python3 ios/HarnessApp/scripts/device-acceptance.py run \
 
 后两项还在测试内部要求显式环境选择，误点 Xcode 的全部测试时会跳过。没有删除草稿、卸载 App、清空数据、强杀正式 App或物理锁屏测试。`CHECK_COMPLETE` 必须伴随对应完成标记；跳过返回退出码 2，不能记为通过。失败码 1，原始细节留 `*-private.log`；退出码 0 才是命令完成。
 
-免费个人团队可能只有少量签名 App 名额。`RUNNER_APP_SLOT_FULL` 时明确报告阻塞；任何指定 App 卸载及其数据删除需要用户明确授权，不能自动卸载 Harness/LinuxPrototype。过去只在授权后卸载了 Breeze，这不构成后续卸载授权。
+免费个人团队可能只有少量签名 App 名额。`RUNNER_APP_SLOT_FULL` 时明确报告阻塞；指定 App 卸载及其数据删除必须在当前会话或交接记录的明确授权范围内；未获授权时不能自动卸载 Harness/LinuxPrototype。过去只在授权后卸载了 Breeze，这不构成后续卸载授权。2026-10-06 用户另行明确允许删除本项目三个占位 App 及后续项目 IPA，见[交接](../agents/handoff.md)；该授权范围内不重复询问。本次已只卸载独立 DeviceAcceptance runner，之后需要 UI 验收时可重装。
 
 `UI_AUTOMATION_AUTHORIZATION_TIMEOUT` 表示测试初始化未完成；需要设备端授权或解锁时，给用户一次简短步骤。不把安装、编译、初始化超时登记为恢复失败或测试通过。当前连接 probe 已实际成功；锁屏后的 UI 测试必须等到用户自行正常解锁，不主动催促已取消的验收。
 

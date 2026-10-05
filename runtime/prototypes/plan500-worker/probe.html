@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PROTOTYPE: official Harness Worker feasibility</title>
+<pre id="state">Starting isolated WebKit probe…</pre>
+<script type="importmap">{"imports":{"@deepseek-ai/dsh-client-web/injections":"./apply-injections.js"}}</script>
+<script type="module">
+import {WorkerTunnel} from './client.js';
+const checks = [], pending = new Map();
+const workerRequests = new WeakMap();
+let nextId = 0;
+window.prototypeNativeReply = (id, result) => {
+  const p = pending.get(id); pending.delete(id);
+  if (result.error) p.reject(new Error(result.error)); else p.resolve(result);
+};
+function native(operation, payload = {}) {
+  const id = ++nextId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, {resolve, reject});
+    window.webkit.messageHandlers.native.postMessage({id, operation, ...payload});
+  });
+}
+function assert(name, passed, detail = undefined) {
+  checks.push({name, passed, ...(detail === undefined ? {} : {detail})});
+  document.querySelector('#state').textContent = JSON.stringify(checks, null, 2);
+  if (!passed) throw new Error(name);
+}
+function instrument(worker, operation, payload = {}) {
+  const id = ++nextId;
+  return new Promise((resolve, reject) => {
+    workerRequests.get(worker).set(id, {resolve, reject});
+    worker.postMessage({t: 'plan500', id, operation, ...payload});
+  });
+}
+async function boot(snapshot) {
+  const worker = new Worker('./worker.js', {type: 'module'});
+  workerRequests.set(worker, new Map());
+  worker.addEventListener('error', event => {
+    window.webkit.messageHandlers.log.postMessage({workerError: event.message});
+  });
+  worker.addEventListener('message', event => {
+    if (event.data?.t === 'plan500-log') {
+      event.stopImmediatePropagation();
+      window.webkit.messageHandlers.log.postMessage(event.data);
+    } else if (event.data?.t === 'plan500-result') {
+      event.stopImmediatePropagation();
+      const p = workerRequests.get(worker).get(event.data.id);
+      workerRequests.get(worker).delete(event.data.id);
+      if (event.data.error) p.reject(new Error(event.data.error)); else p.resolve(event.data.result);
+    }
+  });
+  const tunnel = new WorkerTunnel(worker);
+  // Extra probe-only init field; the official image/overlays protocol is intact.
+  worker.postMessage({t: 'init', image: new URL('./vfs-image.tar.gz', location.href).href,
+    overlays: [], snapshot});
+  await tunnel.bootPayload();
+  return {worker, tunnel};
+}
+async function api(tunnel, method, args) {
+  const response = await tunnel.fetch('/api/' + method, {method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({type: 'client-request', rpcId: 'probe-' + (++nextId),
+      method, payload: {args: {[method === 'session/list' ? '_request' : 'request']: args}}})});
+  const data = await response.json();
+  return {status: response.status, data};
+}
+try {
+  const started = performance.now();
+  let {worker, tunnel} = await boot(undefined);
+  const first = await api(tunnel, 'session/list', {});
+  assert('official session/list over Worker tunnel', first.status === 200 && first.data.result?.ok === true,
+    {status: first.status, data: first.data, firstBootMs: Math.round(performance.now() - started)});
+  const description = await instrument(worker, 'describe');
+  assert('actual official modules loaded', description.modules.modules > 100, description);
+  const schema = await instrument(worker, 'schema-check');
+  assert('WebKit schema adaptation accepts real plain schemas', schema.plainAccepted);
+  assert('schema adaptation still rejects invalid types and exotic objects', schema.rejected === schema.invalidCases, schema);
+  const path = '/dsh/workspace/prototype/中文.txt';
+  const memory = await instrument(worker, 'write', {path, text: 'prototype-durable-value'});
+  assert('memory write explicitly lacks durable receipt', memory.inMemory && !memory.durable);
+  const sessionId = 'session-plan500-prototype';
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+  assert('official session creation without model or Linux', created.data.result?.ok === true, created);
+  const renamed = await api(tunnel, 'session/rename', {sessionId, title: '隔离会话持久化'});
+  assert('official session title event accepted', renamed.data.result?.ok === true, renamed);
+  const snapshot = await instrument(worker, 'snapshot');
+  const checkpoint = await native('checkpoint', {snapshot});
+  assert('native checkpoint has explicit durable receipt', checkpoint.durable === true);
+  worker.terminate();
+  const stored = await native('readCheckpoint');
+  ({worker, tunnel} = await boot(stored.snapshot));
+  assert('file restored after real Worker termination',
+    await instrument(worker, 'read', {path}) === 'prototype-durable-value');
+  const second = await api(tunnel, 'session/list', {});
+  assert('official session API works after checkpoint boot', second.status === 200 && second.data.result?.ok === true);
+  const adopted = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+  assert('official session reopens persisted identity', adopted.data.result?.ok === true, adopted);
+  const reopened = await api(tunnel, 'session/list', {});
+  assert('real session identity and title restored from official JSONL',
+    reopened.data.result.value.items.some(item => item.sessionId === sessionId && item.projections?.values?.title === '隔离会话持久化'), reopened.data);
+  await native('failNextCheckpoint');
+  await instrument(worker, 'write', {path, text: 'not-yet-durable'});
+  let refused = false;
+  try { await native('checkpoint', {snapshot: await instrument(worker, 'snapshot')}); }
+  catch { refused = true; }
+  assert('failed persistence cannot report saved', refused);
+  worker.terminate();
+  const retained = await native('readCheckpoint');
+  ({worker, tunnel} = await boot(retained.snapshot));
+  assert('failed checkpoint preserves previous valid data',
+    await instrument(worker, 'read', {path}) === 'prototype-durable-value');
+  await native('done', {result: {passed: true, linuxVMStarted: false, platform: 'macOS WKWebView',
+    checks, limitations: ['No iPad proof', 'Checkpoint bridge only, not live POSIX sharing',
+      'No model request or complete UI', 'No crash-consistent transaction or compressed-log migration proof']}});
+} catch (error) {
+  await native('done', {result: {passed: false, checks, error: String(error)}});
+}
+</script>

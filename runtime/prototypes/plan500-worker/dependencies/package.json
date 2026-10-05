@@ -1,0 +1,1 @@
+{"name":"plan500-worker-prototype-dependencies","version":"0.0.0","private":true,"type":"module","dependencies":{"@deepseek-ai/dsh-experimental-webworker-packer":"0.2.0-rc.2","@deepseek-ai/dsh-experimental-webworker-runtime":"0.2.0-rc.2"}}

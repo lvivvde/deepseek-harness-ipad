@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PROTOTYPE: official Harness Worker feasibility</title>
+<pre id="state">Starting isolated WebKit probe…</pre>
+<script type="importmap">{"imports":{"@deepseek-ai/dsh-client-web/injections":"./apply-injections.js"}}</script>
+<script type="module">
+import {WorkerTunnel} from './client.js';
+const checks = [], pending = new Map();
+const workerRequests = new WeakMap();
+let nextId = 0;
+window.prototypeNativeReply = (id, result) => {
+  const p = pending.get(id); pending.delete(id);
+  if (result.error) p.reject(new Error(result.error)); else p.resolve(result);
+};
+function native(operation, payload = {}) {
+  const id = ++nextId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, {resolve, reject});
+    window.webkit.messageHandlers.native.postMessage({id, operation, ...payload});
+  });
+}
+function assert(name, passed, detail = undefined) {
+  checks.push({name, passed, ...(detail === undefined ? {} : {detail})});
+  document.querySelector('#state').textContent = JSON.stringify(checks, null, 2);
+  if (!passed) throw new Error(name);
+}
+function instrument(worker, operation, payload = {}) {
+  const id = ++nextId;
+  return new Promise((resolve, reject) => {
+    workerRequests.get(worker).set(id, {resolve, reject});
+    worker.postMessage({t: 'plan500', id, operation, ...payload});
+  });
+}
+async function boot(snapshot) {
+  const worker = new Worker('./worker.js', {type: 'module'});
+  workerRequests.set(worker, new Map());
+  worker.addEventListener('error', event => {
+    window.webkit.messageHandlers.log.postMessage({workerError: event.message});
+  });
+  worker.addEventListener('message', event => {
+    if (event.data?.t === 'plan500-native') {
+      event.stopImmediatePropagation();
+      const {id, operation, payload} = event.data;
+      native(operation, payload).then(result => worker.postMessage({t: 'plan500-native-reply', id, result}),
+        error => worker.postMessage({t: 'plan500-native-reply', id, error: String(error)}));
+    } else if (event.data?.t === 'plan500-log') {
+      event.stopImmediatePropagation();
+      window.webkit.messageHandlers.log.postMessage(event.data);
+    } else if (event.data?.t === 'plan500-result') {
+      event.stopImmediatePropagation();
+      const p = workerRequests.get(worker).get(event.data.id);
+      workerRequests.get(worker).delete(event.data.id);
+      if (event.data.error) p.reject(new Error(event.data.error)); else p.resolve(event.data.result);
+    }
+  });
+  const tunnel = new WorkerTunnel(worker);
+  // Extra probe-only init field; the official image/overlays protocol is intact.
+  worker.postMessage({t: 'init', image: new URL('./vfs-image.tar.gz', location.href).href,
+    overlays: [], snapshot});
+  await tunnel.bootPayload();
+  return {worker, tunnel};
+}
+async function api(tunnel, method, args) {
+  const response = await tunnel.fetch('/api/' + method, {method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({type: 'client-request', rpcId: 'probe-' + (++nextId),
+      method, payload: {args: {[method === 'session/list' ? '_request' : 'request']: args}}})});
+  const data = await response.json();
+  return {status: response.status, data};
+}
+function value(result) {
+  if (result.isError) throw new Error(JSON.stringify(result));
+  return JSON.parse(result.content[0].text);
+}
+async function tool(worker, sessionId, name, args, operationId) {
+  return value(await instrument(worker, 'bridge-tool', {sessionId, name, args, operationId}));
+}
+async function until(test) {
+  const deadline = performance.now() + 45000;
+  while (!await test()) {
+    if (performance.now() >= deadline) throw new Error('WAIT_TIMEOUT');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+try {
+  const cold = await native('status');
+  assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
+  const stored = await native('restore');
+  let {worker, tunnel} = await boot(stored.snapshot ?? undefined);
+  const sessionId = 'session-plan500-integrated';
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+  assert('official Worker opens session before Linux ready', created.data.result?.ok === true);
+  const install = await instrument(worker, 'bridge-install', {sessionId});
+  assert('official tool registry uses only native workspace and Linux bridge',
+    install.names.length === 3 && install.names.includes('plan500_linux'), install);
+  const read = path => tool(worker, sessionId, 'plan500_read', {path});
+  const write = (path, text, base) => tool(worker, sessionId, 'plan500_write', {path, text, base});
+  const linux = (id, command, timeoutMs = 15000) => tool(worker, sessionId, 'plan500_linux', {command, timeoutMs}, id);
+  if (window.plan500Resume) {
+    const sessions = await api(tunnel, 'session/list', {});
+    assert('session identity and Chinese title survive App process restart',
+      sessions.data.result.value.items.some(x => x.sessionId === sessionId && x.projections?.values?.title === '同一工作区协作'));
+    assert('native file survives App restart', (await read('native.txt')).text === 'Worker原生值');
+    assert('Linux file survives App restart in the same workspace', (await read('linux.txt')).text === 'Linux共享值');
+    assert('Linux edit remains authoritative after restart', (await read('笔记.txt')).text === 'Linux修改');
+    const conflicts = (await native('status')).drafts.filter(x => x.status === 'CONFLICT');
+    let preserved = false;
+    for (const draft of conflicts) if ((await native('draft', {draft: draft.id})).text === '原生冲突草稿') preserved = true;
+    assert('conflicting draft survives App restart', preserved);
+    assert('restart does not start Linux for session or file recovery', (await native('status')).phase === 'COLD');
+  } else {
+    assert('Worker reads authoritative native workspace while Linux cold', (await read('笔记.txt')).text === '初始笔记');
+    const written = await write('native.txt', 'Worker原生值', null);
+    assert('Worker native write has gateway durable version before Linux ready', written.status === 'WRITTEN' && typeof written.version === 'string');
+    assert('Worker native read observes saved native bytes', (await read('native.txt')).text === 'Worker原生值');
+    const renamed = await api(tunnel, 'session/rename', {sessionId, title: '同一工作区协作'});
+    assert('official session rename accepted before Linux ready', renamed.data.result?.ok === true);
+    const preparing = await native('prepare');
+    assert('enabling Linux project starts asynchronous preparation on open', preparing.phase === 'PREPARING');
+    const queued = linux('queued-real-ready', 'test "$(cat native.txt)" = "Worker原生值" && printf Linux共享值 > linux.txt && printf QUEUED_OK');
+    await until(async () => (await native('status')).operations['queued-real-ready'] === 'WAITING_READY');
+    const waiting = await native('status');
+    assert('Linux tool waits for actual ready without acquiring a write lease', !waiting.ready && waiting.lease === null);
+    assert('native work remains available during Linux preparation', (await read('native.txt')).text === 'Worker原生值');
+    const cancelledBeforeReady = linux('cancel-before-ready', 'printf SHOULD_NOT_RUN > cancelled-before.txt');
+    await until(async () => (await native('status')).operations['cancel-before-ready'] === 'WAITING_READY');
+    await native('cancel', {operationId: 'cancel-before-ready'});
+    assert('cancelled queued Linux tool never dispatches', (await cancelledBeforeReady).status === 'CANCELLED_BEFORE_DISPATCH');
+    const completed = await queued;
+    assert('queued Worker tool automatically executes after verified 9P ready', completed.status === 'RELEASED' && completed.result.code === 0 && completed.result.stdout === 'QUEUED_OK' && completed.result.writerQuiescent);
+    assert('Linux writes appear immediately to Worker native reads', (await read('linux.txt')).text === 'Linux共享值');
+    assert('cancelled queued operation left no file', (await read('cancelled-before.txt')).status === 'ABSENT');
+    const base = (await read('笔记.txt')).version;
+    const editing = linux('shared-lease-conflict', 'printf Linux修改 > 笔记.txt; sleep 2');
+    await until(async () => (await native('status')).lease === 'shared-lease-conflict');
+    const draft = await write('笔记.txt', '原生冲突草稿', base);
+    assert('native edit during Linux write uses the same lease and preserves draft', draft.status === 'DRAFT_HELD');
+    assert('native reads refuse partially written Linux files', (await read('笔记.txt')).status === 'LEASE_BUSY');
+    const edited = await editing;
+    assert('conflicting draft is retained after Linux writer drains', edited.status === 'RELEASED' && edited.drafts.some(x => x.status === 'CONFLICT'));
+    assert('conflict preserves native draft bytes and Linux project bytes', (await native('draft', {draft: draft.draft})).text === '原生冲突草稿' && (await read('笔记.txt')).text === 'Linux修改');
+    const running = linux('cancel-running-writer', 'while :; do printf running >> running.txt; sleep 0.1; done', 30000);
+    await until(async () => (await native('status')).lease === 'cancel-running-writer');
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const held = await write('after-cancel.txt', '取消后草稿', null);
+    assert('native draft held while cancellable writer is active', held.status === 'DRAFT_HELD');
+    await native('cancel', {operationId: 'cancel-running-writer'});
+    const stopped = await running;
+    assert('cancel waits for guest writer quiescence before releasing lease', stopped.status === 'RELEASED' && stopped.result.writerQuiescent && stopped.result.cancelled && (await native('status')).lease === null);
+    assert('nonconflicting held edit applies after confirmed cancellation', (await read('after-cancel.txt')).text === '取消后草稿');
+    const final = (await read('running.txt')).text;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert('cancelled Linux writer stops changing project bytes', (await read('running.txt')).text === final);
+    const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+    assert('official session flushed into native durable home checkpoint', saved.durable);
+  }
+  worker.terminate();
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false}});
+} catch (error) {
+  await native('done', {result: {passed: false, checks, error: String(error)}});
+}
+window.plan500RunModel = async () => {
+  const modelChecks = [];
+  function verify(name, passed) {
+    modelChecks.push({name, passed});
+    document.querySelector('#state').textContent = JSON.stringify(modelChecks, null, 2);
+    if (!passed) throw new Error(name);
+  }
+  let worker;
+  try {
+    const restored = await native('restore');
+    const opened = await boot(restored.snapshot ?? undefined);
+    worker = opened.worker;
+    const sessionId = 'session-plan500-real-model';
+    const created = await api(opened.tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+    verify('official model session opens', created.data.result?.ok === true);
+    await instrument(worker, 'bridge-install', {sessionId});
+    const read = path => tool(worker, sessionId, 'plan500_read', {path});
+    const originalTest = "const assert = require('node:assert/strict'); assert.equal(require('./math.cjs')(2, 3), 5); console.log('MODEL_TEST_OK');\n";
+    for (const [path, text] of [['math.cjs', 'module.exports = (a, b) => a - b;\n'], ['test.cjs', originalTest]]) {
+      const observed = await read(path);
+      const saved = await tool(worker, sessionId, 'plan500_write', {path, text, base: observed.version ?? null});
+      verify('synthetic model fixture saved: ' + path, saved.status === 'WRITTEN');
+    }
+    const outcome = await instrument(worker, 'model-run', {sessionId});
+    verify('real official model API returns HTTP 200', outcome.http200Responses > 0);
+    verify('model writes math.cjs through gateway', outcome.nativeFix);
+    verify('original assertion test remains unchanged', (await read('test.cjs')).text === originalTest);
+    verify('model invokes actual node test.cjs after source write and receives success', outcome.linuxTest);
+    verify('official agent returns a final result', outcome.assistantReturned);
+    await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+    await native('model-done', {result: {passed: true, checks: modelChecks, workerIntegrated: true,
+      modelNetworkVerified: true, tools: outcome.tools, turnEnd: outcome.turnEnd, http200Responses: outcome.http200Responses,
+      networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'}});
+  } catch (error) {
+    await native('model-done', {result: {passed: false, checks: modelChecks, error: String(error), modelNetworkVerified: false}});
+  } finally { worker?.terminate(); }
+};
+</script>

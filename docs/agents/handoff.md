@@ -44,7 +44,9 @@
 
 分支清理（用户要求）：已合入 main 的 13 个远端分支及对应本地分支、一个干净的旧 worktree 已删除；PR 合并后其分支一并删除。另 7 个从未合并的旧分支也按用户要求删除：5 份早期研究报告先原样归档到 `docs/research/`（ipa-distribution、ipad-local-runtime、runtime-licensing、upstream-android、utm-se-embedding，文首注明原分支与提交）；`codex/ipad-architecture-baseline`、`docs/runtime-delivery` 只含 main 已有文件的旧版本，直接删除。对应的干净 worktree 一并移除。远端现只剩 `main` 与本 PR 分支。
 
-下一步：#39 的关口 1、2、4 可并行开工。正式包 `7956e8c` 续签由 #37 处理（截止 2026-10-12 15:49:52），不在 #17 范围。上方“PR / Issue 收尾”节中的开放任务与依赖描述为当时历史，以本节和 GitHub 为准。
+#37（续签与恢复验证维护）已由用户于 2026-10-06 取消并关闭；不再主动提醒续签，除非用户提起。
+
+下一步：#39 的关口 1、2、4 可并行开工，推荐先做关口 1。上方“PR / Issue 收尾”节中的开放任务与依赖描述为当时历史，以本节和 GitHub 为准。
 
 ## 2026-10-06 PR / Issue 收尾
 
@@ -83,7 +85,6 @@
 | 开放任务 | 下一步与边界 |
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；开放子 Issue 顺序 37→17→18→23→14，#32 已关闭，#19/#16 作为历史子项保留。架构基线为 ADR 0003（accepted）。 |
-| [01｜维护跟进：10 月 12 日前续签与未完成恢复验证](https://github.com/lvivvde/deepseek-harness-ipad/issues/37) | #19 已交付关单。当前正式包 `7956e8c` 须在 2026-10-12 15:49:52 前续签；救援盘、未复现连接故障和历史恢复未知继续在本票保留，取消的锁屏不重启。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 架构决定已确认（ADR 0003），#32 阻塞已解除；被 #39 阻塞，先完成其六项前置关口（关口 1、2、4 可并行），再做原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。正文已对齐 ADR 0003：按能力声明区分原生/插件路径，Git 写与 hook 走 `linux`（#39 关口 3、5）；真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。仍带 `needs-triage`。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；同进程不重启 QEMU，阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |

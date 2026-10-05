@@ -11,16 +11,16 @@
 
 ## 当前代码与交付
 
-- 当前交付代码基线：main `3dd1301`，PR27–PR31 已合并并完成本机只读签名预检；接手时仍查询实际 Git 状态。PR30 修复已随本轮新包交付，既有用户项目不以更新示例为由覆盖。
+- 当前交付代码基线：main `7956e8c`，已包含 PR #34 的导出中断修复，签名预检通过。接手时仍要查询实际 Git 状态。既有用户项目不会因为示例更新而被覆盖。
 - 真机工具及本交接由已合并的 [PR31](https://github.com/lvivvde/deepseek-harness-ipad/pull/31) 交付，新会话直接从 main 接手。本轮任务重排只更新 GitHub 和交接文档，不改变代码基线。
-- 当前安装包为 **3dd1301**：`build/maintenance19/HarnessApp-0.1.0-main-3dd1301-renewed.ipa`，293.2 MiB；已同身份覆盖安装，真实备份与安装前后内容核验通过，详见末尾续签交付记录。
+- 当前安装包为 **7956e8c**：`build/maintenance19/r2-7956e8c/HarnessApp-0.1.0-main-7956e8c.ipa`，已同身份覆盖安装，安装前后 83 个文件一致。签名未延期，截止仍为 2026-10-12 15:49:52（北京时间）。详见末尾“导出修复真机交付”。
 - 当前正式包签名截止：**2026-10-12 15:49:52（北京时间）**。已核验实际新 profile；后续仍以真实签名检查为准。
 - #1 保持关闭并改名为历史规划归档；#16 原 M1 入口保持关闭。当前总路线图改由 #15 承载，历史证据与已完成状态不变；尚未通过的旧验收在对应新范围中保留，不自动扩展测试。
 
 | 开放任务 | 下一步与边界 |
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
-| [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断根因已在隔离 QEMU 确认，修复分支 `codex/issue19-export-diagnosis` 待合并、未上真机；须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
+| [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断已修复（`7956e8c`），真机复测通过：冷启动后首次导出和重启后立即导出都一次成功。须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
 | [02｜方案500：原生优先架构与项目级 Linux 插件预热（用户阻塞）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | **持续阻塞**，无人认领、无 `ready-for-agent`；仅用户明确解除后可研究/原型/实现。项目启用后打开即异步预热，触及 Linux 指令/hook 时等待并自动继续。作为新架构决策关口；500 是方案编号，GitHub 为 #32。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 被 #32 阻塞。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
@@ -85,9 +85,24 @@
 
 - **根因**：完整备份前 supervisor 只等 dsh 退出 8 秒。dsh 刚启动或重启后可能很久才处理 SIGTERM：隔离 QEMU 实测 14–98 秒。超时后暂停失败，而传输服务已发出 200 响应头，只能断开连接，于是 App 显示“网络连接已断开”。重试时 dsh 已退出，所以成功。
 - **修复**：只对 Harness 本身最多等 180 秒；暂停成功后才发响应头；暂停被拒时返回固定错误，诊断记录固定代码；宿主空闲超时 300 秒。
-- **当前状态**：runtime 32 项、Swift 29 项、Linux supervisor 用例和修复后 guest 循环导出均已通过。代码在分支 `codex/issue19-export-diagnosis`，合并另需用户同意。详情和边界见[维护记录](../validation/ipad-signing-maintenance.md)的“导出中断诊断与修复”。
-- **未完成**：`Could not connect to the server.` 未复现；没有打包或安装，真机未复测。
-- **下一步**：
-  1. PR 合并后，在 2026-10-12 15:49:52（北京时间）前打包，并另获安装授权，一次完成续签和真机导出复测：冷启动后立即导出、导出后重启再导出。
-  2. 安装前后照旧做真实备份与 83 文件比较。
+- **当前状态**：runtime 32 项、Swift 29 项、Linux supervisor 用例和修复后 guest 循环导出均已通过。PR #34 已合并为 main `7956e8c`。详情和边界见[维护记录](../validation/ipad-signing-maintenance.md)的“导出中断诊断与修复”。
+- **真机**：已安装并复测，见下节。
 - **私有资产**：反馈循环 `build/export-diagnosis/export-loop.py`、实验 guest 生成脚本与变体、Lima 实验盘 `/var/tmp/export-diag/`（可删）。Lima 内另有一个不属于本任务的 QEMU，不要动。
+
+## 2026-10-05 Issue #19 导出修复真机交付
+
+- **当前状态**：main `7956e8c` 已同身份覆盖安装到 iPad，App 留在前台，阶段为 `recovery:pageReady`。
+- **已验证**：
+  - 安装前，旧包首次导出再次断开，重试成功，复现了原问题。
+  - 安装后，冷启动后首次导出（约 40 秒）和重启 Harness 后立即导出（34.3 秒）都一次成功。
+  - 安装前后的真实备份中 83 个文件全部一致。
+  - 新 guest 在 QEMU 中启动验收 16/16，限速重启后导出 3/3。
+- **未完成**：
+  - 签名未延期（`renewalExtended=false`）。
+  - `Could not connect to the server.` 未复现。
+  - 历史长后台、首次解锁、时差和救援盘未验证。
+  - #19 保持 OPEN。
+- **下一步**：
+  1. 在 2026-10-12 15:49:52（北京时间）前获取新 profile，从 `7956e8c` 或之后的 main 重签。
+  2. 另获安装授权后再安装，安装前后照旧做真实备份和 83 文件比较。
+- **私有资产**：`build/maintenance19/r2-7956e8c/`，从 `delivery-receipt-safe.json` 开始看。导出用例超时可能截断冷启动，可用同目录的 900 秒版本 `run-check-long-private.py`。

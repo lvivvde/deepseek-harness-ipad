@@ -11,9 +11,11 @@
 
 ## 当前研究接手
 
-继续方案500 #32 时，先读 [iPad 安装前预检](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
+继续方案500 #32 时，先读 [iPad 研究 App 真机报告](../research/plan500-ipad-preflight.md)和 [Darwin 报告](../research/plan500-darwin.md)，再按需读[写租约报告](../research/plan500-write-lease.md)、[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；macOS 宿主上 Darwin 9P 与 Swift 网关也运行了同一合同，并发现 `none` 不能建 FIFO/socket、hostfwd 并发连接被 XNU 重置、大小写不敏感卷静默合并三项约束。同 uid 经 /proc 的绕过仍是缺口。**独立研究 App 已获签名安装授权并完成真实签名核验，但安装因免费开发 App 名额已满被拒；没有 iPad 执行。** Swift gate 与同一份 15 项检查在 macOS 两种模式均通过。当前下一关口是 **另获卸载独立验收 runner 的同意以处理名额，安装研究 App 并验证 9P/backend/连接闸门，然后接官方 Worker 与模型/网络**。既有签名安装授权保留，不重复索要；不自动卸载任何 App。#32 保持 OPEN，#17 继续等待架构决定。下方历史状态以此入口及 GitHub 当前状态为准。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26）；Darwin/macOS 与 Swift 网关原型也完成了有界验证。**独立研究 App 已签名、安装并在 iPad 上运行：`none` 和 `mapped-xattr` 各 15/15 必需检查通过。** iPad 研究容器样本保留大小写不同的名称；`none` 不能建 FIFO/socket，`mapped-xattr` 宿主 mode/symlink 不普通。私有 `pthread_fchdir_np` 符号存在且实际 9P backend 可运行，完整语义与私有接口条件仍未解决。当前下一步是 **接官方 Worker 与 Swift 网关，验证原生/Linux 写者协调，再做模型/网络**。同 uid 经 /proc、SCM_RIGHTS、CAS TOCTOU 及完整 G0–G7 缺口保留。#32 OPEN，#17 等待架构决定。
+
+用户于 2026-10-06 明确允许删除三个占位项目 App 及后续项目 IPA，不重复询问卸载；本次只移除独立验收 runner，Harness 与 LinuxPrototype 保留。签名安装授权继续有效。真机收据从忽略的 `build/prototypes/plan500-ipad/device-r1/device-validation-safe.json` 接手；原始日志不公开。下方历史状态以本入口及 GitHub 当前状态为准。
 
 ## 当前代码与交付
 
@@ -62,7 +64,7 @@
 
 ## 持续约束
 
-保护正式 Harness 数据和现有草稿；覆盖升级只用同签名身份，保留原盘；LinuxPrototype 不操作。不能在同进程重新初始化未经验证的 QEMU。VM 真退出时保存固定诊断，明确关闭重开。
+保护正式 Harness 数据和现有草稿；覆盖升级只用同签名身份，保留原盘。2026-10-06 用户明确允许删除三个占位项目 App（Harness、LinuxPrototype、DeviceAcceptance runner）及后续项目 IPA，卸载不再重复询问；按实际需要选择清理对象，本次仅移除 runner。此授权不扩展为其他 App 或数据清理。不能在同进程重新初始化未经验证的 QEMU。VM 真退出时保存固定诊断，明确关闭重开。
 
 设备标识、签名身份、凭据和原始串口只留私有日志；token 由用户在设备适当入口自行输入，不从聊天取值、不替用户输入。小事直接处理，少安装/打包；后续物理锁屏已取消，不安排提醒或等待。API 及 Token 消耗无需另问，但外部 Git push 仍要有用户授权的测试远端。
 
@@ -179,10 +181,25 @@
 - **下一步**：另获独立研究 App 的签名及安装同意，确认 profile 后安装；分别运行两模式，只重启研究 App 进程并取回其独立容器收据。不能为名额自动卸载正式 Harness、LinuxPrototype 或其他 App；锁屏测试继续取消。之后接官方 Worker。
 - **私有资产**：`build/prototypes/plan500-ipad/unsigned-final/build-safe.json`、同目录独立 Xcode 工程与未签名 App；`host-none-final/`、`host-mapped-final/` 的随机子目录收据/串口，自己的 macOS QEMU 完成后退出。token、设备与签名参数不公开；不要将此包作为已验证 iPad 交付。
 
-## 2026-10-06 研究 App 签名完成，安装名额待处理
+## 2026-10-06 研究 App 首次安装受阻（已解决）
 
-- 用户已明确同意本机现有团队为独立研究 App 签名、安装并运行两模式隔离检查。授权保留，后续不重复询问同一签名安装动作；当前没有任何卸载授权。
+- 用户已明确同意本机现有团队为独立研究 App 签名、安装并运行两模式隔离检查。授权保留，后续不重复询问同一签名安装动作；此首次安装阶段尚无卸载授权，随后用户已明确授权，见下节。
 - 独立私有工程经 Xcode GUI Build 取得新 profile，真实深度严格签名、团队/应用标识/钥匙串/证书/当前设备授权及 guest 输入摘要均已核验。研究 App 截止为 **2026-10-13 01:02:35（北京时间）**；正式 Harness 的截止仍为 2026-10-12 15:49:52。
 - 实际安装失败：免费开发 App 名额已满。只读清单确认正式 Harness、LinuxPrototype、DeviceAcceptance runner 已安装，研究 App 未安装。没有启动或卸载已有 App、运行研究 guest、操作正式数据。
 - 下一步：明确获准后，仅卸载独立验收 runner `org.lvivvde.harness.acceptance.xctrunner`，删除其测试容器以腾出名额，再继续已获授权的研究安装与检查；不能卸载 Harness/LinuxPrototype。若用户不同意卸载，保留签名研究包，等待其他名额解决办法。
 - 私有入口：`build/prototypes/plan500-ipad/device-r1/signing-safe.json`、`slot-audit-safe.json`，签名包在 `gui-products/Release-iphoneos/Plan500Research.app`；原始日志/profile/设备信息只留此目录。#32 OPEN、#17 继续依赖，真机证据尚未取得。
+
+## 2026-10-06 项目 App 卸载授权
+
+- 用户明确表示“之前占位的3个APP都可以删。后续如果要卸载IPA文件，可以不用申请权限，直接删除就行。”这取代历史未获卸载授权的限制；后续本项目 App/IPA 清理不重复询问。
+- 为处理研究安装名额，已只卸载 `org.lvivvde.harness.acceptance.xctrunner` 及其测试容器；只读清单确认 Harness 与 LinuxPrototype 仍安装。独立 UI runner 后续可按需重装，不影响既有研究签名安装授权。
+- 随后研究 App 安装成功并完成两种模式，各 15/15，结果见下节。签名参数、设备标识与卸载收据保存在忽略的 `build/prototypes/plan500-ipad/device-r1/`。
+
+## 2026-10-06 方案500 iPad 真机子集完成
+
+- **已验证**：普通开发签名独立 App 内，iOS QEMU 10.0.12 的 `none` 与 `mapped-xattr` 各 15/15；两份收据 `physicalDevice=true`、`completed=true`，来源与编译源码/输入/签名包摘要核验一致。RPC ready 单次样本分别 8.241 / 8.179 秒，不登记性能验收。
+- **兼容性观察**：研究容器样本区分大小写；`none` 宿主 chmod/symlink 普通但 FIFO/socket 失败；`mapped-xattr` 能创建 FIFO/socket，但宿主 chmod/symlink 不等价。私有 `pthread_fchdir_np` 符号存在，实际 9P 执行通过；这些观察不计入协议通过数。
+- **设备收尾**：换模式只重启研究 App 进程，每进程一次 QEMU；完成后只停止研究 App，核验 PID 消失。研究 App 保留安装，正式 Harness 与 LinuxPrototype 未更改。没有操作正式数据或执行取消的锁屏测试。独立 UI runner 后续需要时可重装。
+- **未完成**：官方 Worker 网关接入、真实模型/网络、完整旧 26 项合同（含 VM 退出/网关 SIGKILL）、稳定性/内存、/proc 绕过、SCM_RIGHTS 与 CAS TOCTOU。G3/G4 和完整 G0–G7 未通过。
+- **下一步**：在同一研究分支接官方 Worker 与 Swift 网关，验证原生编辑及 Linux 写者共同遵守租约，再验证真实模型/网络；#32 保持 OPEN、#17 不自动启动、ADR/CONTEXT 不改选。
+- **私有入口**：`build/prototypes/plan500-ipad/device-r1/device-validation-safe.json`；两模式 `device-none/latest-result-safe.json` / `device-mapped-xattr/latest-result-safe.json`。签名研究包截止 2026-10-13 01:02:35（北京时间），正式包仍为 2026-10-12 15:49:52。

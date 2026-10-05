@@ -114,4 +114,16 @@
 - 研究分支：[research/plan500-feasibility](https://github.com/lvivvde/deepseek-harness-ipad/tree/research/plan500-feasibility)。报告保存为 [方案500可行性研究](../research/plan500-feasibility.md)，区分固定源码事实、方案推断和未通过的 iPad 验证关口。
 - 本轮不打包或安装，不读取、迁移或替换正式用户盘；取消的锁屏测试继续取消。实际 QEMU 二进制仅作只读静态字符串检查，不能登记共享目录可用。脱敏收据在忽略的 `build/research/plan500/`。
 - 已核实：固定官方源码有实验 Worker/packer 接缝，但目前面向预览；现成 mobile Node 为 18.20.4，不满足固定上游 Node 版本要求。官方 plugin-manager、stdio MCP、JSONL 锁/验证线程存在独立平台依赖；hook 基础设施失败可能默认非阻断，因此 Linux 就绪门禁必须位于调用 hook 之前。研究报告提供精确源码链接和未知项，不登记 iPad 可用性通过。
-- 下一步建议：先评估官方 Worker + iPad 工作区桥 + Linux 能力网关候选，优先验证无 VM 的核心与耐久存储、同一工作区双向语义和预热就绪门禁。候选范围待用户决定，#32 不因研究完成自动关闭，#17 不自动启动。
+- 下一步建议：先评估官方 Worker + iPad 工作区桥 + Linux 能力网关候选，优先验证无 VM 的核心与耐久存储、同一工作区双向语义和预热就绪门禁。用户随后已接受该候选并授权隔离原型，见下一节；#32 不因研究或部分探针完成自动关闭，#17 不自动启动。
+
+
+## 2026-10-05 方案500隔离 Worker 原型
+
+- 用户已授权“官方实验 Worker + Swift 工作区桥 + Linux 能力网关”候选的隔离原型验证。继续 `research/plan500-feasibility` 和 [PR #36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)，不另建正式实现分支；PR 合并仍需另获用户同意。
+- 可复跑源码：[原型说明](../../runtime/prototypes/plan500-worker/README.md)，入口 `python3 runtime/prototypes/plan500-worker/run.py`。固定两个 npm lock；依赖仅在忽略 build 中，原先 Harness 测试依赖只读复用。`--install` 会安装到独立 prototype 目录且禁用 install scripts。
+- 真实 macOS WKWebView 14/14：官方核心加载 860 模块，无 Linux 启动；会话创建、中文标题、中文文件经 Swift 检查点确认后，Worker 终止重建再重开会话均恢复；注入检查点拒绝不误报 saved，上一有效文件保留；schema 拒绝回归通过。
+- 注入调度模型 7/7：打开项目立即开始一次准备，队列等 ready，自动续执行/去重/取消/超时/失败/项目关闭/disabled 行为通过。不是实际 Linux、Git 或 hook 的验收。
+- 必要适配均保留在 scratch/Worker 副本：固定 Zod 4.6.5 的 CJS 导出选择、WebKit disposal 符号补齐、两处原生 Object/Array 字符串比较。去掉 Zod/schema 适配的负对照 HTTP 503；不得宣称上游逐字节原样可运行。官方会话 flush 必须先于 Swift 确认；列表缓存滞后时以重开会话的权威投影为准。
+- 未验：iPad/真实模型/完整 UI/实际 RSS；App 或系统崩溃、并发写、损坏日志、压缩日志迁移；实时共享文件的 mode/symlink/原子替换/锁和 watcher；真实 Linux 准备/RPC、Git hook、副作用与插件路径。完整 G0–G7 均未通过；原型 snapshot 不直接进入产品。
+- 下一步：隔离 guest 与权威宿主目录的双向共享语义、真实就绪与 RPC 探针，再做 iPad/模型路径。ADR/CONTEXT 未改选，#32 OPEN、#17 保持依赖。正式 iPad 仍是 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；未接触设备或原盘，锁屏测试继续取消。
+- 私有资产：`build/prototypes/plan500-worker/run-safe.json`、`unadapted-run-safe.json`、检查点/镜像/原始日志。启动器的本机 HTTP 服务会在结束时关闭，无需手工留下服务器。

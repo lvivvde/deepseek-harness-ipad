@@ -10,14 +10,14 @@
 
 现成 nodejs-mobile 仍为 Node 18.20.4，不满足固定上游的现代 Node 要求；自维护 Node 22/24 iOS 无 JIT 移植可以保留更多 Node 语义，但属于另一项明显更大的运行时工程。直接用 JavaScriptCore/Swift 重新补齐 Node 和官方插件所需 API，复用率与语义风险更难控制。[上游 engines][root-package]、[移动 Node 版本][mobile-version]、[移动 Node FAQ][mobile-faq]
 
-**需要用户决定：是否接受官方实验 Worker 接缝作为第一个候选，允许通过下文门槛再决定是否改选正式架构。** 若要求必须使用未经浏览器兼容层处理的官方 Node Host，则优先项应改为现代 mobile Node 移植。现有 [ADR 0001](../adr/0001-local-linux-emulation.md)、[ADR 0002](../adr/0002-runtime-ships-inside-ipa.md) 和根 CONTEXT 继续有效；研究文档不自动改选它们。
+**2026-10-05 用户已接受此候选并授权隔离原型验证；下节补充实际结果。正式架构是否改选，仍要通过下文完整门槛并记录决策。** 若要求必须使用未经浏览器兼容层处理的官方 Node Host，则优先项应改为现代 mobile Node 移植。现有 [ADR 0001](../adr/0001-local-linux-emulation.md)、[ADR 0002](../adr/0002-runtime-ships-inside-ipa.md) 和根 CONTEXT 继续有效；研究文档不自动改选它们。
 
 ## 证据范围与固定基线
 
 | 项目 | 本轮使用的证据 |
 | --- | --- |
 | 官方 Harness | `@deepseek-ai/dsh@0.2.0-rc.2`；源码固定 `639ed015397290b3745d163aafe02ffee4aa3f84` |
-| 本机依赖 | 忽略的 `build/test-dependencies/harness/` 中已安装包、manifest、实际 `lib/*.js`；只读核对，没有安装或升级依赖 |
+| 本机依赖 | 忽略的 `build/test-dependencies/harness/` 中已安装包、manifest、实际 `lib/*.js`；源码研究阶段只读核对；随后仅在独立 build 目录安装固定 Worker/packer 依赖，未升级既有依赖 |
 | 安装工具 | 本仓库 `runtime/harness-package.json` 固定 pnpm `11.28.4`；官方源码根 manifest 的构建工具是 pnpm `11.7.0`，两者不混称 |
 | Node 要求 | 源码根 `engines.node = ^22.19.0 || >=24.0.0`；不能因 CLI 发布包未重复 engines 就认定 Node 18 获支持 |
 | nodejs-mobile | 固定 `d9552e0e01ed5bdbe12a31d1ce6c0877a4f39580`，`node_version.h` 为 `18.20.4`；只读官方 API 核查当日 main 仍是此提交，latest release 为 `v18.20.4`，发布于 2024-10-07 |
@@ -27,7 +27,7 @@
 
 本仓库结构使用 Tier 2 Verify：graph project `Users-edwin-Projects-deepseek-harness-ipad`，父任务最新 generation `2026-10-05T11:32:19Z`；相关 RuntimeConfiguration/EmbeddedRuntime/QemuBridge/transfer 证据路径覆盖为 metadata_match、无已记录缺口，不等于全集完备。上游和忽略的依赖目录未纳入该图，使用精确源文件回退，不把图结果当作其覆盖证据。
 
-本轮没有运行真实模型请求、读取凭据、连接设备、构建/签名/安装 App，也没有迁移或替换正式用户盘。静态研究不是设备验收。
+源码研究阶段没有运行宿主探针；随后用户授权的 macOS WebKit 隔离原型见下节。两阶段均未运行真实模型请求、读取凭据、连接设备、构建/签名/安装正式 App，也没有迁移或替换正式用户盘。宿主结果不是 iPad 验收。
 
 ## 实际上游运行要求
 
@@ -102,7 +102,7 @@
 
 ## 最小可证伪门槛与下一步
 
-以下是下一阶段建议验收合同，本轮均未通过；先做隔离宿主/模拟探针，再按获准范围做 iPad 探针。不会用一个 UI demo 关闭 #32 或解除 #17 的技术依赖。
+以下是完整验收合同，本轮没有一项完整通过；隔离原型只提供 G0/G1/G2 的部分主机证据和 G4 的注入模型证据，详见后节。随后仍需真实 Linux 和 iPad 探针。不会用一个 UI demo 关闭 #32 或解除 #17 的技术依赖。
 
 | 门槛 | 最小证据与失败判据 |
 | --- | --- |
@@ -115,7 +115,39 @@
 | G6 插件能力 | 固定至少一个纯原生功能、一个 Linux command/hook、stdio与HTTP MCP路径及不支持插件；实测激活、调用、错误和取消。pnpm/安装脚本操作明确放在哪个环境 |
 | G7 数据与回退 | 从隔离备份迁入新候选工作区，逐文件核验并保留原盘；候选失败回旧交付包。正式迁移与安装另按授权执行；原盘不能同时被两个执行器写 |
 
-本轮完成的是源码研究、候选比较和这些门槛；未进行设备或真实模型运行验证。下一步在用户确认候选边界后，把 G0–G4 的隔离探针拆成明确 Issue/PR，并在 #32 记录结果和最终架构决策；门槛未过保持 #17 受技术关口约束。现有维护 #19 与 2026-10-12 签名截止独立继续，不重启已经取消的锁屏测试。
+本轮完成源码研究、候选比较、验收合同及下节有界隔离原型；未进行设备或真实模型运行验证。下一步优先验证权威工作区的双向共享语义和真实 Linux 就绪/RPC，再验证 iPad 与模型路径，并在 #32 记录最终架构决策；门槛未过保持 #17 受技术关口约束。现有维护 #19 与 2026-10-12 签名截止独立继续，不重启已经取消的锁屏测试。
+
+
+## 用户授权的隔离原型结果（2026-10-05）
+
+**结论：候选值得继续验证，但尚不支持改选正式架构。** macOS WKWebView 中无需启动 Linux，真实官方 Worker 可启动、创建会话、保存中文标题；Swift 检查点确认后，销毁 Worker、重建官方树并重开会话，JSONL 标题和中文文件可恢复。代码与复跑入口见 [隔离探针](../../runtime/prototypes/plan500-worker/README.md)。以下是本地实测，不由上游文档推断。
+
+| 项目 | 实际结果与边界 |
+| --- | --- |
+| 固定输入 | Harness/Worker/packer `0.2.0-rc.2`，本机 Node `24.20.0`、Zod `4.6.5`；两个 npm lock 已随原型提交，不执行 install scripts |
+| 组装 | 官方 `dsh-worker-transform/1`，318 包、1,325 JS 条目、175 roster；缺包清单为空，但另有 62 项 unresolved external requests，不能据此宣称全部插件兼容 |
+| 产物 | 本次 gzip 镜像 13,706,635 字节，SHA256 `bb1731e33abb2758780afce35eeedd48bad324cc7f806025309aaf1f021152ce`；镜像、原始日志不提交 |
+| 官方核心 | 真实加载 860 个模块；通过官方 WorkerTunnel 调用 session/list、session/create、session/rename，再重开持久会话；没有 fixture 响应或模型调用 |
+| 存储 | 官方会话 flush → 抓取受限 VFS → Swift 原子检查点写入/文件同步/读回 → 明确确认 → Worker 终止 → boot 前恢复；仅内存写入显式不算 saved |
+| 失败注入 | 在持久写入前拒绝一次检查点，调用方得到错误；随后重建仍读到上一有效文件。没有真实掉电、进程写中途崩溃或磁盘满注入 |
+| 计数 | WebKit 14/14（含拒绝无效 schema）、调度模型 7/7；模型中的准备器/执行器均为注入，未启动真实 Linux 或执行真实 Git/hook |
+| 时间与资源 | 第一次 session/list 的主机样本约 0.3–0.5 秒；不作 iPad 启动/恢复承诺。VFS 内容约 42.7 MB，不是实际 RSS/峰值内存测量 |
+
+### 三项必要兼容适配
+
+未经 Zod/schema 适配的负对照稳定返回 boot HTTP 503，27 个插件失败、19 个等待。模块级诊断定位到 Zod ESM 循环引用：`Cannot access 'globalConfig' before initialization`。原型只在 scratch 中选择同一已发布版本的 CJS 导出，原安装树不变；这表明官方 packer 对这组固定依赖不能直接作为即插即用方案。
+
+随后真实 session/create 触发 `Symbol.dispose is not defined`。Worker 副本补齐缺失的 disposal 符号，保留上游释放 helper 的执行。继续调用仍因工具 schema 被拒绝而失败：固定 `dsh-tools` 和 `dsh-cordis-host-runner` 把原生构造器字符串精确写成单行；实际 WebKit 返回带换行的 `function Object() {\n    [native code]\n}`。scratch 适配改为比较当前 realm 的原生 Object/Array，保留构造器名、prototype 身份和其余严格校验，并实测普通 schema 被接受、Date/类实例/无效 type 被拒绝。正式移植须维护这些适配或推动上游修正，不应隐藏它们。[工具 schema 源码](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/core/tools/src/json-schema.ts)
+
+原型还暴露两个恢复顺序问题：rename 接口接受事件后，JSONL 批次可能仍未写入 VFS，必须先等待官方 sessionPersistence.flush；flush 完成也只到内存 VFS，仍需 Swift 确认。持久列表 projection cache 可能只有 seq 2，JSONL 已到 seq 3；本轮以官方重开后权威投影中的标题为准，没有把旧缓存当成数据丢失或恢复成功。
+
+### 已通过部分与下一关口
+
+G0 仅证明经上述适配的固定 web 组合可组装并加载；G1 仅证明无 VM 的会话/文件路径，模型、网络流、取消、认证与完整 UI 未验；G2 仅证明 Worker 重建与有界检查点失败，App/系统崩溃、损坏日志、并发写和原有压缩会话迁移未验。G4 是模型行为检查，不能冒称真实预热、后台/RPC 恢复已通过。G3/G5/G6/G7 仍无运行证据。
+
+下一步应在隔离权威目录和隔离 guest 中验证双向 create/write/rename/delete、中文名、mode/symlink、原子替换和 `.git/index.lock`，再接真实准备/RPC 门禁。检查点不是实时共享目录，也不保留 hardlink/symlink 文件身份；base64 全量快照和 Swift 主线程写入不能直接用于大型工程。iPad 生命周期、真实模型工具和网络路径是正式架构决策前的独立关口。ADR/CONTEXT 未改选，#32 OPEN、#17 继续等待；正式安装/原盘迁移未开始。
+
+私有收据：`build/prototypes/plan500-worker/run-safe.json`；负对照为 `unadapted-run-safe.json`，原始日志只留忽略目录。Harness lock SHA256 `1a60fdd7b3dd0501993f8848be11301c0fc1423268ff2fc02aeab39298559a19`；Worker/packer lock SHA256 `02472f491b41be7cfb3bafcb3a1301d868cf10b72cb328e11934956ee1b6e01c`。
 
 [root-package]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/package.json
 [base-patch]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/bundle/base/cordis.patch.yml

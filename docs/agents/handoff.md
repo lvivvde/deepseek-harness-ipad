@@ -11,9 +11,9 @@
 
 ## 当前研究接手
 
-继续方案500 #32 时，先读[共享工作区/RPC 最新报告](../research/plan500-sharing-rpc.md)，再按需读[候选研究](../research/plan500-feasibility.md)及两个原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)，共享/RPC 结果提交为 `7092315`，该提交 CI 已通过。
+继续方案500 #32 时，先读[写租约最新报告](../research/plan500-write-lease.md)，再按需读[共享/RPC 报告](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)及三个原型 README。使用现有 `research/plan500-feasibility` 分支与 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
 
-当前下一关口是**统一写租约、文件版本冲突与明确变更通知/轮询**；真实 Linux 两种模式各 23 项协议检查通过，但共享语义仍有锁、通知及 mapped-xattr 元数据缺口。iPad、模型和官方 Worker/Swift 调度接入仍待验证。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
+统一写租约、版本冲突与 change generation 已在真实 Linux 上完成有界验证（两种模式各 26/26），同 uid 经 /proc 的绕过仍是缺口。当前下一关口是 **Darwin/iPad 文件行为与 9P backend、Swift 网关接入官方 Worker，随后是模型/网络**。#32 保持 OPEN，#17 继续等待架构决定。下方按时间排列的阶段记录用于追溯，历史“下一步”和阻塞状态以此入口及 GitHub 当前状态为准。
 
 ## 当前代码与交付
 
@@ -27,7 +27,7 @@
 | --- | --- |
 | [路线图：iPad 原生基础能力与 Linux 兼容插件](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 当前总入口；子 Issue 的顺序是 19→32→17→18→23→14，已完成 #16 留在最后。重排不是新架构实施授权，当前 ADR 尚未改选。 |
 | [01｜维护：现有版本的数据保护、恢复诊断与重签](https://github.com/lvivvde/deepseek-harness-ipad/issues/19) | 已验证真实备份、隔离恢复、同身份续签覆盖与安装后内容保留。导出中断已修复（`7956e8c`），真机复测通过：冷启动后首次导出和重启后立即导出都一次成功。须在 2026-10-12 15:49:52 前续签。历史首次解锁/时差和救援盘仍未验，保持 OPEN；后续锁屏已取消。 |
-| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。Worker 和真实共享/RPC 原型已完成有界验证；共享语义仍有缺口。**下一步为写租约、版本冲突和变更通知/轮询**，入口见[最新报告](../research/plan500-sharing-rpc.md)；正式实现与用户架构决定仍待完成。 |
+| [02｜方案500：原生优先架构与项目级 Linux 插件预热（可行性研究与架构决策）](https://github.com/lvivvde/deepseek-harness-ipad/issues/32) | 用户已解除人工阻塞并授权研究，已认领，保持 OPEN。Worker、真实共享/RPC 与写租约原型已完成有界验证。**下一步为 Darwin/iPad 文件行为、Swift 网关和模型/网络**，入口见[最新报告](../research/plan500-write-lease.md)；正式实现与用户架构决定仍待完成。 |
 | [03｜实现：原生运行时、共享工作区与 Linux 插件预热](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 等待 #32 的可行性证据和用户架构决定。原生 Harness 宿主、同一项目工作区、准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验转兼容插件技术债，不标记通过。 |
 | [04｜验收：小型项目的 Git 获取、开发、测试与推送闭环](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。明确原生/插件执行路径、真实模型修改、审阅、测试、hook 顺序及授权远端推送；既有模拟结果保留，Vite production build 超时仍未知。 |
 | [05｜验收：插件、预览、键盘与前后台交互](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。验证新架构插件预热及任务等待、两种执行路径的预览/HMR、中文/键盘和恢复交互；旧明确故障的必要维护可在 #19 处理。 |
@@ -145,3 +145,14 @@
 - **下一步**：验证统一写租约、文件版本冲突、失败/取消后的 writer 存活边界及明确 change generation/轮询；所有原生/Linux 写者都须进入合同，不能只锁宿主而放任 guest 直写。随后做 Darwin/iPad、真实模型及网络。完整 G0–G7 未通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
 - 私有收据：`build/prototypes/plan500-sharing/linux-result-safe.json`、`darwin-api-safe.json`，原始串口只留本次自己的 Lima scratch。正式 iPad 仍 `7956e8c`，签名截止仍 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。
 - 交付检查：23+23 项真实 Linux 收据已核对源文件 SHA256；Darwin 小探针、Python/Node/shell 语法、本地文档链接和 `make check` 通过。本次 QEMU 残留数为 0；原型观测的失败语义保留在报告中，不作为兼容性通过。
+
+## 2026-10-05 方案500统一写租约与 change generation
+
+- 用户要求“继续推进”，按上节下一步完成写者合同探针；继续研究分支及 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)，PR 合并仍需另获同意。源码见[写租约探针](../../runtime/prototypes/plan500-lease/README.md)，结论见[写租约报告](../research/plan500-write-lease.md)。
+- **已验证**：实际 Linux QEMU 10.2.1，`none` 与 `mapped-xattr` 各 **26/26**。
+  - Python 网关是唯一的租约/fence/generation 发放者，状态 fsync 持久化。原生写入按版本比较后交换，冲突不覆盖；租约期间的原生编辑成为持久草稿，释放后 rebase 为 APPLIED/CONFLICT；guest 可轮询 generation，漏掉的通知会补齐。
+  - guest 只暴露 `ro,nosuid,nodev` 的 `/workspace`。持租命令在私有 mount namespace 中以 owner uid 写入，无租命令为 reader uid，user namespace 关闭。
+  - 每个命令拥有独立 cgroup，`cgroup.kill` 加 sweep 后才确认写者停止。`setsid`、超时、取消、RPC 断开、网关重启、`/revoke` 和 VM 退出都不会过早释放租约。另有一项去掉 sweep 的负对照，证明 sweep 是必需的。
+- **未完成**：同 uid 无租进程经 `/proc/<leased>/cwd` 写入未被阻止，只能在释放时检测；SCM_RIGHTS 未直接构造；原生 CAS 存在 TOCTOU；只有整工作区租约；网关不是 Swift；Darwin/iPad、模型、网络和官方 Worker 接入均未验证。G3 未通过，G0–G7 未完整通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
+- **下一步**：验证 Darwin/iPad 文件行为与 9P backend 的可行性（含 `pthread_fchdir_np` 私有接口条件），把网关移植为 Swift 并接入官方 Worker 的原生写入，再做模型/网络路径，之后在 #32 形成用户架构决定。
+- **私有收据**：`build/prototypes/plan500-lease/result-safe.json`；原始串口只留在 Lima 的 `/var/tmp/plan500-lease-*`（可删）。本次探针 QEMU 残留数为 0，无关的既有 QEMU 未动。正式 iPad 仍为 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。

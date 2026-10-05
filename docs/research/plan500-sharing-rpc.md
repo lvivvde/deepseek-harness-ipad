@@ -58,6 +58,8 @@ QEMU 文档说明 mapped-xattr 将 guest ownership/mode/symlink 编码为扩展�
 
 ## 关口状态与下一步
 
+> 后续：下述写者合同已在真实 Linux 上做有界验证，两种模式各 26/26，同 uid 绕过与 Darwin/iPad 仍未通过，见[写租约报告](plan500-write-lease.md)。
+
 G3 取得实际 Linux 双向文件和 Git 命名锁证据，同时普通 metadata、跨域锁、watcher 存在明确缺口，关口未通过。G4 获真实 boot/RPC、等待/取消/关闭/超时/断连的部分证据；iPad 生命周期、官方 Worker 接入、准备失败恢复、后台以及资源控制仍未验。G5 仅一个真实 pre-commit 非零用例；G0–G2 保留前轮 Worker 结果，G6/G7 未通过。
 
 下一步应验证一个受控写者合同：以 project ID/epoch 和 operation ID 发放有界写租约，检查文件版本冲突；Linux 写任务/Git 事务期间原生编辑以待提交草稿保留，不能绕过租约覆盖文件；释放/失败/取消后发明确 change generation，双方重读并重新校验。任意 guest 长驻进程及 watcher 如何进入此合同仍是设计问题；协议断连时不能贸然释放仍可能存在的写者。随后补 Darwin/iPad 文件行为与模型/网络路径，再在 #32 形成用户架构决定。这些后续工作尚未登记通过。

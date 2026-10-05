@@ -4,7 +4,7 @@
 
 ## 结论与待决策项
 
-**当前研究候选为“官方实验 Web Worker Harness + iPad 宿主工作区桥 + Linux 能力网关”。** macOS Worker 与真实 Linux 共享/RPC 隔离原型已有部分证据，但共享语义关口未通过；**下一步验证统一写租约、版本冲突与变更通知/轮询**，最新结果见[共享/RPC 报告](plan500-sharing-rpc.md)。固定上游已经实现无需 Node Host 的 Worker 组装、模块兼容层和 HTTP 消息隧道，目前定位为浏览器预览；持久化、任意插件和 iPad 生命周期仍没有生产保证。[Worker 入口与定位][worker-package]、[Worker 组装][worker-host]
+**当前研究候选为“官方实验 Web Worker Harness + iPad 宿主工作区桥 + Linux 能力网关”。** macOS Worker 与真实 Linux 共享/RPC 隔离原型已有部分证据，但共享语义关口未通过；随后的[写租约报告](plan500-write-lease.md)在真实 Linux 上验证了统一写租约、版本冲突与 change generation 的有界合同（两种模式各 26/26，G3 仍未通过）；**下一步为 Darwin/iPad 文件行为、Swift 网关与模型/网络路径**。固定上游已经实现无需 Node Host 的 Worker 组装、模块兼容层和 HTTP 消息隧道，目前定位为浏览器预览；持久化、任意插件和 iPad 生命周期仍没有生产保证。[Worker 入口与定位][worker-package]、[Worker 组装][worker-host]
 
 这里的“原生优先”指 Harness 核心在 iPad 的 WKWebView/Web Worker 中执行，启动核心不依赖 Linux VM；Swift 负责文件、凭据与运行时管理。它不是把上游全部改写成 Swift，也不是把 Web UI 连回 Linux 后就称为原生 Harness。候选的必要新增工作是持久工作区、工具边界、可信网络与恢复协议，尚未实现。
 
@@ -115,7 +115,7 @@
 | G6 插件能力 | 固定至少一个纯原生功能、一个 Linux command/hook、stdio与HTTP MCP路径及不支持插件；实测激活、调用、错误和取消。pnpm/安装脚本操作明确放在哪个环境 |
 | G7 数据与回退 | 从隔离备份迁入新候选工作区，逐文件核验并保留原盘；候选失败回旧交付包。正式迁移与安装另按授权执行；原盘不能同时被两个执行器写 |
 
-本轮已完成源码研究、Worker 持久化及真实 Linux 共享/RPC 的有界隔离探针，详见后节；未进行设备或真实模型运行验证。下一步针对已发现的共享缺口验证写租约、版本冲突和变更通知/轮询，再验证 Darwin/iPad 与模型路径，并在 #32 记录最终架构决定；门槛未过保持 #17 受技术关口约束。现有维护 #19 与 2026-10-12 签名截止独立继续，不重启已经取消的锁屏测试。
+本轮已完成源码研究、Worker 持久化及真实 Linux 共享/RPC 的有界隔离探针，详见后节；未进行设备或真实模型运行验证。写租约、版本冲突和 change generation 已有[真实 Linux 有界证据](plan500-write-lease.md)，下一步验证 Darwin/iPad 与模型路径，并在 #32 记录最终架构决定；门槛未过保持 #17 受技术关口约束。现有维护 #19 与 2026-10-12 签名截止独立继续，不重启已经取消的锁屏测试。
 
 
 ## 用户授权的隔离原型结果（2026-10-05）
@@ -153,7 +153,7 @@
 
 真实 Linux QEMU 中 `mapped-xattr`、`none` 各 23/23 必需协议检查通过：双向中文文件操作、原子替换、Git index.lock、真实 boot/ready、排队/去重/取消/超时/项目关闭、RPC 断连门禁。另有 8 项兼容性观察；两种模式均未通过全部共享语义。`mapped-xattr` 的宿主普通 mode/symlink 不等价；`none` 在本 Linux 样本保留二者，但两者均未协调被测跨域锁、guest watcher 未收到目标宿主写入，显式轮询成功。真实 pre-commit 非零阻止提交仅是一个 G5 用例。
 
-Darwin SDK 小探针证实显式声明私有 `pthread_fchdir_np` 后可链接，macOS 隔离运行成功；公开头文件编译失败，iOS 未执行，QEMU backend 未验。完整结论、输入 SHA256、限制和复跑代码见[追加报告](plan500-sharing-rpc.md)。**下一步是统一写租约与变更通知/轮询合同，再做 Darwin/iPad 及模型路径**；不能直接把 9P 挂载视为共享工作区完成。原型仍未接入产品，G0–G7 均未完整通过。
+Darwin SDK 小探针证实显式声明私有 `pthread_fchdir_np` 后可链接，macOS 隔离运行成功；公开头文件编译失败，iOS 未执行，QEMU backend 未验。完整结论、输入 SHA256、限制和复跑代码见[追加报告](plan500-sharing-rpc.md)。统一写租约与 generation 合同的后续结果见[写租约报告](plan500-write-lease.md)，**下一步做 Darwin/iPad 及模型路径**；不能直接把 9P 挂载视为共享工作区完成。原型仍未接入产品，G0–G7 均未完整通过。
 
 [root-package]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/package.json
 [base-patch]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/bundle/base/cordis.patch.yml

@@ -27,7 +27,7 @@
 
 本仓库结构使用 Tier 2 Verify：graph project `Users-edwin-Projects-deepseek-harness-ipad`，父任务最新 generation `2026-10-05T11:32:19Z`；相关 RuntimeConfiguration/EmbeddedRuntime/QemuBridge/transfer 证据路径覆盖为 metadata_match、无已记录缺口，不等于全集完备。上游和忽略的依赖目录未纳入该图，使用精确源文件回退，不把图结果当作其覆盖证据。
 
-源码研究阶段没有运行宿主探针；随后用户授权的 macOS WebKit 隔离原型见下节。两阶段均未运行真实模型请求、读取凭据、连接设备、构建/签名/安装正式 App，也没有迁移或替换正式用户盘。宿主结果不是 iPad 验收。
+源码研究阶段没有运行宿主探针；随后用户授权的 macOS WebKit 隔离原型见下节，实际 Linux 共享/RPC 见[追加报告](plan500-sharing-rpc.md)。均未运行真实模型请求、读取凭据、连接设备、构建/签名/安装正式 App，也没有迁移或替换正式用户盘。宿主结果不是 iPad 验收。
 
 ## 实际上游运行要求
 
@@ -84,7 +84,7 @@
 
 推断：权威项目目录设在 App Support；9P 作为首选 guest 接入探针，工作区网关统一路径身份、授权和写调度。每个项目用固定身份/根目录，拒绝越界路径和符号链接逃逸。先串行化写操作和 `.git` 更新，只有证明互斥和可见性后才放开并发。native/Linux 的 node_modules 与二进制工具分开保存；共享源码不能推导共享依赖。
 
-未知：实际 guest 内核 CONFIG、9P module/builtin、锁与事件跨域行为尚未验。宿主 fs watcher 或 NSFileCoordinator 不能在设计上被假定自动协调任意 guest POSIX 写。标准桌面 virtiofsd 需要 daemon/namespace 等宿主能力，不直接套用到普通 iPad；另行移植的可能性也不被本报告排除。[virtiofsd 文档][virtiofsd]
+后续实测：固定 initramfs 需从锁定 modloop 补入 9P/overlay 模块；Linux 双向文件操作与命名 index.lock 成功，但实测跨域 flock 未互斥、guest watcher 未收到目标宿主写入，详见[共享/RPC 报告](plan500-sharing-rpc.md)。Darwin/iPad 共享仍未知。宿主 fs watcher 或 NSFileCoordinator 不能在设计上被假定自动协调任意 guest POSIX 写。标准桌面 virtiofsd 需要 daemon/namespace 等宿主能力，不直接套用到普通 iPad；另行移植的可能性也不被本报告排除。[virtiofsd 文档][virtiofsd]
 
 建议状态合同：`disabled → preparing → ready`，preparing 可取消/失败；打开已启用项目立即异步预热；原生操作独立继续，Linux 操作等待 ready 后自动续执行。ready 必须验证工作区身份/挂载、工具版本和 RPC，而非只看 guest 进程活着。请求固定 operation ID、cwd、能力、deadline、signal；队列取消后 ready 不能重新执行它。VM 失败后有界失败/重试且保留草稿，不在未验证条件下同进程重新初始化 QEMU。
 
@@ -102,7 +102,7 @@
 
 ## 最小可证伪门槛与下一步
 
-以下是完整验收合同，本轮没有一项完整通过；隔离原型只提供 G0/G1/G2 的部分主机证据和 G4 的注入模型证据，详见后节。随后仍需真实 Linux 和 iPad 探针。不会用一个 UI demo 关闭 #32 或解除 #17 的技术依赖。
+以下是完整验收合同，本轮没有一项完整通过；Worker 原型提供 G0/G1/G2 部分主机证据和 G4 注入模型证据，后续共享/RPC 原型追加 G3/G4/G5 的真实 Linux 部分证据，并发现明确语义缺口，详见后节和[追加报告](plan500-sharing-rpc.md)。仍需统一写者合同及 iPad 探针，不关闭 #32 或解除 #17 的技术依赖。
 
 | 门槛 | 最小证据与失败判据 |
 | --- | --- |
@@ -143,11 +143,17 @@
 
 ### 已通过部分与下一关口
 
-G0 仅证明经上述适配的固定 web 组合可组装并加载；G1 仅证明无 VM 的会话/文件路径，模型、网络流、取消、认证与完整 UI 未验；G2 仅证明 Worker 重建与有界检查点失败，App/系统崩溃、损坏日志、并发写和原有压缩会话迁移未验。G4 是模型行为检查，不能冒称真实预热、后台/RPC 恢复已通过。G3/G5/G6/G7 仍无运行证据。
+本节 Worker 阶段的 G0 仅证明经上述适配的固定 web 组合可组装并加载；G1 仅证明无 VM 的会话/文件路径，模型、网络流、取消、认证与完整 UI 未验；G2 仅证明 Worker 重建与有界检查点失败，App/系统崩溃、损坏日志、并发写和原有压缩会话迁移未验。该阶段 G4 是模型行为检查，G3/G5 无运行证据；后续真实 Linux 结果见下节，G6/G7 仍未通过。
 
-下一步应在隔离权威目录和隔离 guest 中验证双向 create/write/rename/delete、中文名、mode/symlink、原子替换和 `.git/index.lock`，再接真实准备/RPC 门禁。检查点不是实时共享目录，也不保留 hardlink/symlink 文件身份；base64 全量快照和 Swift 主线程写入不能直接用于大型工程。iPad 生命周期、真实模型工具和网络路径是正式架构决策前的独立关口。ADR/CONTEXT 未改选，#32 OPEN、#17 继续等待；正式安装/原盘迁移未开始。
+本节提出的下一步共享/RPC 探针现已完成，见下节。检查点不是实时共享目录，也不保留 hardlink/symlink 文件身份；base64 全量快照和 Swift 主线程写入不能直接用于大型工程。iPad 生命周期、真实模型工具和网络路径是正式架构决策前的独立关口。ADR/CONTEXT 未改选，#32 OPEN、#17 继续等待；正式安装/原盘迁移未开始。
 
 私有收据：`build/prototypes/plan500-worker/run-safe.json`；负对照为 `unadapted-run-safe.json`，原始日志只留忽略目录。Harness lock SHA256 `1a60fdd7b3dd0501993f8848be11301c0fc1423268ff2fc02aeab39298559a19`；Worker/packer lock SHA256 `02472f491b41be7cfb3bafcb3a1301d868cf10b72cb328e11934956ee1b6e01c`。
+
+## 用户授权的共享工作区与真实 RPC 结果（2026-10-05）
+
+真实 Linux QEMU 中 `mapped-xattr`、`none` 各 23/23 必需协议检查通过：双向中文文件操作、原子替换、Git index.lock、真实 boot/ready、排队/去重/取消/超时/项目关闭、RPC 断连门禁。另有 8 项兼容性观察；两种模式均未通过全部共享语义。`mapped-xattr` 的宿主普通 mode/symlink 不等价；`none` 在本 Linux 样本保留二者，但两者均未协调被测跨域锁、guest watcher 未收到目标宿主写入，显式轮询成功。真实 pre-commit 非零阻止提交仅是一个 G5 用例。
+
+Darwin SDK 小探针证实显式声明私有 `pthread_fchdir_np` 后可链接，macOS 隔离运行成功；公开头文件编译失败，iOS 未执行，QEMU backend 未验。完整结论、输入 SHA256、限制和复跑代码见[追加报告](plan500-sharing-rpc.md)。**下一步是统一写租约与变更通知/轮询合同，再做 Darwin/iPad 及模型路径**；不能直接把 9P 挂载视为共享工作区完成。原型仍未接入产品，G0–G7 均未完整通过。
 
 [root-package]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/package.json
 [base-patch]: https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/bundle/base/cordis.patch.yml

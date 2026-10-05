@@ -128,3 +128,14 @@
 - 下一步：隔离 guest 与权威宿主目录的双向共享语义、真实就绪与 RPC 探针，再做 iPad/模型路径。ADR/CONTEXT 未改选，#32 OPEN、#17 保持依赖。正式 iPad 仍是 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；未接触设备或原盘，锁屏测试继续取消。
 - 复现：两个提交的 lock 已在独立目录 `npm ci --ignore-scripts` 全新安装，14 + 7 项重新通过；最终启动器检查安装完成标记，半成品依赖目录不会冒充可用树。`make check` 和 PR CI 通过。
 - 私有资产：`build/prototypes/plan500-worker/run-safe.json`、`unadapted-run-safe.json`、检查点/镜像/原始日志。启动器的本机 HTTP 服务会在结束时关闭，无需手工留下服务器。
+
+## 2026-10-05 方案500共享工作区与真实 Linux RPC
+
+- 用户授权“开始下一步”，已完成隔离共享与真实 boot/RPC 探针；继续研究分支及 draft [PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)，PR 合并仍需另获同意。源码和入口见[共享探针](../../runtime/prototypes/plan500-sharing/README.md)、[结果报告](../research/plan500-sharing-rpc.md)。
+- 实际 Linux QEMU 10.2.1，两种 9P 模式各 **23/23 必需协议检查**：双向中文文件、原子替换/旧 fd、真实 Git index.lock、一次异步准备、ready 验挂载/身份/工具/RPC、队列与去重、关闭/取消/超时、断连无副作用和无 VM 重启。未启动 guest Harness、未接官方 Worker/Swift 调度。
+- **共享语义未通过**：mapped-xattr 的普通宿主 mode/symlink 不等价；none 在本 Linux 样本保留二者。两者均未协调实测 host flock→guest flock、host lockf→guest flock、guest flock→host flock；guest fs.watch 700ms 样本目标事件为 0，显式轮询成功。Git 命名 index.lock 通过不等同于跨域 flock 通过。两者有一个真实 pre-commit 非零阻止提交的用例，不代表完整 hook 验收。
+- Darwin SDK 27.0：公共头文件无法声明 pthread_fchdir_np，显式私有声明后 macOS/iOS 链接成功、macOS 自有 scratch 运行成功；iOS 未执行、QEMU backend 未测，不证明公开接口适用性。后续共享实现必须单独处理此条件。
+- 隔离边界：只读 system.raw + RAM overlay、锁定 modloop 中补 9P/overlay 模块、自己的合成 workspace；没有打开 user.raw/user-seed.raw、设备或正式原盘。自己的探针 QEMU 已退出，既有 Lima 与无关 QEMU 保留。agent 仅执行可信合成命令，不是产品沙箱；去重只覆盖单 agent 生命周期。
+- **下一步**：验证统一写租约、文件版本冲突、失败/取消后的 writer 存活边界及明确 change generation/轮询；所有原生/Linux 写者都须进入合同，不能只锁宿主而放任 guest 直写。随后做 Darwin/iPad、真实模型及网络。完整 G0–G7 未通过，ADR/CONTEXT 未改选，#32 OPEN、#17 继续依赖。
+- 私有收据：`build/prototypes/plan500-sharing/linux-result-safe.json`、`darwin-api-safe.json`，原始串口只留本次自己的 Lima scratch。正式 iPad 仍 `7956e8c`，签名截止仍 2026-10-12 15:49:52 北京时间；锁屏/8 小时测试继续取消。
+- 交付检查：23+23 项真实 Linux 收据已核对源文件 SHA256；Darwin 小探针、Python/Node/shell 语法、本地文档链接和 `make check` 通过。本次 QEMU 残留数为 0；原型观测的失败语义保留在报告中，不作为兼容性通过。

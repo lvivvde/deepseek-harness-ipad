@@ -126,11 +126,11 @@
 | --- | --- |
 | 固定输入 | Harness/Worker/packer `0.2.0-rc.2`，本机 Node `24.20.0`、Zod `4.6.5`；两个 npm lock 已随原型提交，不执行 install scripts |
 | 组装 | 官方 `dsh-worker-transform/1`，318 包、1,325 JS 条目、175 roster；缺包清单为空，但另有 62 项 unresolved external requests，不能据此宣称全部插件兼容 |
-| 产物 | 本次 gzip 镜像 13,706,635 字节，SHA256 `bb1731e33abb2758780afce35eeedd48bad324cc7f806025309aaf1f021152ce`；镜像、原始日志不提交 |
+| 产物 | 干净安装复跑的 gzip 镜像 13,706,164 字节，SHA256 `886a6d8ab5929d693e9256650c432c3bb35e3046f75cd1fa006e91ec7ee82915`；镜像、原始日志不提交 |
 | 官方核心 | 真实加载 860 个模块；通过官方 WorkerTunnel 调用 session/list、session/create、session/rename，再重开持久会话；没有 fixture 响应或模型调用 |
 | 存储 | 官方会话 flush → 抓取受限 VFS → Swift 原子检查点写入/文件同步/读回 → 明确确认 → Worker 终止 → boot 前恢复；仅内存写入显式不算 saved |
 | 失败注入 | 在持久写入前拒绝一次检查点，调用方得到错误；随后重建仍读到上一有效文件。没有真实掉电、进程写中途崩溃或磁盘满注入 |
-| 计数 | WebKit 14/14（含拒绝无效 schema）、调度模型 7/7；模型中的准备器/执行器均为注入，未启动真实 Linux 或执行真实 Git/hook |
+| 计数 | 既有测试依赖和从两个 lock 全新安装的独立依赖树均 WebKit 14/14（含拒绝无效 schema）、调度模型 7/7；模型中的准备器/执行器均为注入，未启动真实 Linux 或执行真实 Git/hook |
 | 时间与资源 | 第一次 session/list 的主机样本约 0.3–0.5 秒；不作 iPad 启动/恢复承诺。VFS 内容约 42.7 MB，不是实际 RSS/峰值内存测量 |
 
 ### 三项必要兼容适配

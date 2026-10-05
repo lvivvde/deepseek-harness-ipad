@@ -126,4 +126,5 @@
 - 必要适配均保留在 scratch/Worker 副本：固定 Zod 4.6.5 的 CJS 导出选择、WebKit disposal 符号补齐、两处原生 Object/Array 字符串比较。去掉 Zod/schema 适配的负对照 HTTP 503；不得宣称上游逐字节原样可运行。官方会话 flush 必须先于 Swift 确认；列表缓存滞后时以重开会话的权威投影为准。
 - 未验：iPad/真实模型/完整 UI/实际 RSS；App 或系统崩溃、并发写、损坏日志、压缩日志迁移；实时共享文件的 mode/symlink/原子替换/锁和 watcher；真实 Linux 准备/RPC、Git hook、副作用与插件路径。完整 G0–G7 均未通过；原型 snapshot 不直接进入产品。
 - 下一步：隔离 guest 与权威宿主目录的双向共享语义、真实就绪与 RPC 探针，再做 iPad/模型路径。ADR/CONTEXT 未改选，#32 OPEN、#17 保持依赖。正式 iPad 仍是 `7956e8c`，签名截止仍为 2026-10-12 15:49:52 北京时间；未接触设备或原盘，锁屏测试继续取消。
+- 复现：两个提交的 lock 已在独立目录 `npm ci --ignore-scripts` 全新安装，14 + 7 项重新通过；最终启动器检查安装完成标记，半成品依赖目录不会冒充可用树。`make check` 和 PR CI 通过。
 - 私有资产：`build/prototypes/plan500-worker/run-safe.json`、`unadapted-run-safe.json`、检查点/镜像/原始日志。启动器的本机 HTTP 服务会在结束时关闭，无需手工留下服务器。

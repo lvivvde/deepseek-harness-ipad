@@ -8,7 +8,7 @@
 python3 runtime/prototypes/plan500-worker/run.py
 ```
 
-默认只读复用交接中已有的 Harness 测试依赖，并检查 lock SHA256。首次运行缺少依赖时，用以下命令按提交的两个 lock 安装到独立的 build 目录，安装脚本禁用：
+默认使用安装完成的独立原型依赖树，或只读复用交接中已有的 Harness 测试依赖，并检查 lock SHA256 和 npm 完成标记；不接受中断留下的半成品目录。首次运行缺少依赖时，用以下命令按提交的两个 lock 安装到独立的 build 目录，安装脚本禁用：
 
 ```sh
 python3 runtime/prototypes/plan500-worker/run.py --install

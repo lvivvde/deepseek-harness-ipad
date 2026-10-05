@@ -36,7 +36,7 @@ def dependencies(kind, directory, install):
             shutil.copyfile(inputs / name, directory / name)
         run(["npm", "ci", "--prefix", str(directory), "--ignore-scripts",
              "--no-audit", "--no-fund"], kind + "-install-private.log", timeout=600)
-    if not (directory / "node_modules").is_dir():
+    if not (directory / "node_modules/.package-lock.json").is_file():
         raise RuntimeError("Dependencies missing; rerun with --install (isolated build directories only)")
     if digest(directory / "package-lock.json") != digest(inputs / "package-lock.json"):
         raise RuntimeError(f"Lock mismatch for {kind}; use --install instead of unverified packages")
@@ -57,7 +57,7 @@ def main():
         (OUTPUT / name).unlink(missing_ok=True)
     # Reuse the known test tree read-only, or install a separate prototype tree.
     isolated = OUTPUT / "harness-dependencies"
-    harness = isolated if args.install or isolated.exists() else REPO / "build/test-dependencies/harness"
+    harness = isolated if args.install or (isolated / "node_modules/.package-lock.json").is_file() else REPO / "build/test-dependencies/harness"
     dependencies("harness-dependencies", harness, args.install)
     dependencies("dependencies", OUTPUT / "dependencies", args.install)
     env = os.environ.copy()

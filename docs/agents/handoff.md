@@ -11,7 +11,7 @@
 
 ## 2026-10-06 #39 关口 1（G2 崩溃耐久）
 
-- **当前状态**：代码在分支 `feat/issue39-gate1-durability`（基于 main），未推送、未开 PR。`ios/HarnessApp` 新增 `NativeWorkspace` 模块（日志、版本校验写入、写租约、草稿、会话检查点、恢复）与 `WorkspaceCrashProbe` 工具；研究 App（独立 bundle ID）加入真机耐久探针。规则与证据见[工作区耐久设计](../design/workspace-durability.md)，术语“代际、写者未知、隔离区”已入 `CONTEXT.md`。
+- **当前状态**：代码在分支 `feat/issue39-gate1-durability`（基于 main，提交 `1fac863`、`af60484`），未推送、未开 PR。`ios/HarnessApp` 新增 `NativeWorkspace` 模块（日志、版本校验写入、写租约、草稿、会话检查点、恢复）与 `WorkspaceCrashProbe` 工具；研究 App（独立 bundle ID）加入真机耐久探针。规则与证据见[工作区耐久设计](../design/workspace-durability.md)，术语“代际、写者未知、隔离区”已入 `CONTEXT.md`。
 - **已验证**：
   - macOS：25 项 NativeWorkspace 测试，崩溃矩阵重复 10 次，随机杀进程 200 次，无撕裂尾帧；完整 `swift test`、`make check`、`make test-plan500-ipad` 通过。
   - 模拟器：12 个 SIGKILL 场景和 22 项进程内检查（损坏、ENOSPC）通过。
@@ -19,9 +19,9 @@
   - 代码审查已完成；有效缺陷已修：未确认写入改为回滚到旧内容并返回 `failed`，F_FULLFSYNC 错误不再被吞，日志重置后重开描述符。
 - **未完成**：
   - 系统崩溃和断电未验证。
-  - 真机写租约场景中的 Linux 写者是模拟的；真实 VM 写者留给 #17。是否据此勾选关口 1，等用户决定。
+  - 真机写租约场景中的 Linux 写者是模拟的；真实 VM 写者留给 #17。用户于 2026-10-06 确认以此勾选关口 1，真实 VM 补测已作为评论记到 #17。
   - 快照损坏或日志中段损坏时，草稿和租约记录会丢失，只记为已知限制，未做保守处理。
-- **下一步**：用户决定是否勾选 #39 关口 1；关口 2、4 可并行开工，关口 3、6 原先等关口 1。合并需另获用户同意。
+- **下一步**：#39 关口 1 已勾选，证据见 #39 评论；关口 2、3、4、6 可开工，关口 5 等关口 2、3。本分支合并需另获用户同意。
 - **私有资产**：`build/issue39-gate1/`。真机收据从 `device/durability-safe.json` 开始看，原始日志不公开。
 
 ## 2026-10-06 方案500架构决定已确认

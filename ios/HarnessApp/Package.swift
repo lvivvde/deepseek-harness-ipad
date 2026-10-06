@@ -28,6 +28,7 @@ let package = Package(
         .testTarget(name: "UserDataMigrationTests", dependencies: ["UserDataMigration", "migration-crash-probe"],
                     path: "MigrationTests"),
         .target(name: "NativeTools", dependencies: ["NativeWorkspace"], path: "Sources/NativeTools"),
+        .executableTarget(name: "native-tools-probe", dependencies: ["NativeTools"], path: "Tools/NativeToolsProbe"),
         .testTarget(name: "NativeToolsTests", dependencies: ["NativeTools"], path: "NativeToolsTests")
     ]
 )

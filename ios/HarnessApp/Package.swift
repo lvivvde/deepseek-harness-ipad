@@ -8,7 +8,8 @@ let package = Package(
         .library(name: "HarnessRuntime", targets: ["HarnessRuntime"]),
         .library(name: "NativeWorkspace", targets: ["NativeWorkspace"]),
         .library(name: "LinuxPlugin", targets: ["LinuxPlugin"]),
-        .library(name: "ModelGateway", targets: ["ModelGateway"])
+        .library(name: "ModelGateway", targets: ["ModelGateway"]),
+        .library(name: "UserDataMigration", targets: ["UserDataMigration"])
     ],
     targets: [
         .target(name: "HarnessRuntime", path: "Sources/Core"),
@@ -20,6 +21,10 @@ let package = Package(
         .target(name: "LinuxPlugin", path: "Sources/LinuxPlugin"),
         .testTarget(name: "LinuxPluginTests", dependencies: ["LinuxPlugin"], path: "LinuxPluginTests"),
         .target(name: "ModelGateway", path: "Sources/ModelGateway"),
-        .testTarget(name: "ModelGatewayTests", dependencies: ["ModelGateway"], path: "ModelGatewayTests")
+        .testTarget(name: "ModelGatewayTests", dependencies: ["ModelGateway"], path: "ModelGatewayTests"),
+        .target(name: "UserDataMigration", path: "Sources/Migration"),
+        .executableTarget(name: "migration-crash-probe", dependencies: ["UserDataMigration"], path: "Tools/MigrationCrashProbe"),
+        .testTarget(name: "UserDataMigrationTests", dependencies: ["UserDataMigration", "migration-crash-probe"],
+                    path: "MigrationTests")
     ]
 )

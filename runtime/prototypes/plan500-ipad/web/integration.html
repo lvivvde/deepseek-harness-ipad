@@ -140,7 +140,12 @@ const gate4Streams = turn => turn.streams.filter(x => x.kind === 'agent').map(x 
 const gate4Summary = turn => ({turnEnd: turn.turnEnd, retries: turn.retries, retriesStarted: turn.retriesStarted,
   attempts: turn.attempts, toolCalls: turn.toolCalls, toolResults: turn.toolResults.length, order: turn.order,
   replies: turn.replies, elapsedMs: turn.elapsedMs, cancelledAfterMs: turn.cancelledAtMs === undefined ? undefined
-    : turn.cancelledAtMs - turn.streams.find(x => x.kind === 'agent')?.startMs, streams: gate4Streams(turn)});
+    : turn.cancelledAtMs - turn.streams.find(x => x.kind === 'agent')?.startMs, streams: gate4Streams(turn), live: gate4Live(turn)});
+// Official transient reply frames (what the UI renders), timed from the last request's start.
+const gate4Live = turn => {
+  const start = turn.streams.filter(x => x.kind === 'agent').at(-1)?.startMs ?? 0, at = v => v === null ? null : v - start;
+  return {chunks: turn.live.chunks, firstMs: at(turn.live.firstMs), lastMs: at(turn.live.lastMs), endMs: at(turn.live.endMs)};
+};
 async function gate4Session(worker, tunnel, name) {
   const sessionId = 'session-plan500-gate4-' + name;
   const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
@@ -168,6 +173,9 @@ async function gate4Faults() {
   const head = stream.agent[0];
   assert('stream: official parser completes the turn', completed(stream) && stream.retries.length === 0, results.stream);
   assert('stream: chunks reach the Worker in arrival order, not at the end', head.chunks >= 4 && head.firstChunkMs < head.lastChunkMs - 900, head);
+  const live = results.stream.live;
+  assert('stream: the official reply frames fill in before the response ends', live.chunks >= 2 && live.firstMs < head.lastChunkMs - 900
+    && live.lastMs >= head.lastChunkMs, live);
   const auth = await turn('auth');
   assert('invalid key: official AUTH error, one request, no retry', auth.turnEnd.kind === 'error' && auth.turnEnd.code === 'AUTH'
     && auth.retries.length === 0 && auth.agent.length === 1 && auth.agent[0].status === 401, results.auth);
@@ -227,6 +235,8 @@ window.plan500RunGate4Device = async mode => {
       verify('real stream completes through the official parser', streamed.turnEnd.kind === 'completed'
         && streamed.replies.at(-1)?.textChars > 0 && !streamed.replies.at(-1).interrupted);
       verify('real body arrives in several chunks before the end', last.status === 200 && last.chunks > 1 && last.lastChunkMs > last.firstChunkMs);
+      const live = summary.stream.live;
+      verify('official reply frames fill in before the response ends', live.chunks > 1 && live.firstMs < last.lastChunkMs && live.lastMs > live.firstMs);
       const cancelled = await run('cancel', '请用中文写约 1500 字的长文，介绍 iPad 的历史。' + plain, {cancelAfterFirstChunk: true, cancelDelayMs: 800});
       verify('mid-stream cancel ends the turn as aborted', cancelled.turnEnd.kind === 'aborted');
       verify('partial reply is marked interrupted', cancelled.replies.some(x => x.interrupted) || cancelled.attempts > 0);

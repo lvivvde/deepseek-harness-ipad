@@ -173,8 +173,15 @@ async function plan500ModelTurn(agent, data) {
   const require = host.modules.createRequire('/dsh/config/cordis.yml');
   const {createUserMessage} = require('@deepseek-ai/dsh-llm');
   await host.prototypeContext.get('credentials').set('DEEPSEEK_API_KEY', 'plan500-native-placeholder');
-  const events = [], firstStream = plan500ModelStreamId + 1;
+  const events = [], firstStream = plan500ModelStreamId + 1, started = plan500Now();
   const dispose = agent.ctx.on('session/event', (session, event) => { if (session.id === agent.id) events.push(event); });
+  // The official UI renders a reply from these transient frames; their timing shows it fills in before the turn ends.
+  const live = {chunks: 0, firstMs: null, lastMs: null, endMs: null};
+  const disposeLive = agent.ctx.on('agent/assistant-stream', ({frame}) => {
+    const at = plan500Now();
+    if (frame.type === 'chunk') { live.chunks += 1; live.firstMs ??= at; live.lastMs = at; }
+    if (frame.type === 'end') live.endMs = at;
+  });
   let cancelledAtMs;
   if (data.cancelAfterFirstChunk) plan500ModelChunkHook = () => {
     plan500ModelChunkHook = undefined;
@@ -182,17 +189,16 @@ async function plan500ModelTurn(agent, data) {
     setTimeout(() => { cancelledAtMs = plan500Now(); agent.cancel({kind: 'user'}); }, data.cancelDelayMs ?? 300);
   };
   const timeout = setTimeout(() => agent.cancel({kind: 'user'}), data.timeoutMs ?? 120000);
-  const started = plan500Now();
   try {
     agent.followup(createUserMessage({source: {kind: 'user', rpcId: 'plan500-gate4'}, content: [{type: 'text', text: data.prompt}]}));
     await agent.whenIdle();
-  } finally { clearTimeout(timeout); dispose(); plan500ModelChunkHook = undefined; }
+  } finally { clearTimeout(timeout); dispose(); disposeLive(); plan500ModelChunkHook = undefined; }
   const end = events.filter(x => x.type === 'turn/end').at(-1)?.data;
   const replies = events.filter(x => x.type === 'assistant/message').map(x => ({interrupted: x.data.interrupted === true,
     marker: (x.data.message?.content ?? []).some(c => c.type === 'text' && c.text.includes(data.marker ?? 'GATE4_OK')),
     textChars: (x.data.message?.content ?? []).filter(c => c.type === 'text').reduce((n, c) => n + c.text.length, 0)}));
   return {
-    elapsedMs: plan500Now() - started, cancelledAtMs,
+    elapsedMs: plan500Now() - started, cancelledAtMs, live,
     turnEnd: {kind: end?.reason?.kind, code: end?.reason?.error?.code},
     retries: events.filter(x => x.type === 'llm/retry').map(x => ({retry: x.data.retry, delayMs: x.data.delayMs, code: x.data.failure?.code})),
     retriesStarted: events.filter(x => x.type === 'llm/retry-started').length,

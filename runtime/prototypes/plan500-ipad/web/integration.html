@@ -19,9 +19,12 @@ function native(operation, payload = {}) {
     window.webkit.messageHandlers.native.postMessage({id, operation, ...payload});
   });
 }
+// Fixed step names only, so a stalled run shows where it stopped.
+function progress(step) { window.webkit.messageHandlers.log.postMessage({progress: String(step).slice(0, 200)}); }
 function assert(name, passed, detail = undefined) {
   checks.push({name, passed, ...(detail === undefined ? {} : {detail})});
   document.querySelector('#state').textContent = JSON.stringify(checks, null, 2);
+  progress((passed ? 'PASS ' : 'FAIL ') + name);
   if (!passed) throw new Error(name);
 }
 function instrument(worker, operation, payload = {}) {
@@ -129,9 +132,128 @@ async function gate2Missing(cold) {
     gate2: {branch: 'missing-injected', shellElapsedMs: shell.elapsedMs, hookElapsedMs: hook.elapsedMs,
       hookPath: 'ShellExecutor-shaped research adapter; official hook runner not packed'}}});
 }
+// #39 gate 4: redacted per-request view, timings relative to each request's start.
+const gate4Streams = turn => turn.streams.filter(x => x.kind === 'agent').map(x => JSON.parse(JSON.stringify({
+  status: x.status, failure: x.failure, chunks: x.chunks, bytes: x.bytes, headMs: x.headMs - x.startMs,
+  firstChunkMs: x.firstChunkMs - x.startMs, lastChunkMs: x.lastChunkMs - x.startMs, endMs: x.endMs - x.startMs,
+  cancelMs: x.cancelMs - x.startMs})));
+const gate4Summary = turn => ({turnEnd: turn.turnEnd, retries: turn.retries, retriesStarted: turn.retriesStarted,
+  attempts: turn.attempts, toolCalls: turn.toolCalls, toolResults: turn.toolResults.length, order: turn.order,
+  replies: turn.replies, elapsedMs: turn.elapsedMs, cancelledAfterMs: turn.cancelledAtMs === undefined ? undefined
+    : turn.cancelledAtMs - turn.streams.find(x => x.kind === 'agent')?.startMs, streams: gate4Streams(turn)});
+async function gate4Session(worker, tunnel, name) {
+  const sessionId = 'session-plan500-gate4-' + name;
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+  if (created.data.result?.ok !== true) throw new Error('GATE4_SESSION_REFUSED');
+  await instrument(worker, 'bridge-install', {sessionId});
+  return sessionId;
+}
+// macOS host only: the local fault server scripts each scenario by the tag in the prompt.
+async function gate4Faults() {
+  const refused = await native('model-open', {streamId: 'gate4-refused', url: 'https://api.deepseek.com.invalid/anthropic/v1/messages', headers: {}, body: '{}'});
+  assert('only the official endpoint is accepted', refused.failure === 'MODEL_ENDPOINT_REFUSED', refused);
+  const {worker, tunnel} = await boot(undefined);
+  const results = {};
+  const turn = async (scenario, extra = {}) => {
+    progress('gate4 scenario ' + scenario);
+    const sessionId = await gate4Session(worker, tunnel, scenario);
+    const value = await instrument(worker, 'model-turn', {sessionId, prompt: `[[gate4:${scenario}]] 故障注入检查`, ...extra});
+    results[scenario] = gate4Summary(value);
+    return {...value, agent: gate4Streams(value)};
+  };
+  const completed = t => t.turnEnd.kind === 'completed' && t.replies.at(-1)?.marker === true && !t.replies.at(-1).interrupted;
+  const codes = t => t.retries.map(x => x.code).join(',');
+
+  const stream = await turn('stream');
+  const head = stream.agent[0];
+  assert('stream: official parser completes the turn', completed(stream) && stream.retries.length === 0, results.stream);
+  assert('stream: chunks reach the Worker in arrival order, not at the end', head.chunks >= 4 && head.firstChunkMs < head.lastChunkMs - 900, head);
+  const auth = await turn('auth');
+  assert('invalid key: official AUTH error, one request, no retry', auth.turnEnd.kind === 'error' && auth.turnEnd.code === 'AUTH'
+    && auth.retries.length === 0 && auth.agent.length === 1 && auth.agent[0].status === 401, results.auth);
+  const rate = await turn('rate');
+  assert('429: official retry honours retry-after once', completed(rate) && codes(rate) === 'RATE_LIMIT' && rate.retries[0].delayMs === 1000
+    && rate.agent.length === 2, results.rate);
+  const server = await turn('server');
+  assert('5xx: retried by the official policy, then completes', completed(server) && codes(server) === 'SERVER,SERVER' && server.agent.length === 3, results.server);
+  const dropHead = await turn('drop-head');
+  assert('connection lost before the head: transport retry, then completes', completed(dropHead) && codes(dropHead) === 'TRANSPORT'
+    && ['MODEL_DISCONNECTED', 'MODEL_TRANSPORT'].includes(dropHead.agent[0].failure), results['drop-head']);
+  const dropTool = await turn('drop-tool');
+  const resultAt = dropTool.order.indexOf('tool/result'), retryAt = dropTool.order.indexOf('llm/retry');
+  assert('mid-stream disconnect after a tool: retried without replaying the tool', completed(dropTool) && codes(dropTool) === 'TRANSPORT'
+    && dropTool.toolCalls.length === 1 && dropTool.toolResults.length === 1 && resultAt >= 0 && resultAt < retryAt
+    && dropTool.agent.length === 3 && dropTool.agent[1].chunks > 0 && ['MODEL_DISCONNECTED', 'MODEL_TRANSPORT'].includes(dropTool.agent[1].failure), results['drop-tool']);
+  const idle = await turn('idle');
+  assert('idle stream times out explicitly, then the retry completes', completed(idle) && codes(idle) === 'TRANSPORT'
+    && idle.agent[0].failure === 'MODEL_TIMEOUT', results.idle);
+  const exhaust = await turn('exhaust');
+  assert('persistent 5xx ends in an explicit error after the official retry budget', exhaust.turnEnd.kind === 'error'
+    && exhaust.turnEnd.code === 'SERVER' && exhaust.retries.length === 5 && exhaust.agent.length === 6, results.exhaust);
+  const cancel = await turn('cancel', {cancelAfterFirstChunk: true});
+  assert('cancel mid-stream: turn aborted, partial reply interrupted, no tool runs', cancel.turnEnd.kind === 'aborted'
+    && (cancel.replies.some(x => x.interrupted) || cancel.attempts > 0) && cancel.toolCalls.length === 0
+    && cancel.agent.length === 1 && cancel.agent[0].cancelMs >= 0, results.cancel);
+  const records = await native('model-records');
+  assert('native request was cancelled, not left running', records.records.some(x => x.outcome === 'MODEL_CANCELLED' && x.chunks > 0));
+  worker.terminate();
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
+    gate4: {scenarios: results, records: records.records, requests: records.requests}}});
+}
+// iPad: real endpoint. "stream" uses the user's key; "invalid-key" and "offline" use the fixed invalid key.
+window.plan500RunGate4Device = async mode => {
+  const deviceChecks = [];
+  const verify = (name, passed) => {
+    deviceChecks.push({name, passed});
+    document.querySelector('#state').textContent = JSON.stringify(deviceChecks, null, 2);
+    if (!passed) throw new Error(name);
+  };
+  let worker;
+  const summary = {mode};
+  try {
+    const restored = await native('restore');
+    const opened = await boot(restored.snapshot ?? undefined);
+    worker = opened.worker;
+    const run = async (name, prompt, extra = {}) => {
+      const sessionId = await gate4Session(worker, opened.tunnel, `device-${name}-${Date.now()}`);
+      const value = await instrument(worker, 'model-turn', {sessionId, prompt, timeoutMs: 180000, ...extra});
+      summary[name] = gate4Summary(value);
+      return {...value, agent: gate4Streams(value)};
+    };
+    const plain = '不要调用任何工具。';
+    if (mode === 'stream') {
+      const streamed = await run('stream', '请用中文写约 400 字，介绍网络流式响应是如何分块到达的。' + plain);
+      const last = streamed.agent.at(-1);
+      verify('real stream completes through the official parser', streamed.turnEnd.kind === 'completed'
+        && streamed.replies.at(-1)?.textChars > 0 && !streamed.replies.at(-1).interrupted);
+      verify('real body arrives in several chunks before the end', last.status === 200 && last.chunks > 1 && last.lastChunkMs > last.firstChunkMs);
+      const cancelled = await run('cancel', '请用中文写约 1500 字的长文，介绍 iPad 的历史。' + plain, {cancelAfterFirstChunk: true, cancelDelayMs: 800});
+      verify('mid-stream cancel ends the turn as aborted', cancelled.turnEnd.kind === 'aborted');
+      verify('partial reply is marked interrupted', cancelled.replies.some(x => x.interrupted) || cancelled.attempts > 0);
+      verify('no tool runs after cancel', cancelled.toolCalls.length === 0);
+      const records = await native('model-records');
+      verify('native HTTP request was cancelled mid-stream', records.records.some(x => x.outcome === 'MODEL_CANCELLED' && x.chunks > 0));
+      summary.records = records.records;
+    } else if (mode === 'invalid-key') {
+      const invalid = await run('invalid-key', '回复 GATE4_OK。' + plain);
+      verify('invalid key ends with the official AUTH error', invalid.turnEnd.kind === 'error' && invalid.turnEnd.code === 'AUTH');
+      verify('invalid key is not retried', invalid.retries.length === 0 && invalid.agent.length === 1 && invalid.agent[0].status === 401);
+    } else if (mode === 'offline') {
+      const offline = await run('offline', '回复 GATE4_OK。' + plain);
+      verify('offline ends in an explicit error after the official retries', offline.turnEnd.kind === 'error'
+        && offline.turnEnd.code === 'TRANSPORT' && offline.retries.length === 5);
+      verify('every offline request fails before any response', offline.agent.length === 6
+        && offline.agent.every(x => ['MODEL_OFFLINE', 'MODEL_DNS', 'MODEL_CONNECT'].includes(x.failure) && x.status === undefined));
+    } else throw new Error('GATE4_MODE_REFUSED');
+    await native('model-done', {gate4: mode, result: JSON.parse(JSON.stringify({passed: true, checks: deviceChecks, gate4: summary}))});
+  } catch (error) {
+    await native('model-done', {gate4: mode, result: JSON.parse(JSON.stringify({passed: false, checks: deviceChecks, error: String(error), gate4: summary}))});
+  } finally { worker?.terminate(); }
+};
 try {
   const cold = await native('status');
-  if (window.plan500Gate2Missing) await gate2Missing(cold);
+  if (window.plan500Gate4) await gate4Faults();
+  else if (window.plan500Gate2Missing) await gate2Missing(cold);
   else {
     assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
     assert('present private symbol keeps Linux available', cold.linuxAvailability === 'available' && cold.vmStarts === 0);
@@ -262,7 +384,7 @@ window.plan500RunModel = async () => {
     verify('official agent returns a final result', outcome.assistantReturned);
     await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
     await native('model-done', {result: plan500SafeModelResult(true, {workerIntegrated: true, modelNetworkVerified: true,
-      networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'})});
+      networkDelivery: 'native HTTPS, SSE body streamed chunk by chunk to the official adapter'})});
   } catch (error) {
     await native('model-done', {result: plan500SafeModelResult(false, {error: String(error), modelNetworkVerified: false})});
   } finally { worker?.terminate(); }

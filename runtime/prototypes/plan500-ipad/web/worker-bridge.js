@@ -1,14 +1,13 @@
 // Appended only to a scratch copy of the fixed official Worker. Uses its real tool registry.
 const plan500NativePending = new Map();
 let plan500NativeId = 0;
-self.addEventListener('message', event => {
-  if (event.data?.t !== 'plan500-native-reply') return;
-  event.stopImmediatePropagation();
-  const p = plan500NativePending.get(event.data.id);
+// Called by the listener prepended to the Worker, which runs before the official tunnel sees the frame.
+self.plan500NativeReply = data => {
+  const p = plan500NativePending.get(data.id);
   if (!p) return;
-  plan500NativePending.delete(event.data.id);
-  if (event.data.error) p.reject(new Error(event.data.error)); else p.resolve(event.data.result);
-});
+  plan500NativePending.delete(data.id);
+  if (data.error) p.reject(new Error(data.error)); else p.resolve(data.result);
+};
 function plan500Native(operation, payload = {}) {
   const id = ++plan500NativeId;
   return new Promise((resolve, reject) => {
@@ -16,16 +15,70 @@ function plan500Native(operation, payload = {}) {
     self.postMessage({t: 'plan500-native', id, operation, payload});
   });
 }
-// Keep the real API key entirely in Swift. The Worker provider sees a placeholder.
+// Keep the real API key entirely in Swift. The Worker provider sees a placeholder. #39 gate 4: the response
+// body is a stream fed by Swift in arrival order, so the official adapter parses, retries and cancels as usual.
+const plan500OfficialMessages = 'https://api.deepseek.com/anthropic/v1/messages';
 const plan500OriginalFetch = globalThis.fetch.bind(globalThis);
 let plan500ModelResponses = 0;
-globalThis.fetch = async (input, options) => {
+let plan500ModelStreamId = 0;
+// Redacted per-stream timings (ms since the Worker started) and fixed codes; never bytes, headers or text.
+const plan500ModelStreams = [];
+let plan500ModelChunkHook;
+const plan500Now = () => Math.round(performance.now());
+// Fixed stream ids, statuses and codes only, so a stalled host run shows where it stopped.
+const plan500Progress = step => self.postMessage({t: 'plan500-log', progress: step});
+const plan500Bytes = base64 => Uint8Array.from(atob(base64), x => x.charCodeAt(0));
+globalThis.fetch = async (input, options = {}) => {
   const url = typeof input === 'string' ? input : input.url;
-  if (url !== 'https://api.deepseek.com/anthropic/v1/messages') return plan500OriginalFetch(input, options);
-  const result = await plan500Native('model-request', {url, body: options.body});
-  if (result.status === 200) plan500ModelResponses++;
-  return new Response(Uint8Array.from(atob(result.base64), x => x.charCodeAt(0)),
-    {status: result.status, headers: {'content-type': result.contentType}});
+  if (url !== plan500OfficialMessages) return plan500OriginalFetch(input, options);
+  const signal = options.signal;
+  const streamId = 'model-' + (++plan500ModelStreamId);
+  let tools;
+  try { tools = JSON.parse(options.body).tools; } catch {}
+  // Agent turns carry tools; the official first-prompt title request does not.
+  const timing = {streamId, kind: Array.isArray(tools) && tools.length > 0 ? 'agent' : 'other', startMs: plan500Now(), chunks: 0, bytes: 0};
+  plan500ModelStreams.push(timing);
+  if (plan500ModelStreams.length > 64) plan500ModelStreams.shift();
+  const aborted = () => signal?.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+  // A failure keeps the fixed code in a TypeError, the same kind a lost WebKit fetch throws.
+  const failed = code => { timing.failure = code; timing.endMs = plan500Now(); return new TypeError('Load failed (' + code + ')'); };
+  let settled = false;
+  const cancel = () => {
+    if (settled) return;
+    settled = true; timing.cancelMs = plan500Now();
+    plan500Native('model-cancel', {streamId}).catch(() => {});
+  };
+  if (signal?.aborted) throw aborted();
+  signal?.addEventListener('abort', cancel, {once: true});
+  const headers = {};
+  new Headers(options.headers).forEach((value, name) => { headers[name] = value; });
+  plan500Progress(`${streamId} ${timing.kind} open`);
+  const opened = await plan500Native('model-open', {streamId, url, headers, body: options.body});
+  plan500Progress(`${streamId} head ${opened.status ?? opened.failure}`);
+  if (signal?.aborted) { cancel(); throw aborted(); }
+  if (opened.failure) { settled = true; signal?.removeEventListener('abort', cancel); throw failed(opened.failure); }
+  timing.status = opened.status; timing.headMs = plan500Now();
+  if (opened.status === 200) plan500ModelResponses++;
+  const finish = () => {
+    settled = true; timing.endMs = plan500Now(); signal?.removeEventListener('abort', cancel);
+    plan500Progress(`${streamId} end ${timing.failure ?? 'ok'} chunks ${timing.chunks}`);
+  };
+  const body = new ReadableStream({
+    async pull(controller) {
+      const next = await plan500Native('model-read', {streamId});
+      if (next.chunk !== undefined) {
+        const bytes = plan500Bytes(next.chunk);
+        timing.chunks++; timing.bytes += bytes.length;
+        timing.firstChunkMs ??= plan500Now(); timing.lastChunkMs = plan500Now();
+        controller.enqueue(bytes);
+        plan500ModelChunkHook?.(timing);
+      } else if (next.done) { finish(); controller.close(); }
+      else if (signal?.aborted) { finish(); controller.error(aborted()); }
+      else { finish(); controller.error(failed(next.failure)); }
+    },
+    cancel() { cancel(); },
+  });
+  return new Response(body, {status: opened.status, headers: opened.headers});
 };
 // The official hook runner (dsh-hook-protocol) is not packed in this Worker image. This adapter has the
 // ShellExecutor shape it calls (resolve, execute, result) and routes a command hook to the Linux path
@@ -114,9 +167,45 @@ function plan500ModelEvidence(events) {
       && final.text.trim() && end.kind === 'completed' && end.turn === final.turn && final.turn === tested.turn
       && end.sequence > final.sequence)};
 }
+// #39 gate 4: one official turn. Optionally cancels as the user would once the first body chunk arrived.
+// Evidence is redacted: event kinds, fixed codes, delays, order and timings; reply text only as a marker check.
+async function plan500ModelTurn(agent, data) {
+  const require = host.modules.createRequire('/dsh/config/cordis.yml');
+  const {createUserMessage} = require('@deepseek-ai/dsh-llm');
+  await host.prototypeContext.get('credentials').set('DEEPSEEK_API_KEY', 'plan500-native-placeholder');
+  const events = [], firstStream = plan500ModelStreamId + 1;
+  const dispose = agent.ctx.on('session/event', (session, event) => { if (session.id === agent.id) events.push(event); });
+  let cancelledAtMs;
+  if (data.cancelAfterFirstChunk) plan500ModelChunkHook = () => {
+    plan500ModelChunkHook = undefined;
+    // Let the parser hand the chunk to the loop first, so the partial reply is what gets interrupted.
+    setTimeout(() => { cancelledAtMs = plan500Now(); agent.cancel({kind: 'user'}); }, data.cancelDelayMs ?? 300);
+  };
+  const timeout = setTimeout(() => agent.cancel({kind: 'user'}), data.timeoutMs ?? 120000);
+  const started = plan500Now();
+  try {
+    agent.followup(createUserMessage({source: {kind: 'user', rpcId: 'plan500-gate4'}, content: [{type: 'text', text: data.prompt}]}));
+    await agent.whenIdle();
+  } finally { clearTimeout(timeout); dispose(); plan500ModelChunkHook = undefined; }
+  const end = events.filter(x => x.type === 'turn/end').at(-1)?.data;
+  const replies = events.filter(x => x.type === 'assistant/message').map(x => ({interrupted: x.data.interrupted === true,
+    marker: (x.data.message?.content ?? []).some(c => c.type === 'text' && c.text.includes(data.marker ?? 'GATE4_OK')),
+    textChars: (x.data.message?.content ?? []).filter(c => c.type === 'text').reduce((n, c) => n + c.text.length, 0)}));
+  return {
+    elapsedMs: plan500Now() - started, cancelledAtMs,
+    turnEnd: {kind: end?.reason?.kind, code: end?.reason?.error?.code},
+    retries: events.filter(x => x.type === 'llm/retry').map(x => ({retry: x.data.retry, delayMs: x.data.delayMs, code: x.data.failure?.code})),
+    retriesStarted: events.filter(x => x.type === 'llm/retry-started').length,
+    attempts: events.filter(x => x.type === 'assistant/attempt').length,
+    replies, toolCalls: events.filter(x => x.type === 'tool/call').map(x => x.data.name),
+    toolResults: events.filter(x => x.type === 'tool/result').map(x => ({isError: x.data.message?.isError === true})),
+    order: events.map(x => x.type).filter(x => /^(tool\/|turn\/end|llm\/retry|assistant\/)/.test(x)),
+    streams: plan500ModelStreams.filter(x => Number(x.streamId.slice(6)) >= firstStream).map(x => ({...x})),
+  };
+}
 prototypeMessage = async event => {
   const data = event.data;
-  if (!['bridge-install', 'bridge-tool', 'bridge-hook', 'home-snapshot', 'model-run'].includes(data.operation)) return plan500OriginalMessage(event);
+  if (!['bridge-install', 'bridge-tool', 'bridge-hook', 'home-snapshot', 'model-run', 'model-turn'].includes(data.operation)) return plan500OriginalMessage(event);
   try {
     const ctx = host.prototypeContext;
     const agent = data.sessionId ? ctx.get('agents').get(data.sessionId) : undefined;
@@ -132,7 +221,9 @@ prototypeMessage = async event => {
     } else {
       if (!agent) throw new Error('AGENT_NOT_OPEN');
       const tools = agent.ctx.get('tools');
-      if (data.operation === 'model-run') {
+      if (data.operation === 'model-turn') {
+        result = await plan500ModelTurn(agent, data);
+      } else if (data.operation === 'model-run') {
         const require = host.modules.createRequire('/dsh/config/cordis.yml');
         const {createUserMessage} = require('@deepseek-ai/dsh-llm');
         await ctx.get('credentials').set('DEEPSEEK_API_KEY', 'plan500-native-placeholder');

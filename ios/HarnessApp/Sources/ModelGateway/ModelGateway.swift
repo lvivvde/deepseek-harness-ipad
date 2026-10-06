@@ -71,7 +71,7 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         init(id: String) { self.id = id }
     }
 
-    let target: URL
+    public let target: URL
     private let key: () -> String?
     private let condition = NSCondition()
     private var streams: [String: Stream] = [:]

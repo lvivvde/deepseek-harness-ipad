@@ -103,7 +103,9 @@ def project(output):
     linked = object('native-workspace-build', 'PBXBuildFile', productRef=workspace)
     plugin = object('linux-plugin', 'XCSwiftPackageProductDependency', package=package, productName='LinuxPlugin')
     pluginLinked = object('linux-plugin-build', 'PBXBuildFile', productRef=plugin)
-    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[linked, pluginLinked], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
+    model = object('model-gateway', 'XCSwiftPackageProductDependency', package=package, productName='ModelGateway')
+    modelLinked = object('model-gateway-build', 'PBXBuildFile', productRef=model)
+    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[linked, pluginLinked, modelLinked], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
     embed = object('embed', 'PBXShellScriptBuildPhase', name='Embed isolated probe inputs', files=[], inputPaths=[], outputPaths=[],
                    alwaysOutOfDate=1, buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0,
                    shellPath='/bin/bash', shellScript='bash "$SRCROOT/embed.sh"')
@@ -120,7 +122,7 @@ def project(output):
     target = object('target', 'PBXNativeTarget', name='Plan500Research', productName='Plan500Research', productReference=app,
                     productType='com.apple.product-type.application', buildConfigurationList=configList,
                     buildPhases=[sourcesPhase, frameworksPhase, embed], buildRules=[], dependencies=[],
-                    packageProductDependencies=[workspace, plugin])
+                    packageProductDependencies=[workspace, plugin, model])
     root = object('root', 'PBXProject', attributes={}, buildConfigurationList=configList, compatibilityVersion='Xcode 14.0',
                   developmentRegion='en', knownRegions=['en', 'Base'], mainGroup=group, productRefGroup=products,
                   projectDirPath='', projectRoot='', targets=[target], packageReferences=[package])
@@ -188,6 +190,7 @@ def main():
                'gatewaySha256': {p.name: digest(p) for p in sorted(GATEWAY.glob('*.swift'))},
                'nativeWorkspaceSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/Workspace').glob('*.swift'))},
                'linuxPluginSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/LinuxPlugin').glob('*.swift'))},
+               'modelGatewaySha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/ModelGateway').glob('*.swift'))},
                'appBinarySha256': digest(binary) if completed else None}
     (output / 'build-safe.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps({'completed': completed, 'sdk': args.sdk, 'bundleId': BUNDLE_ID, 'signed': False,

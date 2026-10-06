@@ -3,11 +3,25 @@ import Darwin
 import Foundation
 import Network
 import WebKit
+#if os(iOS)
+import UIKit
+#endif
 #if canImport(LinuxPlugin)
 import LinuxPlugin
 #endif
+#if canImport(ModelGateway)
+import ModelGateway
+#endif
 
 private enum WorkerBridgeError: Error { case refused(String) }
+
+/// The real key, read only by the gateway when it builds a request. Never logged, returned or given to the Worker.
+private final class ModelKeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var key = ""
+    var value: String { lock.lock(); defer { lock.unlock() }; return key }
+    func set(_ value: String) { lock.lock(); key = value; lock.unlock() }
+}
 
 final class WorkerCoordinator: @unchecked Sendable {
     let probe: ResearchProbe
@@ -22,8 +36,17 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var pluginEnabled = true
     private var operations: [String: String] = [:]
     private var cancelled = Set<String>()
-    private var modelKey = ""
+    /// #39 gate 4: streams model requests to the official endpoint; the Worker parses, retries and cancels.
+    let model: ModelGateway
+    private let modelKey: ModelKeyBox
     private var modelRequests = 0
+    static let modelRequestBudget = 40
+    /// Fixed, obviously invalid key for the invalid-key and offline checks; never a user's key.
+    static let invalidModelKey = "sk-plan500-gate4-invalid-key"
+#if !canImport(ModelGateway)
+    /// macOS host build only (one module with the gateway sources): the local fault-injection server.
+    nonisolated(unsafe) static var modelFaultTarget: URL?
+#endif
     private var readyProof: [String: Any]?
 
     /// Availability is detected here, at App start and before any Linux preparation.
@@ -32,9 +55,19 @@ final class WorkerCoordinator: @unchecked Sendable {
         injectedMissingPrivateSymbol = injectMissingPrivateSymbol
         gateway = try Gateway(workspace: probe.workspace.path, state: probe.state.path,
                               identity: probe.identity, transport: probe.transport)
+        let key = ModelKeyBox()
+        modelKey = key
+#if canImport(ModelGateway)
+        model = ModelGateway { key.value }
+#else
+        model = Self.modelFaultTarget.map { ModelGateway(target: $0, idleTimeout: 2, key: { key.value }) } ?? ModelGateway { key.value }
+#endif
         let availability = injectMissingPrivateSymbol ? LinuxAvailability.detect { _ in false } : detectedAvailability
         plugin = LinuxPlugin(availability: availability) { [unowned self] in try bringUpLinux() }
     }
+
+    /// True only in the macOS host run against the local fault server.
+    var modelFaultInjection: Bool { model.target != ModelGateway.officialURL }
 
     func status() -> [String: Any] {
         let phase = plugin.phase
@@ -166,42 +199,58 @@ final class WorkerCoordinator: @unchecked Sendable {
     }
 
     func setModelKey(_ key: String) {
-        condition.lock(); modelKey = key; modelRequests = 0; condition.unlock()
+        modelKey.set(key)
+        condition.lock(); modelRequests = 0; condition.unlock()
     }
 
-    private func modelRequest(_ body: [String: Any]) throws -> [String: Any] {
-        guard let urlText = body["url"] as? String, urlText == "https://api.deepseek.com/anthropic/v1/messages",
+    private static func failure(_ error: Error) -> [String: Any] {
+        ["failure": (error as? ModelFailure)?.rawValue ?? ModelFailure.transport.rawValue]
+    }
+
+    /// Opens one streamed request. Failures come back as fixed codes so the Worker's own error path classifies them.
+    private func modelOpen(_ body: [String: Any]) -> [String: Any] {
+        guard let id = body["streamId"] as? String, (1...64).contains(id.utf8.count), let url = body["url"] as? String,
               let text = body["body"] as? String, text.utf8.count <= 2 << 20,
-              var payload = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
-            throw WorkerBridgeError.refused("MODEL_ENDPOINT_REFUSED")
+              var payload = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
+            return ["failure": "MODEL_REQUEST_REFUSED"]
         }
-        condition.lock(); let key = modelKey; modelRequests += 1; let count = modelRequests; condition.unlock()
-        guard !key.isEmpty, count <= 12 else { throw WorkerBridgeError.refused("MODEL_KEY_OR_BUDGET_REQUIRED") }
+        let headers = (body["headers"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        condition.lock(); modelRequests += 1; let count = modelRequests; condition.unlock()
+        guard count <= Self.modelRequestBudget else { return ["failure": "MODEL_BUDGET_EXHAUSTED"] }
+        // Research spending cap; the request is otherwise the official adapter's own.
         payload["max_tokens"] = min(payload["max_tokens"] as? Int ?? 2048, 2048)
-        var request = URLRequest(url: URL(string: urlText)!, timeoutInterval: 120)
-        request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(key, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        let config = URLSessionConfiguration.ephemeral; config.connectionProxyDictionary = [:]
-        config.timeoutIntervalForResource = 150
-        let session = URLSession(configuration: config, delegate: ModelNoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let done = DispatchSemaphore(value: 0)
-        var outcome: (Data?, URLResponse?, Error?) = (nil, nil, nil)
-        session.dataTask(with: request) { data, response, error in outcome = (data, response, error); done.signal() }.resume()
-        guard done.wait(timeout: .now() + 160) == .success,
-              outcome.2 == nil, let data = outcome.0, data.count <= 8 << 20,
-              let response = outcome.1 as? HTTPURLResponse else { throw WorkerBridgeError.refused("MODEL_NETWORK_FAILED") }
-        // Prototype buffers the HTTP body; the official adapter still parses its SSE events.
-        return ["status": response.statusCode, "base64": data.base64EncodedString(),
-                "contentType": response.value(forHTTPHeaderField: "content-type") ?? "text/event-stream"]
+        do {
+            let head = try model.open(id: id, url: url, headers: headers, body: try JSONSerialization.data(withJSONObject: payload))
+            return ["status": head.status, "headers": head.headers]
+        } catch { return Self.failure(error) }
+    }
+
+    private func modelRead(_ body: [String: Any]) -> [String: Any] {
+        guard let id = body["streamId"] as? String else { return ["failure": ModelFailure.unknownStream.rawValue] }
+        do {
+            switch try model.read(id) {
+            case .chunk(let data): return ["chunk": data.base64EncodedString()]
+            case .end: return ["done": true]
+            }
+        } catch { return Self.failure(error) }
+    }
+
+    /// Redacted gateway evidence: per-request timings, counts and final codes only.
+    func modelRecords() -> [String: Any] {
+        let records = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(model.records))) ?? []
+        condition.lock(); defer { condition.unlock() }
+        return ["records": records, "requests": modelRequests, "faultInjection": modelFaultInjection]
     }
 
     func handle(_ body: [String: Any]) throws -> [String: Any] {
         guard let operation = body["operation"] as? String else { throw WorkerBridgeError.refused("OPERATION_REFUSED") }
         switch operation {
-        case "model-request": return try modelRequest(body)
+        case "model-open": return modelOpen(body)
+        case "model-read": return modelRead(body)
+        case "model-cancel":
+            if let id = body["streamId"] as? String { model.cancel(id) }
+            return ["cancelled": true]
+        case "model-records": return modelRecords()
         case "status": return status()
         case "prepare": prepare(); return status()
         case "read":
@@ -303,15 +352,29 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
     let resume: Bool
     let completion: (Bool) -> Void
     var view: WKWebView!
+    /// Gate 4 records whether the App left the foreground during a model run; it does not decide the result.
+    private var backgroundTransitions = 0
+    private var observer: NSObjectProtocol?
     init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, completion: @escaping (Bool) -> Void) {
         self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.completion = completion
         super.init()
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
+#if os(macOS)
+        // The macOS host window is never shown. Without this, WebKit treats the page as hidden and stalls
+        // long Worker timers such as the official retry backoff. KVC reaches the `_set…` WebKit setters.
+        for key in ["hiddenPageDOMTimerThrottlingEnabled", "hiddenPageDOMTimerThrottlingAutoIncreases",
+                    "pageVisibilityBasedProcessSuppressionEnabled"] { config.preferences.setValue(false, forKey: key) }
+#endif
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol);",
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection);",
                                                                  injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
+#if os(iOS)
+        observer = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.backgroundTransitions += 1 }
+        }
+#endif
     }
     func start() throws {
         try assets.start { [weak self] answer in
@@ -330,9 +393,20 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
             if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
         }
     }
+    static let gate4Modes = ["stream", "invalid-key", "offline"]
+    /// Gate 4 device checks. Only "stream" uses the user's key; the others use the fixed invalid key.
+    func runGate4(mode: String, key: String) {
+        guard Self.gate4Modes.contains(mode) else { completion(false); return }
+        coordinator.setModelKey(mode == "stream" ? key : WorkerCoordinator.invalidModelKey)
+        backgroundTransitions = 0
+        view.evaluateJavaScript("void window.plan500RunGate4Device('\(mode)')") { [weak self] _, error in
+            if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
+        }
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         if message.name == "log" {
+            if let step = body["progress"] as? String { print("PROGRESS " + step.prefix(200)); return }
             // Bounded diagnostics stay in the ignored/private research container, never UI or console.
             if let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 65536 {
                 try? data.write(to: coordinator.probe.root.appendingPathComponent("worker-diagnostics-private.log"), options: .atomic)
@@ -350,9 +424,12 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 result["linuxAvailabilityDetected"] = WorkerCoordinator.name(coordinator.detectedAvailability)
                 result["injectedMissingPrivateSymbol"] = coordinator.injectedMissingPrivateSymbol
                 result["vmStarts"] = coordinator.vmStartCount
+                result["backgroundTransitions"] = backgroundTransitions
+                let gate4 = (body["gate4"] as? String).flatMap { Self.gate4Modes.contains($0) ? $0 : nil }
+                let receipt = gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
+                    : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
+                    : resume ? "worker-resume-safe.json" : "worker-safe.json")
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
-                let receipt = operation == "model-done" ? "model-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
-                    : resume ? "worker-resume-safe.json" : "worker-safe.json"
                 try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
                 view.evaluateJavaScript("window.prototypeNativeReply(\(id), {accepted: true})", completionHandler: nil)
                 if operation == "model-done" { coordinator.setModelKey("") }
@@ -388,6 +465,11 @@ struct WorkerResearchView: View {
                 Button("运行真实模型修改与 Linux 测试") {
                     model.runModel(key: model.apiKey); model.apiKey = ""
                 }.disabled(model.apiKey.isEmpty || model.modelRunning)
+                Button("关口 4：真实流式与中途取消") {
+                    model.runGate4(mode: "stream", key: model.apiKey); model.apiKey = ""
+                }.disabled(model.apiKey.isEmpty || model.modelRunning)
+                Button("关口 4：无效密钥（固定无效值）") { model.runGate4(mode: "invalid-key") }.disabled(model.modelRunning)
+                Button("关口 4：离线（先开启飞行模式）") { model.runGate4(mode: "offline") }.disabled(model.modelRunning)
             }
             if let host = model.host { WorkerResearchWebView(view: host.view) }
         }.padding().task { model.start() }
@@ -409,6 +491,9 @@ private final class WorkerResearchModel: ObservableObject {
     @Published var modelRunning = false
     func runModel(key: String) {
         modelRunning = true; status = "真实模型检查进行中"; host?.runModel(key: key)
+    }
+    func runGate4(mode: String, key: String = "") {
+        modelRunning = true; status = "关口 4 检查进行中：" + mode; host?.runGate4(mode: mode, key: key)
     }
     func start() {
         guard host == nil else { return }
@@ -437,7 +522,9 @@ private final class WorkerResearchModel: ObservableObject {
             let resume = !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
                                      resume: resume) { [weak self] passed in
-                self?.finished = passed; self?.modelRunning = false
+                // A model check result never hides the buttons that the passed base checks unlocked.
+                if self?.modelRunning != true { self?.finished = passed }
+                self?.modelRunning = false
                 self?.status = passed ? "检查完成；详细范围见研究收据" : "检查未通过；详情见私有收据"
             }
             self.host = host
@@ -447,8 +534,3 @@ private final class WorkerResearchModel: ObservableObject {
     }
 }
 #endif
-
-private final class ModelNoRedirect: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}

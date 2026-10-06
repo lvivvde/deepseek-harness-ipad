@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {runInNewContext} from 'node:vm';
+import {createContext, runInContext, runInNewContext} from 'node:vm';
 import {test} from 'node:test';
 
 const scope = {self: {addEventListener() {}}, prototypeMessage() {}, fetch() {}};
@@ -88,4 +88,96 @@ test('model evidence exposes only the redacted trace and a reply count', () => {
   const proof = scope.plan500ModelEvidence(events());
   assert.equal('tools' in proof, false); assert.equal(proof.replyCount, 1);
   assert.equal(JSON.stringify(proof).includes('a+b'), false);
+});
+
+// #39 gate 4: the streaming fetch shim, driven by a scripted native side.
+function shim(handlers) {
+  const sent = [], original = [];
+  const context = {
+    Headers, ReadableStream, Response, DOMException, TextDecoder, atob, performance, AbortController,
+    prototypeMessage() {}, fetch: (...args) => { original.push(args); return 'ORIGINAL'; },
+    self: {
+      postMessage: message => {
+        sent.push(message);
+        Promise.resolve(handlers[message.operation]?.(message.payload)).then(result =>
+          context.self.plan500NativeReply({t: 'plan500-native-reply', id: message.id, result: result ?? {}}));
+      },
+    },
+  };
+  createContext(context);
+  runInContext(readFileSync(new URL('./web/worker-bridge.js', import.meta.url), 'utf8'), context);
+  // Top-level let/const of the bridge are lexical, so read and set them inside the context.
+  const streams = () => runInContext('plan500ModelStreams', context);
+  const hook = fn => { context.plan500TestHook = fn; runInContext('plan500ModelChunkHook = plan500TestHook', context); };
+  return {fetch: context.fetch, sent, original, streams, hook};
+}
+const official = 'https://api.deepseek.com/anthropic/v1/messages';
+const b64 = text => Buffer.from(text).toString('base64');
+const reads = parts => { const queue = [...parts]; return () => queue.shift() ?? {done: true}; };
+
+test('streams body chunks in arrival order with status and headers', async () => {
+  const hooked = [];
+  const native = shim({
+    'model-open': () => ({status: 200, headers: {'content-type': 'text/event-stream', 'x-request-id': 'r1'}}),
+    'model-read': reads([{chunk: b64('event: a\n')}, {chunk: b64('data: 中文\n\n')}]),
+  });
+  native.hook(timing => hooked.push(timing.chunks));
+  const response = await native.fetch(official, {method: 'POST', body: '{"tools":[{}]}',
+    headers: {'x-api-key': 'plan500-native-placeholder', 'content-type': 'application/json'}});
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-request-id'), 'r1');
+  assert.equal(await response.text(), 'event: a\ndata: 中文\n\n');
+  const open = native.sent.find(x => x.operation === 'model-open').payload;
+  assert.equal(open.url, official); assert.equal(open.headers['content-type'], 'application/json');
+  const timing = native.streams().at(-1);
+  assert.equal(timing.chunks, 2); assert.equal(timing.kind, 'agent'); assert.ok(timing.firstChunkMs <= timing.lastChunkMs);
+  assert.ok(hooked.length >= 1);
+});
+test('non-ok response keeps its body for the official error path', async () => {
+  const native = shim({'model-open': () => ({status: 429, headers: {'retry-after': '1'}}),
+    'model-read': reads([{chunk: b64('{"error":"rate"}')}])});
+  const response = await native.fetch(official, {method: 'POST', body: '{}'});
+  assert.equal(response.ok, false); assert.equal(response.headers.get('retry-after'), '1');
+  assert.equal(await response.text(), '{"error":"rate"}');
+});
+test('open failure throws a TypeError carrying only the fixed code', async () => {
+  const native = shim({'model-open': () => ({failure: 'MODEL_OFFLINE'})});
+  await assert.rejects(native.fetch(official, {method: 'POST', body: '{}'}),
+    error => error.name === 'TypeError' && error.message === 'Load failed (MODEL_OFFLINE)');
+  assert.equal(native.streams().at(-1).failure, 'MODEL_OFFLINE');
+});
+test('mid-stream failure errors the body after the delivered bytes, never a clean end', async () => {
+  const native = shim({'model-open': () => ({status: 200, headers: {}}),
+    'model-read': reads([{chunk: b64('partial')}, {failure: 'MODEL_DISCONNECTED'}])});
+  const reader = (await native.fetch(official, {method: 'POST', body: '{}'})).body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'partial');
+  await assert.rejects(reader.read(), error => error.name === 'TypeError' && error.message.includes('MODEL_DISCONNECTED'));
+});
+test('abort cancels the native request and the body rejects as aborted', async () => {
+  let release;
+  const native = shim({'model-open': () => ({status: 200, headers: {}}),
+    'model-read': () => new Promise(resolve => { release = resolve; }),
+    'model-cancel': () => { release({failure: 'MODEL_CANCELLED'}); return {cancelled: true}; }});
+  const controller = new AbortController();
+  const reader = (await native.fetch(official, {method: 'POST', body: '{}', signal: controller.signal})).body.getReader();
+  const pending = reader.read();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  assert.equal(native.sent.filter(x => x.operation === 'model-cancel').length, 1);
+  assert.ok(native.streams().at(-1).cancelMs !== undefined);
+});
+test('an already aborted request never reaches native and other URLs keep the original fetch', async () => {
+  const native = shim({});
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(native.fetch(official, {method: 'POST', body: '{}', signal: controller.signal}), error => error.name === 'AbortError');
+  assert.equal(native.sent.length, 0);
+  assert.equal(await native.fetch('https://example.invalid/x', {}), 'ORIGINAL');
+  assert.equal(native.original.length, 1);
+});
+test('stream evidence carries no body bytes or header values', async () => {
+  const native = shim({'model-open': () => ({status: 200, headers: {'x-request-id': 'SECRET_REQ'}}),
+    'model-read': reads([{chunk: b64('SECRET_BODY')}])});
+  await (await native.fetch(official, {method: 'POST', body: '{"messages":"SECRET_PROMPT"}', headers: {'x-api-key': 'SECRET_KEY'}})).text();
+  assert.equal(/SECRET/.test(JSON.stringify(native.streams())), false);
 });

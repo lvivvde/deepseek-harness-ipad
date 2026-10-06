@@ -27,6 +27,8 @@ loader.load = (...args) => {
 // methods; the upstream helper still performs actual disposal.
 worker = `self.addEventListener('message', event => {
   if (event.data?.t === 'plan500') { event.stopImmediatePropagation(); prototypeMessage(event); }
+  // Native bridge replies must never reach the official tunnel, which fails the Worker on unknown frames.
+  if (event.data?.t === 'plan500-native-reply') { event.stopImmediatePropagation(); self.plan500NativeReply?.(event.data); }
 });
 for (const key of ['dispose', 'asyncDispose']) {
   if (!Symbol[key]) Object.defineProperty(Symbol, key, {value: Symbol('Symbol.' + key)});

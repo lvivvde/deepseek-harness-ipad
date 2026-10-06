@@ -7,7 +7,8 @@ let package = Package(
     products: [
         .library(name: "HarnessRuntime", targets: ["HarnessRuntime"]),
         .library(name: "NativeWorkspace", targets: ["NativeWorkspace"]),
-        .library(name: "LinuxPlugin", targets: ["LinuxPlugin"])
+        .library(name: "LinuxPlugin", targets: ["LinuxPlugin"]),
+        .library(name: "ModelGateway", targets: ["ModelGateway"])
     ],
     targets: [
         .target(name: "HarnessRuntime", path: "Sources/Core"),
@@ -17,6 +18,8 @@ let package = Package(
         .testTarget(name: "NativeWorkspaceTests", dependencies: ["NativeWorkspace", "workspace-crash-probe"],
                     path: "WorkspaceTests"),
         .target(name: "LinuxPlugin", path: "Sources/LinuxPlugin"),
-        .testTarget(name: "LinuxPluginTests", dependencies: ["LinuxPlugin"], path: "LinuxPluginTests")
+        .testTarget(name: "LinuxPluginTests", dependencies: ["LinuxPlugin"], path: "LinuxPluginTests"),
+        .target(name: "ModelGateway", path: "Sources/ModelGateway"),
+        .testTarget(name: "ModelGatewayTests", dependencies: ["ModelGateway"], path: "ModelGatewayTests")
     ]
 )

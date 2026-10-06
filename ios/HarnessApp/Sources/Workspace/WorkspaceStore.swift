@@ -42,6 +42,16 @@ public enum ReadResult: Equatable {
     case refused(String)
 }
 
+public enum VersionResult: Equatable {
+    /// The token of a regular file, symlink or special entry, as reads and writes report it.
+    case entry(String)
+    /// Directories carry no version: the store tracks only non-directories.
+    case directory
+    case absent
+    case leaseBusy
+    case refused(String)
+}
+
 public enum WriteResult: Equatable {
     case written(String)
     case draftHeld(String)
@@ -422,8 +432,11 @@ public final class WorkspaceStore {
     }
 
     /// Detects a same-uid writer that bypassed the gateway and records it as its own generation.
-    private func reconcile(_ path: RelativePath) throws -> String? {
-        let disk = try files.fingerprint(path)
+    @discardableResult
+    private func reconcile(_ path: RelativePath) throws -> String? { try reconcile(path, disk: try files.fingerprint(path)) }
+
+    @discardableResult
+    private func reconcile(_ path: RelativePath, disk: String?) throws -> String? {
         if disk != state.versions[path]?.fingerprint {
             try record(.commit(generation: state.generation + 1, origin: "external",
                                paths: [PathVersion(path: path, fingerprint: disk)], intent: nil))
@@ -433,18 +446,38 @@ public final class WorkspaceStore {
 
     // MARK: Native access
 
-    public func nativeRead(_ path: RelativePath) throws -> ReadResult {
+    public func nativeRead(_ path: RelativePath, limit: Int = 8 << 20) throws -> ReadResult {
         do { try path.validate() } catch WorkspaceError.pathRefused(let reason) { return .refused(reason) }
         guard state.lease == nil else { return .leaseBusy }
         try resolveIntents()
         guard let disk = try reconcile(path) else { return .absent }
         guard disk.hasPrefix("F:") else { return .refused("NOT_REGULAR") }
         let data: Data
-        do { data = try files.readData(path) } catch WorkspaceError.io(_, ENOENT) { return .retry }
+        do { data = try files.readData(path, limit: limit) } catch WorkspaceError.io(_, ENOENT) {
+            return .retry
+        } catch WorkspaceError.pathRefused(let reason) {
+            return .refused(reason)
+        }
         guard WorkspaceFiles.fileFingerprint(digest: sha256(data), mode: WorkspaceFiles.mode(of: disk) ?? 0) == disk else {
             return .retry
         }
         return .read(data, state.versions[path]!.token)
+    }
+
+    /// The version a read would report, without returning bytes. Like a read, it records a
+    /// same-uid bypass as an external change. A directory where a tracked entry was is recorded
+    /// as that entry being gone.
+    public func nativeVersion(_ path: RelativePath) throws -> VersionResult {
+        do { try path.validate() } catch WorkspaceError.pathRefused(let reason) { return .refused(reason) }
+        guard state.lease == nil else { return .leaseBusy }
+        try resolveIntents()
+        let disk = try files.fingerprint(path)
+        if disk == "D" {
+            if state.versions[path] != nil { try reconcile(path, disk: nil) }
+            return .directory
+        }
+        guard try reconcile(path, disk: disk) != nil else { return .absent }
+        return .entry(state.versions[path]!.token)
     }
 
     public func nativeWrite(_ path: RelativePath, _ data: Data, base: String?) throws -> WriteResult {

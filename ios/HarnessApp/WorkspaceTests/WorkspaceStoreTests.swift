@@ -156,4 +156,31 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(reopened.changes(since: 10).map(\.generation), [11, 12])
         XCTAssertEqual(try reopened.audit(), [])
     }
+
+    func testNativeVersionMatchesReadAndRecordsExternalChangesWithoutTrackingDirectories() throws {
+        let store = try store()
+        guard case .read(_, let read) = try store.nativeRead(p("notes.md")) else { return XCTFail("read") }
+        XCTAssertEqual(try store.nativeVersion(p("notes.md")), .entry(read))
+        XCTAssertEqual(try store.nativeVersion(p("src")), .directory)
+        XCTAssertEqual(try store.nativeVersion(p("missing.txt")), .absent)
+        XCTAssertEqual(try store.nativeVersion(p("../x")), .refused("PATH_REFUSED"))
+        try put("notes.md", "bypass")
+        guard case .entry(let changed) = try store.nativeVersion(p("notes.md")) else { return XCTFail("version") }
+        XCTAssertNotEqual(changed, read)
+        XCTAssertEqual(store.changes(since: 0).map(\.origin), ["external"])
+        // A file replaced by a directory is recorded as gone, never as a tracked directory.
+        try FileManager.default.removeItem(atPath: workspace + "/notes.md")
+        try FileManager.default.createDirectory(atPath: workspace + "/notes.md", withIntermediateDirectories: false)
+        XCTAssertEqual(try store.nativeVersion(p("notes.md")), .directory)
+        XCTAssertNil(store.version(p("notes.md")))
+        guard case .granted = try store.acquireLease("probe") else { return XCTFail("lease") }
+        XCTAssertEqual(try store.nativeVersion(p("src/app.js")), .leaseBusy)
+        XCTAssertEqual(try self.store().audit(), [])
+    }
+
+    func testNativeReadHonoursTheCallerLimit() throws {
+        let store = try store()
+        XCTAssertEqual(try store.nativeRead(p("notes.md"), limit: 4), .refused("READ_TOO_LARGE"))
+        guard case .read = try store.nativeRead(p("notes.md"), limit: 10) else { return XCTFail("exact limit") }
+    }
 }

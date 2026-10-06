@@ -3,86 +3,128 @@ import Darwin
 import Foundation
 import Network
 import WebKit
+#if canImport(LinuxPlugin)
+import LinuxPlugin
+#endif
 
 private enum WorkerBridgeError: Error { case refused(String) }
 
 final class WorkerCoordinator: @unchecked Sendable {
     let probe: ResearchProbe
     let gateway: Gateway
+    /// Research-only: the missing branch of #39 gate 2 forced by a launch argument of this separate app.
+    let injectedMissingPrivateSymbol: Bool
+    /// Real detection on this process, recorded even when the research run injects the missing branch.
+    let detectedAvailability = LinuxAvailability.detect()
+    private(set) var plugin: LinuxPlugin!
     private let condition = NSCondition()
     private let execution = NSLock()
-    private var phase = "COLD"
+    private var pluginEnabled = true
     private var operations: [String: String] = [:]
     private var cancelled = Set<String>()
     private var modelKey = ""
     private var modelRequests = 0
     private var readyProof: [String: Any]?
 
-    init(probe: ResearchProbe) throws {
+    /// Availability is detected here, at App start and before any Linux preparation.
+    init(probe: ResearchProbe, injectMissingPrivateSymbol: Bool = false) throws {
         self.probe = probe
+        injectedMissingPrivateSymbol = injectMissingPrivateSymbol
         gateway = try Gateway(workspace: probe.workspace.path, state: probe.state.path,
                               identity: probe.identity, transport: probe.transport)
+        let availability = injectMissingPrivateSymbol ? LinuxAvailability.detect { _ in false } : detectedAvailability
+        plugin = LinuxPlugin(availability: availability) { [unowned self] in try bringUpLinux() }
     }
 
     func status() -> [String: Any] {
+        let phase = plugin.phase
         condition.lock(); defer { condition.unlock() }
         let state = gateway.snapshot().0
-        return ["phase": phase, "operations": operations, "identity": probe.identity,
+        let declaration = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(plugin.declaration(pluginEnabled: pluginEnabled)))) ?? NSNull()
+        return ["phase": Self.name(phase), "operations": operations, "identity": probe.identity,
                 "ready": readyProof != nil, "lease": state.lease?.op as Any? ?? NSNull(),
-                "drafts": state.drafts.map { ["id": $0.id, "status": $0.status, "path": $0.path.json] }]
+                "drafts": state.drafts.map { ["id": $0.id, "status": $0.status, "path": $0.path.json] },
+                "pluginEnabled": pluginEnabled, "capabilities": declaration, "vmStarts": vmStartCount,
+                "linuxAvailability": Self.name(plugin.availability),
+                "linuxAvailabilityDetected": Self.name(detectedAvailability),
+                "injectedMissingPrivateSymbol": injectedMissingPrivateSymbol]
     }
 
-    func prepare() {
-        condition.lock()
-        guard phase == "COLD" else { condition.unlock(); return }
-        phase = "PREPARING"; condition.unlock()
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            do {
-                try probe.startVM()
-                let deadline = Date().addingTimeInterval(600)
-                var proof: [String: Any]?
-                while Date() < deadline {
-                    probe.vmLock.lock(); let exited = probe.vmExited; probe.vmLock.unlock()
-                    if exited { throw WorkerBridgeError.refused("VM_EXIT_BEFORE_READY") }
-                    if let value = try? probe.transport.rpc("/ready", nil) { proof = value; break }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                guard let proof, proof["projectId"] as? String == probe.identity,
-                      proof["protocol"] as? Int == 1, proof["mount"] as? String == "9p",
-                      proof["workspaceReadOnly"] as? Bool == true, proof["cgroupKill"] as? Bool == true else {
-                    throw WorkerBridgeError.refused("READY_PROOF_REFUSED")
-                }
-                // Binding never grants a writer. A new guest must know the durable epoch
-                // before it can revoke an old fence; an existing active writer still refuses revoke.
-                _ = try gateway.attach()
-                if gateway.snapshot().0.lease != nil {
-                    guard try gateway.reconcile(vmExited: false)["status"] as? String == "RELEASED" else {
-                        throw WorkerBridgeError.refused("WRITER_NOT_RECONCILED")
-                    }
-                }
-                condition.lock(); readyProof = proof; phase = "READY"; condition.broadcast(); condition.unlock()
-            } catch {
-                try? String(describing: error).write(to: probe.root.appendingPathComponent("worker-error-private.log"), atomically: true, encoding: .utf8)
-                condition.lock(); phase = "FAILED"; condition.broadcast(); condition.unlock()
-            }
+    static func name(_ phase: LinuxPlugin.Phase) -> String {
+        switch phase {
+        case .cold: return "COLD"
+        case .preparing: return "PREPARING"
+        case .ready: return "READY"
+        case .failed: return "FAILED"
+        case .unavailable: return "UNAVAILABLE"
         }
     }
 
-    func execute(id: String, command: String, timeout: Int) throws -> [String: Any] {
+    static func name(_ availability: LinuxAvailability) -> String {
+        switch availability {
+        case .available: return "available"
+        case .unavailable(let reason): return reason.rawValue
+        }
+    }
+
+    var vmStartCount: Int { probe.vmLock.lock(); defer { probe.vmLock.unlock() }; return probe.vmStarts }
+
+    func prepare() { plugin.prepare() }
+
+    /// The plugin's only launcher: start QEMU once, wait for the verified 9P ready proof, bind the gateway.
+    private func bringUpLinux() throws {
+        do {
+            try probe.startVM()
+            let deadline = Date().addingTimeInterval(600)
+            var proof: [String: Any]?
+            while Date() < deadline {
+                probe.vmLock.lock(); let exited = probe.vmExited; probe.vmLock.unlock()
+                if exited { throw WorkerBridgeError.refused("VM_EXIT_BEFORE_READY") }
+                if let value = try? probe.transport.rpc("/ready", nil) { proof = value; break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            guard let proof, proof["projectId"] as? String == probe.identity,
+                  proof["protocol"] as? Int == 1, proof["mount"] as? String == "9p",
+                  proof["workspaceReadOnly"] as? Bool == true, proof["cgroupKill"] as? Bool == true else {
+                throw WorkerBridgeError.refused("READY_PROOF_REFUSED")
+            }
+            // Binding never grants a writer. A new guest must know the durable epoch
+            // before it can revoke an old fence; an existing active writer still refuses revoke.
+            _ = try gateway.attach()
+            if gateway.snapshot().0.lease != nil {
+                guard try gateway.reconcile(vmExited: false)["status"] as? String == "RELEASED" else {
+                    throw WorkerBridgeError.refused("WRITER_NOT_RECONCILED")
+                }
+            }
+            condition.lock(); readyProof = proof; condition.unlock()
+        } catch {
+            try? String(describing: error).write(to: probe.root.appendingPathComponent("worker-error-private.log"), atomically: true, encoding: .utf8)
+            throw error
+        }
+    }
+
+    func execute(id: String, command: String, timeout: Int, hook: Bool = false) throws -> [String: Any] {
         guard !id.isEmpty, id.count <= 128, command.utf8.count <= 32000,
               timeout > 0, timeout <= 30000 else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
         condition.lock()
         guard operations[id] == nil else { condition.unlock(); throw WorkerBridgeError.refused("DUPLICATE_OPERATION") }
-        operations[id] = "WAITING_READY"; condition.unlock()
-        prepare()
-        condition.lock()
-        while phase == "PREPARING", !cancelled.contains(id) { condition.wait() }
-        if cancelled.contains(id) {
-            operations[id] = "CANCELLED_BEFORE_DISPATCH"; condition.unlock()
-            return ["status": "CANCELLED_BEFORE_DISPATCH"]
+        operations[id] = "WAITING_READY"; let enabled = pluginEnabled; condition.unlock()
+        // Lock order: plugin, then coordinator. Never call the plugin while holding `condition`.
+        let admission = plugin.admit(hook ? .hook(command) : .shell(command), pluginEnabled: enabled) { [self] in
+            condition.lock(); defer { condition.unlock() }; return cancelled.contains(id)
         }
-        guard phase == "READY" else { operations[id] = "FAILED"; condition.unlock(); throw WorkerBridgeError.refused("LINUX_NOT_READY") }
-        condition.unlock()
+        switch admission {
+        case .linux: break
+        case .cancelledBeforeDispatch:
+            condition.lock(); operations[id] = "CANCELLED_BEFORE_DISPATCH"; condition.unlock()
+            return ["status": "CANCELLED_BEFORE_DISPATCH"]
+        case .refused(let reason):
+            condition.lock(); operations[id] = "UNAVAILABLE"; condition.broadcast(); condition.unlock()
+            return ["status": "UNAVAILABLE", "reason": reason]
+        case .native:
+            condition.lock(); operations[id] = "FAILED"; condition.unlock()
+            throw WorkerBridgeError.refused("PATH_REFUSED")
+        }
         execution.lock(); defer { execution.unlock() }
         condition.lock()
         if cancelled.contains(id) {
@@ -106,6 +148,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             return ["status": "CANCEL_REQUESTED"]
         }
         cancelled.insert(id); condition.broadcast(); condition.unlock()
+        plugin.wake()
         if current == "WAITING_READY" { return ["status": "CANCEL_REQUESTED"] }
         // Cancellation can race acquire or the guest accepting /execute. Keep retrying only
         // this idempotent cancellation, never /execute, until completion or confirmed drain.
@@ -173,7 +216,14 @@ final class WorkerCoordinator: @unchecked Sendable {
             return try gateway.nativeWrite(RelativePath(path), Data(text.utf8), base: body["base"] as? String)
         case "execute":
             guard let id = body["operationId"] as? String, let command = body["command"] as? String else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
-            return try execute(id: id, command: command, timeout: body["timeoutMs"] as? Int ?? 15000)
+            return try execute(id: id, command: command, timeout: body["timeoutMs"] as? Int ?? 15000,
+                               hook: body["trigger"] as? String == "hook")
+        case "project-open":
+            // Research stand-in for opening a project with or without the Linux plugin enabled.
+            guard let enabled = body["pluginEnabled"] as? Bool else { throw WorkerBridgeError.refused("PROJECT_REFUSED") }
+            condition.lock(); pluginEnabled = enabled; condition.unlock()
+            plugin.open(pluginEnabled: enabled)
+            return status()
         case "cancel":
             guard let id = body["operationId"] as? String else { throw WorkerBridgeError.refused("ID_REFUSED") }
             return try cancel(id: id)
@@ -259,7 +309,8 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol);",
+                                                                 injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
     }
     func start() throws {
@@ -296,8 +347,13 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 let args = ProcessInfo.processInfo.arguments
                 if let index = args.firstIndex(of: "--run-id"), args.indices.contains(index + 1) { result["runId"] = args[index + 1] }
                 result["resume"] = resume; result["fullGatesPassed"] = false
+                result["linuxAvailabilityDetected"] = WorkerCoordinator.name(coordinator.detectedAvailability)
+                result["injectedMissingPrivateSymbol"] = coordinator.injectedMissingPrivateSymbol
+                result["vmStarts"] = coordinator.vmStartCount
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
-                try data.write(to: coordinator.probe.root.appendingPathComponent(operation == "model-done" ? "model-safe.json" : resume ? "worker-resume-safe.json" : "worker-safe.json"), options: .atomic)
+                let receipt = operation == "model-done" ? "model-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
+                    : resume ? "worker-resume-safe.json" : "worker-safe.json"
+                try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
                 view.evaluateJavaScript("window.prototypeNativeReply(\(id), {accepted: true})", completionHandler: nil)
                 if operation == "model-done" { coordinator.setModelKey("") }
                 completion(result["passed"] as? Bool == true)
@@ -376,8 +432,9 @@ private final class WorkerResearchModel: ObservableObject {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let probe = try ResearchProbe(model: selection,
                 projectRoot: documents.appendingPathComponent("Plan500Research/worker-" + selection + (projectId.map { "-" + $0 } ?? ""))) { _ in }
-            let coordinator = try WorkerCoordinator(probe: probe)
-            let resume = args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path)
+            // Research-only switch of this separate bundle; the formal App has no way to force the missing branch.
+            let coordinator = try WorkerCoordinator(probe: probe, injectMissingPrivateSymbol: args.contains("--inject-missing-private-symbol"))
+            let resume = !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
                                      resume: resume) { [weak self] passed in
                 self?.finished = passed; self?.modelRunning = false

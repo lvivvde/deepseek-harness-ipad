@@ -27,6 +27,27 @@ globalThis.fetch = async (input, options) => {
   return new Response(Uint8Array.from(atob(result.base64), x => x.charCodeAt(0)),
     {status: result.status, headers: {'content-type': result.contentType}});
 };
+// The official hook runner (dsh-hook-protocol) is not packed in this Worker image. This adapter has the
+// ShellExecutor shape it calls (resolve, execute, result) and routes a command hook to the Linux path
+// with trigger "hook", so the native side admits it as a hook task. Refusals keep their fixed code.
+const plan500HookShell = {
+  resolve: request => request,
+  execute: request => ({result: async () => {
+    const answer = await plan500Native('execute', {command: request.command, timeoutMs: request.timeoutMs,
+      operationId: request.operationId, trigger: 'hook'});
+    if (answer.status !== 'RELEASED') throw new Error(answer.reason ?? answer.status);
+    return {exitCode: answer.result.code, stdout: {text: answer.result.stdout}, stderr: {text: answer.result.stderr}};
+  }}),
+};
+async function plan500RunHook(shell, hook, operationId) {
+  const started = performance.now();
+  try {
+    const result = await shell.execute(shell.resolve({command: hook.command, timeoutMs: hook.timeoutMs ?? 15000, operationId})).result();
+    return {event: hook.event, ran: true, exitCode: result.exitCode, stdout: result.stdout.text, elapsedMs: performance.now() - started};
+  } catch (error) {
+    return {event: hook.event, ran: false, refusal: String(error.message), elapsedMs: performance.now() - started};
+  }
+}
 const plan500OriginalMessage = prototypeMessage;
 const plan500Installed = new Set();
 let plan500ModelActive = false;
@@ -95,12 +116,14 @@ function plan500ModelEvidence(events) {
 }
 prototypeMessage = async event => {
   const data = event.data;
-  if (!['bridge-install', 'bridge-tool', 'home-snapshot', 'model-run'].includes(data.operation)) return plan500OriginalMessage(event);
+  if (!['bridge-install', 'bridge-tool', 'bridge-hook', 'home-snapshot', 'model-run'].includes(data.operation)) return plan500OriginalMessage(event);
   try {
     const ctx = host.prototypeContext;
     const agent = data.sessionId ? ctx.get('agents').get(data.sessionId) : undefined;
     let result;
-    if (data.operation === 'home-snapshot') {
+    if (data.operation === 'bridge-hook') {
+      result = await plan500RunHook(plan500HookShell, data.hook, data.operationId);
+    } else if (data.operation === 'home-snapshot') {
       await ctx.get('sessionPersistence').flush();
       const snapshot = prototypeSnapshot(host.vfs);
       snapshot.files = snapshot.files.filter(x => x.path.startsWith('/dsh/home/'));

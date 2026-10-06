@@ -82,80 +82,148 @@ async function until(test) {
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }
-try {
-  const cold = await native('status');
-  assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
-  const stored = await native('restore');
-  let {worker, tunnel} = await boot(stored.snapshot ?? undefined);
-  const sessionId = 'session-plan500-integrated';
+const linuxItems = status => status.capabilities.items.filter(x => x.path === 'linux');
+// #39 gate 2, missing branch (research injection only): native work is unaffected, Linux is refused at once.
+async function gate2Missing(cold) {
+  const reason = 'LINUX_PRIVATE_SYMBOL_MISSING';
+  assert('missing private symbol makes Linux unavailable at App start', cold.phase === 'UNAVAILABLE' && cold.linuxAvailability === reason && cold.vmStarts === 0);
+  assert('capability declaration shows the fixed reason', cold.capabilities.plugin.state === 'UNAVAILABLE' && cold.capabilities.plugin.reason === reason
+    && cold.capabilities.plugin.requiredPrivateSymbol === 'pthread_fchdir_np' && linuxItems(cold).every(x => !x.available && x.reason === reason)
+    && cold.capabilities.items.filter(x => x.path === 'native').every(x => x.available), cold.capabilities.plugin);
+  const plain = await native('project-open', {pluginEnabled: false});
+  assert('project without the plugin opens natively', plain.phase === 'UNAVAILABLE' && plain.vmStarts === 0);
+  const {worker, tunnel} = await boot(undefined);
+  const sessionId = 'session-plan500-gate2-missing';
   const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
-  assert('official Worker opens session before Linux ready', created.data.result?.ok === true);
+  assert('official Worker session opens without Linux', created.data.result?.ok === true);
+  const renamed = await api(tunnel, 'session/rename', {sessionId, title: '无私有符号'});
+  assert('official session rename unaffected', renamed.data.result?.ok === true);
   const install = await instrument(worker, 'bridge-install', {sessionId});
-  assert('official tool registry uses only native workspace and Linux bridge',
-    install.names.length === 3 && install.names.includes('plan500_linux'), install);
+  assert('official tool registry installs', install.names.includes('plan500_linux'), install);
   const read = path => tool(worker, sessionId, 'plan500_read', {path});
   const write = (path, text, base) => tool(worker, sessionId, 'plan500_write', {path, text, base});
-  const linux = (id, command, timeoutMs = 15000) => tool(worker, sessionId, 'plan500_linux', {command, timeoutMs}, id);
-  if (window.plan500Resume) {
-    const sessions = await api(tunnel, 'session/list', {});
-    assert('session identity and Chinese title survive App process restart',
-      sessions.data.result.value.items.some(x => x.sessionId === sessionId && x.projections?.values?.title === '同一工作区协作'));
-    assert('native file survives App restart', (await read('native.txt')).text === 'Worker原生值');
-    assert('Linux file survives App restart in the same workspace', (await read('linux.txt')).text === 'Linux共享值');
-    assert('Linux edit remains authoritative after restart', (await read('笔记.txt')).text === 'Linux修改');
-    const conflicts = (await native('status')).drafts.filter(x => x.status === 'CONFLICT');
-    let preserved = false;
-    for (const draft of conflicts) if ((await native('draft', {draft: draft.id})).text === '原生冲突草稿') preserved = true;
-    assert('conflicting draft survives App restart', preserved);
-    assert('restart does not start Linux for session or file recovery', (await native('status')).phase === 'COLD');
-  } else {
-    assert('Worker reads authoritative native workspace while Linux cold', (await read('笔记.txt')).text === '初始笔记');
-    const written = await write('native.txt', 'Worker原生值', null);
-    assert('Worker native write has gateway durable version before Linux ready', written.status === 'WRITTEN' && typeof written.version === 'string');
-    assert('Worker native read observes saved native bytes', (await read('native.txt')).text === 'Worker原生值');
-    const renamed = await api(tunnel, 'session/rename', {sessionId, title: '同一工作区协作'});
-    assert('official session rename accepted before Linux ready', renamed.data.result?.ok === true);
-    const preparing = await native('prepare');
-    assert('enabling Linux project starts asynchronous preparation on open', preparing.phase === 'PREPARING');
-    const queued = linux('queued-real-ready', 'test "$(cat native.txt)" = "Worker原生值" && printf Linux共享值 > linux.txt && printf QUEUED_OK');
-    await until(async () => (await native('status')).operations['queued-real-ready'] === 'WAITING_READY');
-    const waiting = await native('status');
-    assert('Linux tool waits for actual ready without acquiring a write lease', !waiting.ready && waiting.lease === null);
-    assert('native work remains available during Linux preparation', (await read('native.txt')).text === 'Worker原生值');
-    const cancelledBeforeReady = linux('cancel-before-ready', 'printf SHOULD_NOT_RUN > cancelled-before.txt');
-    await until(async () => (await native('status')).operations['cancel-before-ready'] === 'WAITING_READY');
-    await native('cancel', {operationId: 'cancel-before-ready'});
-    assert('cancelled queued Linux tool never dispatches', (await cancelledBeforeReady).status === 'CANCELLED_BEFORE_DISPATCH');
-    const completed = await queued;
-    assert('queued Worker tool automatically executes after verified 9P ready', completed.status === 'RELEASED' && completed.result.code === 0 && completed.result.stdout === 'QUEUED_OK' && completed.result.writerQuiescent);
-    assert('Linux writes appear immediately to Worker native reads', (await read('linux.txt')).text === 'Linux共享值');
-    assert('cancelled queued operation left no file', (await read('cancelled-before.txt')).status === 'ABSENT');
-    const base = (await read('笔记.txt')).version;
-    const editing = linux('shared-lease-conflict', 'printf Linux修改 > 笔记.txt; sleep 2');
-    await until(async () => (await native('status')).lease === 'shared-lease-conflict');
-    const draft = await write('笔记.txt', '原生冲突草稿', base);
-    assert('native edit during Linux write uses the same lease and preserves draft', draft.status === 'DRAFT_HELD');
-    assert('native reads refuse partially written Linux files', (await read('笔记.txt')).status === 'LEASE_BUSY');
-    const edited = await editing;
-    assert('conflicting draft is retained after Linux writer drains', edited.status === 'RELEASED' && edited.drafts.some(x => x.status === 'CONFLICT'));
-    assert('conflict preserves native draft bytes and Linux project bytes', (await native('draft', {draft: draft.draft})).text === '原生冲突草稿' && (await read('笔记.txt')).text === 'Linux修改');
-    const running = linux('cancel-running-writer', 'while :; do printf running >> running.txt; sleep 0.1; done', 30000);
-    await until(async () => (await native('status')).lease === 'cancel-running-writer');
-    await new Promise(resolve => setTimeout(resolve, 250));
-    const held = await write('after-cancel.txt', '取消后草稿', null);
-    assert('native draft held while cancellable writer is active', held.status === 'DRAFT_HELD');
-    await native('cancel', {operationId: 'cancel-running-writer'});
-    const stopped = await running;
-    assert('cancel waits for guest writer quiescence before releasing lease', stopped.status === 'RELEASED' && stopped.result.writerQuiescent && stopped.result.cancelled && (await native('status')).lease === null);
-    assert('nonconflicting held edit applies after confirmed cancellation', (await read('after-cancel.txt')).text === '取消后草稿');
-    const final = (await read('running.txt')).text;
-    await new Promise(resolve => setTimeout(resolve, 400));
-    assert('cancelled Linux writer stops changing project bytes', (await read('running.txt')).text === final);
-    const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
-    assert('official session flushed into native durable home checkpoint', saved.durable);
-  }
+  const timed = async run => { const started = performance.now(); const value = await run(); return {value, elapsedMs: Math.round(performance.now() - started)}; };
+  const opened = await native('project-open', {pluginEnabled: true});
+  assert('project with the plugin opens natively and never prepares', opened.phase === 'UNAVAILABLE' && opened.vmStarts === 0 && opened.capabilities.plugin.enabled);
+  const first = await read('笔记.txt');
+  assert('native read unaffected', first.text === '初始笔记');
+  const written = await write('native.txt', '缺失分支原生写', null);
+  assert('native write unaffected', written.status === 'WRITTEN' && (await read('native.txt')).text === '缺失分支原生写');
+  const updated = await write('笔记.txt', '新笔记', first.version);
+  const stale = await write('笔记.txt', '过期草稿', first.version);
+  assert('stale native edit is kept as a draft', updated.status === 'WRITTEN' && stale.status === 'CONFLICT' && typeof stale.draft === 'string', stale);
+  assert('draft bytes readable', (await native('draft', {draft: stale.draft})).text === '过期草稿');
+  const shell = await timed(() => tool(worker, sessionId, 'plan500_linux', {command: 'printf SHOULD_NOT_RUN > shell.txt'}, 'gate2-shell'));
+  assert('Linux task returns explicitly at once', shell.value.status === 'UNAVAILABLE' && shell.value.reason === reason && shell.elapsedMs < 2000, shell);
+  const hook = await timed(() => instrument(worker, 'bridge-hook', {sessionId, operationId: 'gate2-hook',
+    hook: {event: 'PostToolUse', command: 'printf SHOULD_NOT_RUN > hook.txt'}}));
+  assert('hook-triggered task returns explicitly at once', !hook.value.ran && hook.value.refusal === reason && hook.elapsedMs < 2000, hook);
+  const after = await native('status');
+  assert('no task ran and QEMU never started', after.vmStarts === 0 && after.phase === 'UNAVAILABLE'
+    && after.operations['gate2-shell'] === 'UNAVAILABLE' && after.operations['gate2-hook'] === 'UNAVAILABLE'
+    && (await read('shell.txt')).status === 'ABSENT' && (await read('hook.txt')).status === 'ABSENT');
+  const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+  assert('official session still checkpoints natively', saved.durable);
   worker.terminate();
-  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false}});
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
+    gate2: {branch: 'missing-injected', shellElapsedMs: shell.elapsedMs, hookElapsedMs: hook.elapsedMs,
+      hookPath: 'ShellExecutor-shaped research adapter; official hook runner not packed'}}});
+}
+try {
+  const cold = await native('status');
+  if (window.plan500Gate2Missing) await gate2Missing(cold);
+  else {
+    assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
+    assert('present private symbol keeps Linux available', cold.linuxAvailability === 'available' && cold.vmStarts === 0);
+    const stored = await native('restore');
+    let {worker, tunnel} = await boot(stored.snapshot ?? undefined);
+    const sessionId = 'session-plan500-integrated';
+    const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+    assert('official Worker opens session before Linux ready', created.data.result?.ok === true);
+    const install = await instrument(worker, 'bridge-install', {sessionId});
+    assert('official tool registry uses only native workspace and Linux bridge',
+      install.names.length === 3 && install.names.includes('plan500_linux'), install);
+    const read = path => tool(worker, sessionId, 'plan500_read', {path});
+    const write = (path, text, base) => tool(worker, sessionId, 'plan500_write', {path, text, base});
+    const linux = (id, command, timeoutMs = 15000) => tool(worker, sessionId, 'plan500_linux', {command, timeoutMs}, id);
+    if (window.plan500Resume) {
+      const sessions = await api(tunnel, 'session/list', {});
+      assert('session identity and Chinese title survive App process restart',
+        sessions.data.result.value.items.some(x => x.sessionId === sessionId && x.projections?.values?.title === '同一工作区协作'));
+      assert('native file survives App restart', (await read('native.txt')).text === 'Worker原生值');
+      assert('Linux file survives App restart in the same workspace', (await read('linux.txt')).text === 'Linux共享值');
+      assert('Linux edit remains authoritative after restart', (await read('笔记.txt')).text === 'Linux修改');
+      const conflicts = (await native('status')).drafts.filter(x => x.status === 'CONFLICT');
+      let preserved = false;
+      for (const draft of conflicts) if ((await native('draft', {draft: draft.id})).text === '原生冲突草稿') preserved = true;
+      assert('conflicting draft survives App restart', preserved);
+      assert('restart does not start Linux for session or file recovery', (await native('status')).phase === 'COLD');
+    } else {
+      assert('Worker reads authoritative native workspace while Linux cold', (await read('笔记.txt')).text === '初始笔记');
+      const written = await write('native.txt', 'Worker原生值', null);
+      assert('Worker native write has gateway durable version before Linux ready', written.status === 'WRITTEN' && typeof written.version === 'string');
+      assert('Worker native read observes saved native bytes', (await read('native.txt')).text === 'Worker原生值');
+      const renamed = await api(tunnel, 'session/rename', {sessionId, title: '同一工作区协作'});
+      assert('official session rename accepted before Linux ready', renamed.data.result?.ok === true);
+      const plain = await native('project-open', {pluginEnabled: false});
+      assert('project without the plugin opens without preparing Linux', plain.phase === 'COLD' && plain.vmStarts === 0
+        && plain.capabilities.plugin.state === 'NOT_ENABLED');
+      const notEnabled = await linux('gate2-not-enabled', 'printf SHOULD_NOT_RUN > not-enabled.txt');
+      const notEnabledHook = await instrument(worker, 'bridge-hook', {sessionId, operationId: 'gate2-not-enabled-hook',
+        hook: {event: 'PostToolUse', command: 'printf SHOULD_NOT_RUN > not-enabled.txt'}});
+      assert('Linux and hook tasks of a project without the plugin are refused explicitly',
+        notEnabled.status === 'UNAVAILABLE' && notEnabled.reason === 'LINUX_PLUGIN_NOT_ENABLED'
+        && !notEnabledHook.ran && notEnabledHook.refusal === 'LINUX_PLUGIN_NOT_ENABLED' && (await native('status')).vmStarts === 0);
+      const preparing = await native('project-open', {pluginEnabled: true});
+      assert('enabling Linux project starts asynchronous preparation on open', preparing.phase === 'PREPARING'
+        && preparing.capabilities.plugin.state === 'PREPARING');
+      const queuedHook = instrument(worker, 'bridge-hook', {sessionId, operationId: 'queued-hook',
+        hook: {event: 'PostToolUse', command: 'printf HOOK_OK'}});
+      const queued = linux('queued-real-ready', 'test "$(cat native.txt)" = "Worker原生值" && printf Linux共享值 > linux.txt && printf QUEUED_OK');
+      await until(async () => (await native('status')).operations['queued-real-ready'] === 'WAITING_READY');
+      const waiting = await native('status');
+      assert('Linux tool waits for actual ready without acquiring a write lease', !waiting.ready && waiting.lease === null);
+      assert('native work remains available during Linux preparation', (await read('native.txt')).text === 'Worker原生值');
+      const cancelledBeforeReady = linux('cancel-before-ready', 'printf SHOULD_NOT_RUN > cancelled-before.txt');
+      await until(async () => (await native('status')).operations['cancel-before-ready'] === 'WAITING_READY');
+      await native('cancel', {operationId: 'cancel-before-ready'});
+      assert('cancelled queued Linux tool never dispatches', (await cancelledBeforeReady).status === 'CANCELLED_BEFORE_DISPATCH');
+      const completed = await queued;
+      assert('queued Worker tool automatically executes after verified 9P ready', completed.status === 'RELEASED' && completed.result.code === 0 && completed.result.stdout === 'QUEUED_OK' && completed.result.writerQuiescent);
+      const hookRun = await queuedHook;
+      assert('queued hook-triggered task runs on Linux after ready', hookRun.ran && hookRun.exitCode === 0 && hookRun.stdout === 'HOOK_OK', hookRun);
+      const ready = await native('status');
+      assert('Linux started exactly once', ready.vmStarts === 1 && ready.capabilities.plugin.state === 'READY' && linuxItems(ready).every(x => x.available));
+      assert('not-enabled refusal left no file', (await read('not-enabled.txt')).status === 'ABSENT');
+      assert('Linux writes appear immediately to Worker native reads', (await read('linux.txt')).text === 'Linux共享值');
+      assert('cancelled queued operation left no file', (await read('cancelled-before.txt')).status === 'ABSENT');
+      const base = (await read('笔记.txt')).version;
+      const editing = linux('shared-lease-conflict', 'printf Linux修改 > 笔记.txt; sleep 2');
+      await until(async () => (await native('status')).lease === 'shared-lease-conflict');
+      const draft = await write('笔记.txt', '原生冲突草稿', base);
+      assert('native edit during Linux write uses the same lease and preserves draft', draft.status === 'DRAFT_HELD');
+      assert('native reads refuse partially written Linux files', (await read('笔记.txt')).status === 'LEASE_BUSY');
+      const edited = await editing;
+      assert('conflicting draft is retained after Linux writer drains', edited.status === 'RELEASED' && edited.drafts.some(x => x.status === 'CONFLICT'));
+      assert('conflict preserves native draft bytes and Linux project bytes', (await native('draft', {draft: draft.draft})).text === '原生冲突草稿' && (await read('笔记.txt')).text === 'Linux修改');
+      const running = linux('cancel-running-writer', 'while :; do printf running >> running.txt; sleep 0.1; done', 30000);
+      await until(async () => (await native('status')).lease === 'cancel-running-writer');
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const held = await write('after-cancel.txt', '取消后草稿', null);
+      assert('native draft held while cancellable writer is active', held.status === 'DRAFT_HELD');
+      await native('cancel', {operationId: 'cancel-running-writer'});
+      const stopped = await running;
+      assert('cancel waits for guest writer quiescence before releasing lease', stopped.status === 'RELEASED' && stopped.result.writerQuiescent && stopped.result.cancelled && (await native('status')).lease === null);
+      assert('nonconflicting held edit applies after confirmed cancellation', (await read('after-cancel.txt')).text === '取消后草稿');
+      const final = (await read('running.txt')).text;
+      await new Promise(resolve => setTimeout(resolve, 400));
+      assert('cancelled Linux writer stops changing project bytes', (await read('running.txt')).text === final);
+      const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+      assert('official session flushed into native durable home checkpoint', saved.durable);
+    }
+    worker.terminate();
+    await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false}});
+  }
 } catch (error) {
   await native('done', {result: {passed: false, checks, error: String(error)}});
 }

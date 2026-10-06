@@ -61,6 +61,8 @@ def main():
     gateway = SOURCE.parent / 'plan500-darwin/gateway/Sources/Plan500Gateway'
     sources = [SOURCE / 'Sources' / name for name in ('WorkerHostMain.swift', 'WorkerBridge.swift', 'ResearchApp.swift')]
     sources += sorted(gateway.glob('*.swift'))
+    # The host build compiles the plugin into the same module (WorkerBridge guards its import).
+    sources += sorted((REPO / 'ios/HarnessApp/Sources/LinuxPlugin').glob('*.swift'))
     binary = output / 'worker-host'
     with (output / 'compile-private.log').open('w') as log:
         subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(output / 'swift-cache'),
@@ -76,6 +78,15 @@ def main():
             if code or not data['passed'] or data['physicalDevice']:
                 raise RuntimeError('HOST_SEAM_FAILED')
             results.append({'model': model, 'stage': stage, 'checks': len(data['checks']), 'passed': True})
+    # #39 gate 2 missing branch: injected in this research host only, on a fresh project; QEMU must never start.
+    project = output / 'gate2-missing'
+    with (output / 'gate2-missing-private.log').open('w') as log:
+        code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', 'gate2-missing'],
+                              stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
+    data = json.loads((project / 'gate2-missing-safe.json').read_text())
+    if code or not data['passed'] or data['vmStarts'] != 0 or data['linuxAvailabilityDetected'] != 'available':
+        raise RuntimeError('GATE2_MISSING_FAILED')
+    results.append({'model': 'none', 'stage': 'gate2-missing', 'checks': len(data['checks']), 'passed': True})
     assets = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
     summary = {'passed': True, 'physicalDevice': False, 'results': results, 'modelNetworkVerified': False,
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sources + list((SOURCE / 'web').iterdir())},

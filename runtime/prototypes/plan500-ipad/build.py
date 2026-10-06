@@ -101,7 +101,9 @@ def project(output):
     package = object('package', 'XCLocalSwiftPackageReference', relativePath=os.path.relpath(PACKAGE, stage))
     workspace = object('native-workspace', 'XCSwiftPackageProductDependency', package=package, productName='NativeWorkspace')
     linked = object('native-workspace-build', 'PBXBuildFile', productRef=workspace)
-    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[linked], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
+    plugin = object('linux-plugin', 'XCSwiftPackageProductDependency', package=package, productName='LinuxPlugin')
+    pluginLinked = object('linux-plugin-build', 'PBXBuildFile', productRef=plugin)
+    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[linked, pluginLinked], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
     embed = object('embed', 'PBXShellScriptBuildPhase', name='Embed isolated probe inputs', files=[], inputPaths=[], outputPaths=[],
                    alwaysOutOfDate=1, buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0,
                    shellPath='/bin/bash', shellScript='bash "$SRCROOT/embed.sh"')
@@ -118,7 +120,7 @@ def project(output):
     target = object('target', 'PBXNativeTarget', name='Plan500Research', productName='Plan500Research', productReference=app,
                     productType='com.apple.product-type.application', buildConfigurationList=configList,
                     buildPhases=[sourcesPhase, frameworksPhase, embed], buildRules=[], dependencies=[],
-                    packageProductDependencies=[workspace])
+                    packageProductDependencies=[workspace, plugin])
     root = object('root', 'PBXProject', attributes={}, buildConfigurationList=configList, compatibilityVersion='Xcode 14.0',
                   developmentRegion='en', knownRegions=['en', 'Base'], mainGroup=group, productRefGroup=products,
                   projectDirPath='', projectRoot='', targets=[target], packageReferences=[package])
@@ -185,6 +187,7 @@ def main():
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sorted(SOURCE.rglob('*')) if p.is_file() and '__pycache__' not in p.parts},
                'gatewaySha256': {p.name: digest(p) for p in sorted(GATEWAY.glob('*.swift'))},
                'nativeWorkspaceSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/Workspace').glob('*.swift'))},
+               'linuxPluginSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/LinuxPlugin').glob('*.swift'))},
                'appBinarySha256': digest(binary) if completed else None}
     (output / 'build-safe.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps({'completed': completed, 'sdk': args.sdk, 'bundleId': BUNDLE_ID, 'signed': False,

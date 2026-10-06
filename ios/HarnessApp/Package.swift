@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "HarnessRuntime", targets: ["HarnessRuntime"]),
-        .library(name: "NativeWorkspace", targets: ["NativeWorkspace"])
+        .library(name: "NativeWorkspace", targets: ["NativeWorkspace"]),
+        .library(name: "LinuxPlugin", targets: ["LinuxPlugin"])
     ],
     targets: [
         .target(name: "HarnessRuntime", path: "Sources/Core"),
@@ -14,6 +15,8 @@ let package = Package(
         .target(name: "NativeWorkspace", path: "Sources/Workspace"),
         .executableTarget(name: "workspace-crash-probe", dependencies: ["NativeWorkspace"], path: "Tools/WorkspaceCrashProbe"),
         .testTarget(name: "NativeWorkspaceTests", dependencies: ["NativeWorkspace", "workspace-crash-probe"],
-                    path: "WorkspaceTests")
+                    path: "WorkspaceTests"),
+        .target(name: "LinuxPlugin", path: "Sources/LinuxPlugin"),
+        .testTarget(name: "LinuxPluginTests", dependencies: ["LinuxPlugin"], path: "LinuxPluginTests")
     ]
 )

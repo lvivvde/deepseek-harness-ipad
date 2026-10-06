@@ -92,6 +92,8 @@ final class ResearchProbe {
     let reportProgress: (String) -> Void
     let vmLock = NSLock()
     var vmExited = false
+    /// Every QEMU start attempt in this process, counted before anything is launched.
+    var vmStarts = 0
     var vmCode: Int32?
     var checks: [[String: Any]] = []
     var observations: [[String: Any]] = []
@@ -156,6 +158,7 @@ final class ResearchProbe {
     }
 
     func startVM() throws {
+        vmLock.lock(); vmStarts += 1; vmLock.unlock()
         #if os(iOS)
         guard physicalDevice else { throw ProbeFailure.failed("SIMULATOR_HAS_NO_DEVICE_QEMU") }
         let bundle = Bundle.main.bundleURL

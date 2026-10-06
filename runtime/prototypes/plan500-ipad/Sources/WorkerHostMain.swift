@@ -6,12 +6,12 @@ import Foundation
 struct WorkerHostMain {
     @MainActor static func main() {
         let args = CommandLine.arguments
-        guard args.count == 6, ["none", "mapped-xattr"].contains(args[4]), ["first", "resume"].contains(args[5]) else { exit(2) }
+        guard args.count == 6, ["none", "mapped-xattr"].contains(args[4]), ["first", "resume", "gate2-missing"].contains(args[5]) else { exit(2) }
         let application = NSApplication.shared; application.setActivationPolicy(.accessory)
         do {
             let probe = try ResearchProbe(model: args[4], inputs: URL(fileURLWithPath: args[1]),
                 projectRoot: URL(fileURLWithPath: args[3])) { print($0) }
-            let coordinator = try WorkerCoordinator(probe: probe)
+            let coordinator = try WorkerCoordinator(probe: probe, injectMissingPrivateSymbol: args[5] == "gate2-missing")
             let host = WorkerWebHost(coordinator: coordinator, webRoot: URL(fileURLWithPath: args[2]), resume: args[5] == "resume") { passed in
                 probe.stopHostVM(); print(passed ? "WORKER_HOST_PASS" : "WORKER_HOST_FAIL"); exit(passed ? 0 : 1)
             }

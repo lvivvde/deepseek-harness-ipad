@@ -4,7 +4,8 @@ bundle="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
 frameworks="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
 if [[ -n "${PLAN500_WORKER_WEB:-}" ]]; then
     mkdir -p "$bundle/WorkerWeb"
-    for name in integration.html worker.js client.js apply-injections.js vfs-image.tar.gz; do
+    for name in integration.html worker.js client.js apply-injections.js vfs-image.tar.gz gate3-fixture.json \
+        native-git-objects.js native-git-match.js native-git-xdiff.js native-git.js; do
         ditto "$PLAN500_WORKER_WEB/$name" "$bundle/WorkerWeb/$name"
     done
 fi

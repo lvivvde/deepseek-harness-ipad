@@ -208,6 +208,180 @@ async function gate4Faults() {
   await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
     gate4: {scenarios: results, records: records.records, requests: records.requests}}});
 }
+// #39 gate 3: the official file, search and change tools over the native workspace, one real call each.
+const gate3Mount = '/dsh/workspace/gate3';
+const gate3Text = r => (r.content ?? []).filter(x => x.type === 'text').map(x => x.text).join('\n');
+const gate3Bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+const gate3Utf8 = b64 => new TextDecoder().decode(gate3Bytes(b64));
+const gate3Brief = r => ({isError: !!r.isError, text: gate3Text(r).slice(0, 300)});
+async function gate3Disk(path) {
+  const value = (await native('gate3', {call: 'disk', args: {path}})).value;
+  return value === null ? null : value.data === undefined ? {mode: value.mode} : {mode: value.mode, text: gate3Utf8(value.data)};
+}
+// Shared by the macOS suite and the iPad run; `turn` and `child` reach the model through the native gateway.
+async function gate3Run(worker, tunnel, check, {turnPrompt, childPrompt}) {
+  const results = {};
+  const installed = await instrument(worker, 'gate3-install');
+  check('native project seeded from the system-git fixture', installed.mount === gate3Mount && installed.entries > 20 && /^[0-9a-f]{64}$/.test(installed.gitTree), installed);
+  const sessionId = 'session-plan500-gate3-' + Date.now();
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: gate3Mount});
+  check('official session opens on the native workspace', created.data.result?.ok === true, created.data);
+  const call = (name, args) => instrument(worker, 'gate3-tool', {sessionId, name, args});
+  const service = (service, method, args) => instrument(worker, 'gate3-service', {sessionId, service, method, args});
+
+  // dsh-tool-fs: read.
+  const readme = await call('read', {file_path: 'README.md'});
+  check('read: CRLF file through the official tool', !readme.isError && gate3Text(readme).includes('line two'), gate3Brief(readme));
+  const chinese = await call('read', {file_path: 'src/中文/文件.md'});
+  check('read: Chinese path and content', !chinese.isError && gate3Text(chinese).includes('第二行 GATE3_NEEDLE'), gate3Brief(chinese));
+  const viaLink = await call('read', {file_path: 'link'});
+  check('read: symlink resolves inside the workspace', !viaLink.isError && gate3Text(viaLink).includes('中文内容'), gate3Brief(viaLink));
+  const large = await call('read', {file_path: 'large.txt'});
+  const largeText = gate3Text(large);
+  check('read: large file is windowed by the official limits', !large.isError && largeText.includes('row 000000 alpha')
+    && !largeText.includes('row 199999 alpha'), {chars: largeText.length, tail: largeText.slice(-200)});
+  const window = await call('read', {file_path: 'large.txt', offset: 199999, limit: 2});
+  check('read: offset reaches the end of the large file', !window.isError && gate3Text(window).includes('row 199999 alpha'), gate3Brief(window));
+  const binary = await call('read', {file_path: 'bin.dat'});
+  const missing = await call('read', {file_path: 'absent.txt'});
+  const outside = await call('read', {file_path: '../prototype/笔记.txt'});
+  results.readErrors = {binary: gate3Brief(binary), missing: gate3Brief(missing), outside: gate3Brief(outside)};
+  check('read: binary, missing and outside paths fail with the official errors', binary.isError && missing.isError && outside.isError, results.readErrors);
+  const image = await call('read_image', {file_path: 'image.png'});
+  check('read_image: PNG returned as an image block', !image.isError && (image.content ?? []).some(x => x.type === 'image'),
+    {isError: image.isError, types: (image.content ?? []).map(x => x.type), text: gate3Text(image).slice(0, 300)});
+
+  // dsh-tool-fs: write and edit, with the version and lease guards.
+  const blind = await call('write', {file_path: 'untracked.txt', content: 'blind\n'});
+  check('write: overwriting an unread file is refused', blind.isError && gate3Text(blind).includes('has not been read'), gate3Brief(blind));
+  const created1 = await call('write', {file_path: '工具/新建.txt', content: '工具写入\n'});
+  check('write: new file under a new Chinese directory', !created1.isError && (await gate3Disk('工具/新建.txt'))?.text === '工具写入\n', gate3Brief(created1));
+  await call('read', {file_path: 'src/main.js'});
+  const edited = await call('edit', {file_path: 'src/main.js', old_string: 'answer = 42', new_string: 'answer = 43'});
+  check('edit: literal replacement lands on the native file', !edited.isError
+    && (await gate3Disk('src/main.js'))?.text === 'export const answer = 43;\n// GATE3_NEEDLE in code\n', gate3Brief(edited));
+  await call('read', {file_path: 'tool.sh'});
+  const scriptEdit = await call('edit', {file_path: 'tool.sh', old_string: 'echo gate3', new_string: 'echo gate3 edited'});
+  check('edit: executable bit survives', !scriptEdit.isError && ((await gate3Disk('tool.sh'))?.mode & 0o777) === 0o755, gate3Brief(scriptEdit));
+  // Out-of-band change through the native service (the Linux side in production), then a stale edit.
+  await native('gate3', {call: 'fs', method: 'write', args: {path: gate3Mount + '/src/main.js', data: btoa('changed outside\n')}});
+  const stale = await call('edit', {file_path: 'src/main.js', old_string: 'answer = 43', new_string: 'answer = 44'});
+  check('edit: a file changed since it was read is refused', stale.isError && (await gate3Disk('src/main.js'))?.text === 'changed outside\n', gate3Brief(stale));
+  await call('read', {file_path: '工具/新建.txt'});
+  const fence = await native('gate3', {call: 'lease-hold'});
+  const busy = await call('edit', {file_path: '工具/新建.txt', old_string: '工具写入', new_string: '租约期间'});
+  await native('gate3', {call: 'lease-release'});
+  check('edit: refused while a Linux write lease is held', busy.isError && (await gate3Disk('工具/新建.txt'))?.text === '工具写入\n', {fence: fence.value, ...gate3Brief(busy)});
+
+  // str_replace_editor over the same file service.
+  const sre = (args) => call('str_replace_editor', args);
+  const sreCreate = await sre({command: 'create', path: gate3Mount + '/编辑器.txt', file_text: '第一行\n第二行\n'});
+  const sreReplace = await sre({command: 'str_replace', path: gate3Mount + '/编辑器.txt', old_str: '第二行', new_str: '第二行已改'});
+  const sreInsert = await sre({command: 'insert', path: gate3Mount + '/编辑器.txt', insert_line: 1, new_str: '插入行'});
+  const sreView = await sre({command: 'view', path: gate3Mount + '/编辑器.txt'});
+  results.strReplaceEditor = [sreCreate, sreReplace, sreInsert, sreView].map(gate3Brief);
+  check('str_replace_editor: create, replace, insert and view', [sreCreate, sreReplace, sreInsert, sreView].every(x => !x.isError)
+    && (await gate3Disk('编辑器.txt'))?.text === '第一行\n插入行\n第二行已改\n' && gate3Text(sreView).includes('插入行'), results.strReplaceEditor);
+  const sreMissing = await sre({command: 'str_replace', path: gate3Mount + '/编辑器.txt', old_str: '不存在', new_str: 'x'});
+  check('str_replace_editor: a missing old_str is an error', sreMissing.isError, gate3Brief(sreMissing));
+
+  // fs-search: glob and grep through the native rg emulation.
+  const globbed = await call('glob', {pattern: '**/*.md'});
+  const globText = gate3Text(globbed);
+  check('glob: Chinese paths listed', !globbed.isError && globText.includes('src/中文/文件.md') && globText.includes('README.md'), gate3Brief(globbed));
+  // The official glob passes --no-ignore --hidden and excludes only VCS stores: ignored files are listed, .git never is.
+  const ignoredGlob = await call('glob', {pattern: '**/*.log'});
+  const vcsGlob = await call('glob', {pattern: '**/HEAD'});
+  check('glob: ignored files listed, .git kept out', !ignoredGlob.isError && gate3Text(ignoredGlob).includes('debug.log')
+    && !gate3Text(vcsGlob).includes('.git'), {ignored: gate3Brief(ignoredGlob), vcs: gate3Brief(vcsGlob)});
+  const grepped = await call('grep', {pattern: 'GATE3_NEEDLE'});
+  const grepText = gate3Text(grepped);
+  check('grep: matches in tracked files only', !grepped.isError && grepText.includes('文件.md') && !grepText.includes('debug.log')
+    && !grepText.includes('out.txt'), gate3Brief(grepped));
+  const regex = await call('grep', {pattern: 'row 19999[0-9] alpha$', include: '*.txt'});
+  check('grep: Rust regex dialect with anchors and classes', !regex.isError && gate3Text(regex).includes('row 199999 alpha'), gate3Brief(regex));
+  // 10k matches (about 2 MB of rg --json): over the 250 inline matches, under the 20 MB raw cap.
+  const many = await call('grep', {pattern: 'row 00[0-9]{4} alpha', path: 'large.txt'});
+  const manyText = gate3Text(many);
+  results.grepTruncated = {isError: !!many.isError, chars: manyText.length, tail: manyText.slice(-300)};
+  check('grep: 10k matches are cut to the official inline limit', !many.isError && manyText.includes('row 000000 alpha')
+    && !manyText.includes('row 009999 alpha'), results.grepTruncated);
+  // 200k matches: real rg emits about 40 MB, so the official tool refuses past its raw-output cap.
+  const overflow = await call('grep', {pattern: 'alpha', path: 'large.txt'});
+  check('grep: raw output past the official cap fails as on Linux', overflow.isError && gate3Text(overflow).includes('20000000-byte cap'), gate3Brief(overflow));
+  const badRegex = await call('grep', {pattern: '(unclosed'});
+  check('grep: invalid regex is an error', badRegex.isError, gate3Brief(badRegex));
+
+  // dsh-api-workspace-files and dsh-file-reference.
+  const statted = await service('workspaceFiles', 'stat', {path: 'src/中文/文件.md'});
+  const listed = await service('workspaceFiles', 'list', {path: 'src'});
+  const ranged = await service('workspaceFiles', 'read', {path: 'README.md'});
+  results.workspaceFiles = {stat: statted, list: listed, read: JSON.stringify(ranged).slice(0, 300)};
+  check('workspace files: stat, list and read', statted !== null && JSON.stringify(listed).includes('中文') && JSON.stringify(ranged).includes('line two'), results.workspaceFiles);
+  const refs = await service('fileReferences', 'list', {query: '文件'});
+  results.fileReferences = JSON.stringify(refs).slice(0, 300);
+  check('file references: Chinese query finds the file', JSON.stringify(refs).includes('文件.md'), results.fileReferences);
+
+  // workspace-changes after a model turn that edits through the official tools.
+  const turn = await instrument(worker, 'gate3-turn', {sessionId, prompt: turnPrompt, timeoutMs: 180000});
+  results.turn = {turnEnd: turn.turnEnd, toolCalls: turn.toolCalls, toolResults: turn.toolResults, changeSeqs: turn.changeSeqs};
+  check('model turn edits through read, edit and write', turn.turnEnd.kind === 'completed' && turn.replies.at(-1)?.marker
+    && turn.toolResults.length >= 3 && turn.toolResults.every(x => !x.isError), results.turn);
+  check('model edits land on native bytes with CRLF kept', (await gate3Disk('README.md'))?.text === '# 演示\r\nline two edited\r\n'
+    && (await gate3Disk('新文件.txt'))?.text === '模型写入\n');
+  const seq = turn.changeSeqs.at(-1);
+  const summary = seq === undefined ? undefined : await service('workspaceChanges', 'summary', {seq});
+  results.changes = summary && {total: summary.total, added: summary.added, deleted: summary.deleted,
+    files: summary.files.map(x => ({path: x.display ?? x.path, status: x.status, added: x.added, deleted: x.deleted}))};
+  const names = (summary?.files ?? []).map(x => x.display ?? x.path).sort();
+  check('workspace changes: only this turn\'s files, through native read-only git', summary !== undefined
+    && names.length === 2 && names.some(x => x.endsWith('README.md')) && names.some(x => x.endsWith('新文件.txt')), results.changes);
+  const diffIndex = summary.files.findIndex(x => (x.display ?? x.path).endsWith('README.md'));
+  const diff = await service('workspaceChanges', 'diff', {seq, index: diffIndex});
+  results.diff = {kind: diff?.kind};
+  check('workspace changes: README diff readable', diff?.kind === 'text', diff);
+
+  // Subagent: same gateway, no second write path.
+  const child = await instrument(worker, 'gate3-subagent', {sessionId, prompt: childPrompt});
+  results.subagent = child;
+  check('subagent writes through the same native gateway', child.ok && (await gate3Disk('child.txt'))?.text === '子代理写入\n', child);
+
+  // No VFS or Node write path into the mount.
+  const injected = await instrument(worker, 'gate3-inject');
+  results.inject = injected;
+  check('direct VFS and Node writes into the workspace are refused', Object.values(injected).every(x => x === 'REFUSED')
+    && (await gate3Disk('injected.txt')) === null && (await gate3Disk('copy.md')) === null, injected);
+  const tree = (await native('gate3', {call: 'git-tree'})).value;
+  check('native git never wrote .git', tree === installed.gitTree, {before: installed.gitTree, after: tree});
+  return results;
+}
+async function gate3Checks() {
+  const {worker, tunnel} = await boot(undefined);
+  const gate3 = await gate3Run(worker, tunnel, assert, {turnPrompt: '[[gate3:g3-turn]] 按步骤修改文件', childPrompt: '[[gate3:g3-child]] 写入子文件'});
+  worker.terminate();
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false, gate3}});
+}
+// iPad: the real model must call the tools itself; the rest of the suite is the same.
+window.plan500RunGate3Device = async () => {
+  const deviceChecks = [];
+  const verify = (name, passed, detail) => {
+    deviceChecks.push({name, passed, ...(passed || detail === undefined ? {} : {detail})});
+    document.querySelector('#state').textContent = JSON.stringify(deviceChecks, null, 2);
+    if (!passed) throw new Error(name);
+  };
+  let worker, gate3;
+  try {
+    const opened = await boot(undefined);
+    worker = opened.worker;
+    gate3 = await gate3Run(worker, opened.tunnel, verify, {
+      turnPrompt: '请依次调用工具：先用 read 读取 README.md；再用 edit 把其中的 "line two" 改为 "line two edited"；'
+        + '再用 write 创建 新文件.txt，内容为 "模型写入" 加一个换行。完成后只回复 GATE3_OK。',
+      childPrompt: '用 write 工具创建 child.txt，内容为 "子代理写入" 加一个换行。完成后只回复 GATE3_OK。'});
+    await native('model-done', {gate3: true, result: JSON.parse(JSON.stringify({passed: true, checks: deviceChecks, gate3}))});
+  } catch (error) {
+    await native('model-done', {gate3: true, result: JSON.parse(JSON.stringify({passed: false, checks: deviceChecks, error: String(error), gate3}))});
+  } finally { worker?.terminate(); }
+};
 // iPad: real endpoint. "stream" uses the user's key; "invalid-key" and "offline" use the fixed invalid key.
 window.plan500RunGate4Device = async mode => {
   const deviceChecks = [];
@@ -262,7 +436,8 @@ window.plan500RunGate4Device = async mode => {
 };
 try {
   const cold = await native('status');
-  if (window.plan500Gate4) await gate4Faults();
+  if (window.plan500Gate3) await gate3Checks();
+  else if (window.plan500Gate4) await gate4Faults();
   else if (window.plan500Gate2Missing) await gate2Missing(cold);
   else {
     assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);

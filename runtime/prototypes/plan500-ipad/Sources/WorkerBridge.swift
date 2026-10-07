@@ -48,6 +48,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     nonisolated(unsafe) static var modelFaultTarget: URL?
 #endif
     private var readyProof: [String: Any]?
+    /// #39 gate 3: the synthetic native project the official file, search and change tools run over.
+    var gate3: Gate3Tools?
 
     /// Availability is detected here, at App start and before any Linux preparation.
     init(probe: ResearchProbe, injectMissingPrivateSymbol: Bool = false) throws {
@@ -251,6 +253,9 @@ final class WorkerCoordinator: @unchecked Sendable {
             if let id = body["streamId"] as? String { model.cancel(id) }
             return ["cancelled": true]
         case "model-records": return modelRecords()
+        case "gate3":
+            guard let gate3 else { throw WorkerBridgeError.refused("GATE3_REFUSED") }
+            return try gate3.handle(body)
         case "status": return status()
         case "prepare": prepare(); return status()
         case "read":
@@ -350,13 +355,16 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
     let coordinator: WorkerCoordinator
     let assets: WorkerAssetServer
     let resume: Bool
+    /// macOS host only: run the gate 3 suite instead of the base checks.
+    let gate3: Bool
     let completion: (Bool) -> Void
     var view: WKWebView!
     /// Gate 4 records whether the App left the foreground during a model run; it does not decide the result.
     private var backgroundTransitions = 0
     private var observer: NSObjectProtocol?
-    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, completion: @escaping (Bool) -> Void) {
-        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.completion = completion
+    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, gate3: Bool = false, completion: @escaping (Bool) -> Void) {
+        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.gate3 = gate3; self.completion = completion
+        coordinator.gate3 = Gate3Tools(root: coordinator.probe.root.appendingPathComponent("gate3"), web: webRoot)
         super.init()
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
 #if os(macOS)
@@ -367,7 +375,7 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
 #endif
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection);",
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3);",
                                                                  injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
 #if os(iOS)
@@ -403,6 +411,14 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
             if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
         }
     }
+    /// Gate 3 device check: the official tools over the native project, then one real model turn with the user's key.
+    func runGate3(key: String) {
+        coordinator.setModelKey(key)
+        backgroundTransitions = 0
+        view.evaluateJavaScript("void window.plan500RunGate3Device()") { [weak self] _, error in
+            if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
+        }
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         if message.name == "log" {
@@ -426,8 +442,9 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 result["vmStarts"] = coordinator.vmStartCount
                 result["backgroundTransitions"] = backgroundTransitions
                 let gate4 = (body["gate4"] as? String).flatMap { Self.gate4Modes.contains($0) ? $0 : nil }
-                let receipt = gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
-                    : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
+                let gate3Device = operation == "model-done" && body["gate3"] as? Bool == true
+                let receipt = gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
+                    : gate3 ? "gate3-safe.json" : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
                     : resume ? "worker-resume-safe.json" : "worker-safe.json")
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
                 try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
@@ -470,6 +487,9 @@ struct WorkerResearchView: View {
                 }.disabled(model.apiKey.isEmpty || model.modelRunning)
                 Button("关口 4：无效密钥（固定无效值）") { model.runGate4(mode: "invalid-key") }.disabled(model.modelRunning)
                 Button("关口 4：离线（先开启飞行模式）") { model.runGate4(mode: "offline") }.disabled(model.modelRunning)
+                Button("关口 3：官方文件、搜索与变更工具") {
+                    model.runGate3(key: model.apiKey); model.apiKey = ""
+                }.disabled(model.apiKey.isEmpty || model.modelRunning)
             }
             if let host = model.host { WorkerResearchWebView(view: host.view) }
         }.padding().task { model.start() }
@@ -494,6 +514,9 @@ private final class WorkerResearchModel: ObservableObject {
     }
     func runGate4(mode: String, key: String = "") {
         modelRunning = true; status = "关口 4 检查进行中：" + mode; host?.runGate4(mode: mode, key: key)
+    }
+    func runGate3(key: String) {
+        modelRunning = true; status = "关口 3 检查进行中"; host?.runGate3(key: key)
     }
     func start() {
         guard host == nil else { return }

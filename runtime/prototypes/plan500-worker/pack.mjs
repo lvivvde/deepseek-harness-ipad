@@ -67,6 +67,17 @@ if (integrated) {
     lines.splice(index + 1, 0, indent + 'disabled: true');
   }
   config = lines.join('\n');
+  // #39 gate 3: the official str_replace_editor is published but in no preset; add it to the
+  // default preset of this research image so it runs over the same filesystem service.
+  const preset = config.indexOf('\n- id: preset-standard\n');
+  const anchor = config.indexOf('\n      - id: tool-jobs\n', preset);
+  if (preset < 0 || anchor < 0) throw new Error('Upstream preset anchor changed');
+  config = config.slice(0, anchor) + "\n      - id: tool-str-replace-editor\n        name: '@deepseek-ai/dsh-tool-str-replace-editor'"
+    + config.slice(anchor);
+  // A preset only activates plugins the root roster declares (disabled until a preset enables them).
+  const roster = "\n- id: tool-jobs\n  name: '@deepseek-ai/dsh-tool-jobs'\n  disabled: true\n";
+  if (config.split(roster).length !== 2) throw new Error('Upstream roster anchor changed');
+  config = config.replace(roster, roster + "- id: tool-str-replace-editor\n  name: '@deepseek-ai/dsh-tool-str-replace-editor'\n  disabled: true\n");
 }
 const packed = packVfsImage({
   config,

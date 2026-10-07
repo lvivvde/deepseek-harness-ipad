@@ -41,6 +41,41 @@ def prepare():
     worker.run(['node', str(WORKER / 'pack.mjs'), '--zod-cjs', '--webkit-schemas', '--integration'],
                'integration-pack-private.log', env=env)
     worker.run(['node', str(WORKER / 'prepare-web.mjs'), '--integration'], 'integration-prepare-private.log')
+    # #39 gate 3: the synthetic project, built with system git; the app recreates it in its own container.
+    subprocess.run(['python3', str(SOURCE / 'gate3_fixture.py'), str(worker.OUTPUT / 'web/gate3-fixture.json')], check=True)
+
+
+def native_modules(output, log):
+    """The real store and native tools as their own modules, so the gateway prototype's same-named types do not collide."""
+    modules = output / 'native-modules'
+    modules.mkdir()
+    package = REPO / 'ios/HarnessApp/Sources'
+    for name, directory in (('NativeWorkspace', 'Workspace'), ('NativeTools', 'NativeTools')):
+        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-module-name', name, '-emit-library', '-static',
+                        '-emit-module', '-emit-module-path', str(modules / f'{name}.swiftmodule'), '-I', str(modules),
+                        '-module-cache-path', str(output / 'swift-cache'), *map(str, sorted((package / directory).glob('*.swift'))),
+                        '-o', str(modules / f'lib{name}.a')], stdout=log, stderr=subprocess.STDOUT, check=True)
+    return ['-I', str(modules), '-L', str(modules), '-lNativeTools', '-lNativeWorkspace']
+
+
+def git_diff_agrees(tree, changes):
+    """The turn's change summary (native git) against system git on the same native workspace.
+
+    The turn touched files that matched HEAD before it, so each line count equals `git diff HEAD`;
+    an untracked file is diffed against /dev/null. Read only: optional locks stay off.
+    """
+    env = {**os.environ, 'GIT_OPTIONAL_LOCKS': '0', 'GIT_CONFIG_NOSYSTEM': '1', 'HOME': str(tree)}
+    def numstat(*args):
+        out = subprocess.run(['git', '-c', 'core.quotepath=false', *args], cwd=tree, env=env, capture_output=True, text=True)
+        added, deleted, _ = out.stdout.split('\t', 2)
+        return int(added), int(deleted)
+    tracked = set(subprocess.run(['git', 'ls-files', '-z'], cwd=tree, env=env, capture_output=True, text=True, check=True).stdout.split('\0'))
+    for entry in changes['files']:
+        path = entry['path']
+        expected = numstat('diff', '--numstat', 'HEAD', '--', path) if path in tracked else numstat('diff', '--no-index', '--numstat', '--', '/dev/null', path)
+        if expected != (entry['added'], entry['deleted']):
+            return False
+    return len(changes['files']) > 0 and changes['added'] == sum(x['added'] for x in changes['files'])
 
 
 def main():
@@ -48,7 +83,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--only', choices=['gate4'], help='Run one stage while iterating; the full run is the evidence')
+    parser.add_argument('--only', choices=['gate3', 'gate4'], help='Run one stage while iterating; the full run is the evidence')
     args = parser.parse_args()
     prepare()
     web = worker.OUTPUT / 'web'
@@ -62,7 +97,8 @@ def main():
         parser.error('output must be in ignored build/')
     output.mkdir(parents=True, exist_ok=False)
     gateway = SOURCE.parent / 'plan500-darwin/gateway/Sources/Plan500Gateway'
-    sources = [SOURCE / 'Sources' / name for name in ('WorkerHostMain.swift', 'WorkerBridge.swift', 'ResearchApp.swift')]
+    sources = [SOURCE / 'Sources' / name for name in ('WorkerHostMain.swift', 'WorkerBridge.swift', 'ResearchApp.swift',
+                                                      'NativeToolsBridge.swift')]
     sources += sorted(gateway.glob('*.swift'))
     # The host build compiles the plugin into the same module (WorkerBridge guards its import).
     sources += sorted((REPO / 'ios/HarnessApp/Sources/LinuxPlugin').glob('*.swift'))
@@ -70,7 +106,8 @@ def main():
     sources += sorted((REPO / 'ios/HarnessApp/Sources/ModelGateway').glob('*.swift'))
     binary = output / 'worker-host'
     with (output / 'compile-private.log').open('w') as log:
-        subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(output / 'swift-cache'),
+        linked = native_modules(output, log)
+        subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(output / 'swift-cache'), *linked,
                         *map(str, sources), '-o', str(binary)], stdout=log, stderr=subprocess.STDOUT, check=True)
     results = []
     for model in ('none', 'mapped-xattr') if not args.only else ():
@@ -93,23 +130,40 @@ def main():
         if code or not data['passed'] or data['vmStarts'] != 0 or data['linuxAvailabilityDetected'] != 'available':
             raise RuntimeError('GATE2_MISSING_FAILED')
         results.append({'model': 'none', 'stage': 'gate2-missing', 'checks': len(data['checks']), 'passed': True})
+    # #39 gate 3: the official file, search and change tools over the native workspace; model turns scripted locally.
+    if args.only in (None, 'gate3'):
+        project = output / 'gate3'
+        with FaultServer() as server, (output / 'gate3-private.log').open('w') as log:
+            code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', 'gate3', server.url],
+                                  stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
+            wire = server.summary()
+        text = (project / 'gate3-safe.json').read_text()
+        data = json.loads(text)
+        wire_ok = wire['fakeKeyOnEveryRequest'] and wire['placeholderNeverSent'] and wire['workerCredentialsDropped']
+        if code or not data['passed'] or not wire_ok or data['vmStarts'] != 0 or FAKE_KEY in text or PLACEHOLDER in text:
+            raise RuntimeError('GATE3_TOOLS_FAILED')
+        if not git_diff_agrees(project / 'gate3/workspace', data['gate3']['changes']):
+            raise RuntimeError('GATE3_CHANGES_DISAGREE_WITH_GIT')
+        results.append({'model': 'none', 'stage': 'gate3', 'checks': len(data['checks']) + 1, 'passed': True})
     # #39 gate 4: official Worker parser, retry and cancel over the Swift streaming gateway, against local faults.
-    project = output / 'gate4'
-    with FaultServer() as server, (output / 'gate4-private.log').open('w') as log:
-        code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', 'gate4', server.url],
-                              stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
-        wire = server.summary()
-    (output / 'gate4-wire-safe.json').write_text(json.dumps(wire, indent=2) + '\n')
-    text = (project / 'gate4-safe.json').read_text()
-    data = json.loads(text)
-    wire_ok = all(wire[k] for k in ('countsMatch', 'fakeKeyOnEveryRequest', 'placeholderNeverSent', 'workerCredentialsDropped',
-                                     'cancelPeerClosed', 'cancelToolNeverSent'))
-    if code or not data['passed'] or not wire_ok or data['vmStarts'] != 0 or FAKE_KEY in text or PLACEHOLDER in text:
-        raise RuntimeError('GATE4_FAULTS_FAILED')
-    results.append({'model': 'none', 'stage': 'gate4', 'checks': len(data['checks']), 'passed': True, 'wire': wire})
+    if args.only in (None, 'gate4'):
+        project = output / 'gate4'
+        with FaultServer() as server, (output / 'gate4-private.log').open('w') as log:
+            code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', 'gate4', server.url],
+                                  stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
+            wire = server.summary()
+        (output / 'gate4-wire-safe.json').write_text(json.dumps(wire, indent=2) + '\n')
+        text = (project / 'gate4-safe.json').read_text()
+        data = json.loads(text)
+        wire_ok = all(wire[k] for k in ('countsMatch', 'fakeKeyOnEveryRequest', 'placeholderNeverSent', 'workerCredentialsDropped',
+                                         'cancelPeerClosed', 'cancelToolNeverSent'))
+        if code or not data['passed'] or not wire_ok or data['vmStarts'] != 0 or FAKE_KEY in text or PLACEHOLDER in text:
+            raise RuntimeError('GATE4_FAULTS_FAILED')
+        results.append({'model': 'none', 'stage': 'gate4', 'checks': len(data['checks']), 'passed': True, 'wire': wire})
     assets = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
     summary = {'passed': True, 'partial': bool(args.only), 'physicalDevice': False, 'results': results, 'modelNetworkVerified': False,
-               'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sources + list((SOURCE / 'web').iterdir()) + [SOURCE / 'fault_server.py']},
+               'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sources + list((SOURCE / 'web').iterdir())
+                                 + [SOURCE / 'fault_server.py', SOURCE / 'gate3_fixture.py']},
                'workerAssetSha256': {name: digest(web / name) for name in assets},
                'pack': json.loads((worker.OUTPUT / 'pack-safe.json').read_text())}
     (output / 'worker-host-safe.json').write_text(json.dumps(summary, indent=2) + '\n')

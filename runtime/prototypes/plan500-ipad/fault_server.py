@@ -1,4 +1,4 @@
-"""Loopback Messages server that scripts one fault per scenario for #39 gate 4 (macOS host only).
+"""Loopback Messages server that scripts one fault per scenario for #39 gates 4 and 3 (macOS host only).
 
 The prompt carries a tag such as [[gate4:rate]]; the step is the number of tool results after it, and each
 (scenario, step) counts its own attempts. Agent requests carry tools; the official title request does not and is
@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FAKE_KEY = 'sk-plan500-fault-injection-only'
 PLACEHOLDER = 'plan500-native-placeholder'
-TAG = re.compile(r'\[\[gate4:([a-z-]+)\]\]')
+TAG = re.compile(r'\[\[gate[34]:([a-z0-9-]+)\]\]')
 # Requests each scenario must see: retries are visible as extra attempts, a replayed tool as an extra step.
 EXPECTED = {'stream': 1, 'auth': 1, 'rate': 2, 'server': 3, 'drop-head': 2, 'drop-tool': 3, 'idle': 2, 'exhaust': 6, 'cancel': 1}
 
@@ -231,6 +231,26 @@ class Handler(BaseHTTPRequestHandler):
             self.chunk(text_delta('LATE'))
         else:
             self.reply(['GATE4_OK 空闲超时后完成'])
+
+    def tools(self, step, calls, reply):
+        """One official tool call per step, then a final reply carrying the marker."""
+        if step >= len(calls):
+            return self.reply([reply])
+        name, arguments = calls[step]
+        self.head()
+        self.chunk(message_start() + tool_use(0, f'call_gate3_{step}', name, arguments))
+        self.chunk(finish('tool_use'))
+        self.end()
+
+    # Gate 3: a model-driven turn edits through the official tools; the change summary must see it.
+    def scenario_g3_turn(self, step, attempt, record):
+        self.tools(step, [('read', {'file_path': 'README.md'}),
+                          ('edit', {'file_path': 'README.md', 'old_string': 'line two', 'new_string': 'line two edited'}),
+                          ('write', {'file_path': '新文件.txt', 'content': '模型写入\n'})], 'GATE3_OK 已修改')
+
+    # Gate 3: an in-process child agent writes through the same gateway.
+    def scenario_g3_child(self, step, attempt, record):
+        self.tools(step, [('write', {'file_path': 'child.txt', 'content': '子代理写入\n'})], 'GATE3_OK 子代理完成')
 
     def scenario_cancel(self, step, attempt, record):
         self.head()

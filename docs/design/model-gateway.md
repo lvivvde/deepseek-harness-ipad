@@ -32,6 +32,8 @@
 - 空闲超时 330 秒，比官方 Worker 自己的流看门狗长，所以通常由官方先报 `TIMEOUT`；网关的 `MODEL_TIMEOUT` 是兜底。
 - 取消会结束真实的 HTTP 请求：在响应头之前、流中途，甚至在 `open` 之前到达，都有覆盖。
 - 取消后回合以 `aborted` 结束，已收到的部分回复标记为中断，之后不运行任何工具。
+- 官方适配器在流结束后还会再取消一次，这次取消可能晚于 `model-read` 交回结束。网关记住最近已结束的流，对它们的取消是空操作，不当作“先于 `open` 的取消”留下来。垫片的流 ID 带每个页面随机的前缀，网关比单个 Worker 活得长，ID 不在 Worker 之间重复。iPad 首轮验证发现过这个问题：旧 ID 上残留的取消让下一个 Worker 的同号请求在 1 ms 内以 `MODEL_CANCELLED` 失败，再由官方重试补上。
+- Worker 没有要求的取消（URLSession 自己报告 `cancelled`）不报告为 `MODEL_CANCELLED`。底层错误是无网络、或当时网络路径不可用时报告为 `MODEL_OFFLINE`，否则报告为 `MODEL_TRANSPORT`。每条记录带错误域、错误码、底层错误域和错误码，以及当时网络路径是否可用，不含请求或响应内容。
 
 ## 固定失败码
 
@@ -44,7 +46,7 @@
 | `MODEL_TLS` | TLS 失败 |
 | `MODEL_TIMEOUT` | 空闲超时 |
 | `MODEL_DISCONNECTED` / `MODEL_TRANSPORT` | 连接中断、其他传输错误 |
-| `MODEL_CANCELLED` | 已取消 |
+| `MODEL_CANCELLED` | Worker 要求的取消 |
 | `MODEL_STREAM_DUPLICATE` / `MODEL_STREAM_UNKNOWN` | 垫片协议错误 |
 
 HTTP 错误状态不算网关失败：状态码、响应体和 `retry-after` 等头原样交给官方解析器，由它分类并决定是否重试。

@@ -432,6 +432,7 @@ window.plan500RunGate4Device = async mode => {
       const offline = await run('offline', '回复 GATE4_OK。' + plain);
       verify('offline ends in an explicit error after the official retries', offline.turnEnd.kind === 'error'
         && offline.turnEnd.code === 'TRANSPORT' && offline.retries.length === 5);
+      summary.records = (await native('model-records')).records;
       verify('every offline request fails before any response', offline.agent.length === 6
         && offline.agent.every(x => ['MODEL_OFFLINE', 'MODEL_DNS', 'MODEL_CONNECT'].includes(x.failure) && x.status === undefined));
     } else throw new Error('GATE4_MODE_REFUSED');

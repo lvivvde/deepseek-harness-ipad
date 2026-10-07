@@ -21,6 +21,7 @@ const plan500OfficialMessages = 'https://api.deepseek.com/anthropic/v1/messages'
 const plan500OriginalFetch = globalThis.fetch.bind(globalThis);
 let plan500ModelResponses = 0;
 let plan500ModelStreamId = 0;
+const plan500ModelStreamPrefix = Math.random().toString(36).slice(2, 10);
 // Redacted per-stream timings (ms since the Worker started) and fixed codes; never bytes, headers or text.
 const plan500ModelStreams = [];
 let plan500ModelChunkHook;
@@ -32,7 +33,8 @@ globalThis.fetch = async (input, options = {}) => {
   const url = typeof input === 'string' ? input : input.url;
   if (url !== plan500OfficialMessages) return plan500OriginalFetch(input, options);
   const signal = options.signal;
-  const streamId = 'model-' + (++plan500ModelStreamId);
+  // Unique across Workers: the Swift gateway outlives each Worker, so a reused id could meet a stale cancel.
+  const streamId = 'model-' + plan500ModelStreamPrefix + '-' + (++plan500ModelStreamId);
   let tools;
   try { tools = JSON.parse(options.body).tools; } catch {}
   // Agent turns carry tools; the official first-prompt title request does not.
@@ -206,7 +208,7 @@ async function plan500ModelTurn(agent, data) {
     replies, toolCalls: events.filter(x => x.type === 'tool/call').map(x => x.data.name),
     toolResults: events.filter(x => x.type === 'tool/result').map(x => ({isError: x.data.message?.isError === true})),
     order: events.map(x => x.type).filter(x => /^(tool\/|turn\/end|llm\/retry|assistant\/)/.test(x)),
-    streams: plan500ModelStreams.filter(x => Number(x.streamId.slice(6)) >= firstStream).map(x => ({...x})),
+    streams: plan500ModelStreams.filter(x => Number(x.streamId.split('-').at(-1)) >= firstStream).map(x => ({...x})),
   };
 }
 prototypeMessage = async event => {

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// Fixed failure codes. They name what happened on the wire and never carry request or response text.
 public enum ModelFailure: String, Error, Sendable {
@@ -51,6 +52,12 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         public let endMs: Double
         public let chunks: Int
         public let bytes: Int
+        /// Diagnosis for failures: error domains and numeric codes, and whether the network path was usable.
+        public var errorDomain: String? = nil
+        public var errorCode: Int? = nil
+        public var underlyingDomain: String? = nil
+        public var underlyingCode: Int? = nil
+        public var pathSatisfied: Bool? = nil
     }
 
     private final class Stream {
@@ -77,8 +84,11 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
     private var streams: [String: Stream] = [:]
     private var byTask: [Int: Stream] = [:]
     private var earlyCancels: [String] = []
+    /// Streams whose end or failure was already handed to the Worker: a late cancel for one of them is a no-op.
+    private var closed: [String] = []
     private var history: [Record] = []
     private var session: URLSession!
+    private let path = NWPathMonitor()
 
     /// Production gateway: always the official endpoint. The idle timeout backs up the Worker's own
     /// stream watchdog and is longer than it, so the official TIMEOUT normally wins.
@@ -104,12 +114,13 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
         session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+        path.start(queue: DispatchQueue(label: "ModelGateway.path"))
     }
 
     public var records: [Record] { condition.lock(); defer { condition.unlock() }; return history }
 
     /// Ends every request and releases the session; the gateway cannot be used afterwards.
-    public func invalidate() { session.invalidateAndCancel() }
+    public func invalidate() { session.invalidateAndCancel(); path.cancel() }
 
     /// Sends one request and blocks until the response head or an explicit failure.
     public func open(id: String, url: String, headers: [String: String], body: Data) throws -> Head {
@@ -129,6 +140,7 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         request.setValue(key, forHTTPHeaderField: "x-api-key")
 
         condition.lock()
+        closed.removeAll { $0 == id }
         if let index = earlyCancels.firstIndex(of: id) {
             earlyCancels.remove(at: index)
             condition.unlock()
@@ -146,7 +158,7 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         condition.lock(); defer { condition.unlock() }
         while stream.head == nil && stream.failure == nil { condition.wait() }
         if let head = stream.head { return head }
-        streams[id] = nil
+        close(id)
         throw stream.failure!
     }
 
@@ -161,7 +173,7 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
             stream.buffer.removeFirst(count)
             return .chunk(Data(part))
         }
-        streams[id] = nil
+        close(id)
         if let failure = stream.failure { throw failure }
         return .end
     }
@@ -170,7 +182,7 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
     public func cancel(_ id: String) {
         condition.lock()
         guard let stream = streams[id] else {
-            if !earlyCancels.contains(id) { earlyCancels.append(id); if earlyCancels.count > 64 { earlyCancels.removeFirst() } }
+            if !closed.contains(id) && !earlyCancels.contains(id) { earlyCancels.append(id); if earlyCancels.count > 64 { earlyCancels.removeFirst() } }
             condition.unlock()
             return
         }
@@ -178,6 +190,13 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         let task = stream.task
         condition.unlock()
         task?.cancel()
+    }
+
+    /// Caller holds the lock.
+    private func close(_ id: String) {
+        streams[id] = nil
+        closed.append(id)
+        if closed.count > 64 { closed.removeFirst() }
     }
 
     static func failure(for error: Error) -> ModelFailure {
@@ -194,6 +213,19 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
              .clientCertificateRequired: return .tls
         default: return .transport
         }
+    }
+
+    /// A completion error for a request the Worker did not cancel. A cancel nobody asked for is never
+    /// reported as MODEL_CANCELLED; its cause and the network path decide between offline and transport.
+    static func failure(for error: Error, pathSatisfied: Bool) -> ModelFailure {
+        let failure = failure(for: error)
+        guard failure == .cancelled else { return failure }
+        let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError
+        let offlineCause = underlying.map { cause in
+            (cause.domain == NSPOSIXErrorDomain && [ENETDOWN, ENETUNREACH].contains(Int32(cause.code)))
+                || (cause.domain == NSURLErrorDomain && Self.failure(for: cause as Error) == .offline)
+        } ?? false
+        return offlineCause || !pathSatisfied ? .offline : .transport
     }
 
     // MARK: URLSessionDataDelegate
@@ -241,13 +273,20 @@ public final class ModelGateway: NSObject, URLSessionDataDelegate, @unchecked Se
         guard let stream = byTask.removeValue(forKey: task.taskIdentifier) else { return }
         if stream.redirected { stream.failure = .redirectRefused }
         else if stream.cancelled { stream.failure = .cancelled; stream.buffer = Data() }
-        else if let error { stream.failure = Self.failure(for: error) }
+        else if let error { stream.failure = Self.failure(for: error, pathSatisfied: path.currentPath.status == .satisfied) }
         else if stream.head == nil { stream.failure = .transport }
         else { stream.finished = true }
         let ms = { (date: Date?) in date.map { $0.timeIntervalSince(stream.opened) * 1000 } }
-        history.append(Record(id: stream.id, status: stream.head?.status, outcome: stream.failure?.rawValue ?? "END",
-                              headMs: ms(stream.headAt), firstChunkMs: ms(stream.firstChunk), lastChunkMs: ms(stream.lastChunk),
-                              endMs: Date().timeIntervalSince(stream.opened) * 1000, chunks: stream.chunks, bytes: stream.bytes))
+        var record = Record(id: stream.id, status: stream.head?.status, outcome: stream.failure?.rawValue ?? "END",
+                            headMs: ms(stream.headAt), firstChunkMs: ms(stream.firstChunk), lastChunkMs: ms(stream.lastChunk),
+                            endMs: Date().timeIntervalSince(stream.opened) * 1000, chunks: stream.chunks, bytes: stream.bytes)
+        if let error = error as NSError? {
+            let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+            record.errorDomain = error.domain; record.errorCode = error.code
+            record.underlyingDomain = underlying?.domain; record.underlyingCode = underlying?.code
+            record.pathSatisfied = path.currentPath.status == .satisfied
+        }
+        history.append(record)
         if history.count > 64 { history.removeFirst(history.count - 64) }
     }
 }

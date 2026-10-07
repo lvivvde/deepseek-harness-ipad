@@ -211,6 +211,41 @@ final class ModelGatewayTests: XCTestCase {
         XCTAssertEqual(ModelGateway.failure(for: CocoaError(.fileNoSuchFile)), .transport)
     }
 
+    func testCancelNobodyAskedForIsNeverReportedAsACancel() {
+        // iOS ends requests itself while the device is offline; only the Worker's own cancel is MODEL_CANCELLED.
+        let system = URLError(.cancelled)
+        XCTAssertEqual(ModelGateway.failure(for: system, pathSatisfied: false), .offline)
+        XCTAssertEqual(ModelGateway.failure(for: system, pathSatisfied: true), .transport)
+        let underlying = URLError(.cancelled, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(ENETDOWN))])
+        XCTAssertEqual(ModelGateway.failure(for: underlying, pathSatisfied: true), .offline)
+        let unreachable = URLError(.cancelled, userInfo: [NSUnderlyingErrorKey: URLError(.notConnectedToInternet)])
+        XCTAssertEqual(ModelGateway.failure(for: unreachable, pathSatisfied: true), .offline)
+        XCTAssertEqual(ModelGateway.failure(for: URLError(.timedOut), pathSatisfied: false), .timeout)
+    }
+
+    func testRecordsCarryOnlyTheErrorDomainAndCodes() throws {
+        let closed = try FaultServer { _ in }
+        let port = closed.port; closed.stop()
+        let refused = gateway(URL(string: "http://127.0.0.1:\(port)/anthropic/v1/messages")!)
+        XCTAssertEqual(failure { _ = try refused.open(id: "r", url: official, headers: [:], body: Data()) }, .connect)
+        let record = try XCTUnwrap(refused.records.last)
+        XCTAssertEqual(record.errorDomain, NSURLErrorDomain)
+        XCTAssertEqual(record.errorCode, URLError.cannotConnectToHost.rawValue)
+        XCTAssertEqual(record.pathSatisfied, true)
+    }
+
+    func testCancelAfterTheStreamEndedDoesNotPoisonALaterRequestWithTheSameId() throws {
+        // The official adapter aborts after message_stop; that cancel can land after the end was read.
+        let server = try server { connection in connection.respond(status: 200, body: "data: done\n\n") }
+        let gateway = gateway(server.url)
+        _ = try gateway.open(id: "model-1", url: official, headers: workerHeaders, body: Data("{}".utf8))
+        _ = try drain(gateway, "model-1")
+        gateway.cancel("model-1")
+        XCTAssertEqual(try gateway.open(id: "model-1", url: official, headers: workerHeaders, body: Data("{}".utf8)).status, 200)
+        _ = try drain(gateway, "model-1")
+        XCTAssertEqual(gateway.records.map(\.outcome), ["END", "END"])
+    }
+
     func testProductionGatewayTargetsOnlyTheOfficialEndpoint() {
         let gateway = ModelGateway { nil }
         gateways.append(gateway)

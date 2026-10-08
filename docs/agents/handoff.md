@@ -13,7 +13,7 @@
 
 - **当前状态**：
   - 关口 1、2、3、4、6 已在 #39 勾选，证据见各自评论；只剩关口 5（Git 写操作与 hook，走项目 Linux）。
-  - 代码仍在分支 `feat/issue39-gate1-durability`，未推送、未开 PR，从 `c198b49` 起的提交都只在本地。合并需另获用户同意。
+  - 代码仍在分支 `feat/issue39-gate1-durability`，已推送并开 [PR46](https://github.com/lvivvde/deepseek-harness-ipad/pull/46)（2026-10-08，含关口 1–4、6）。合并需另获用户同意。
 - **各关口落点**：
   - **关口 2**：检测 `pthread_fchdir_np`，启动时据此决定 Linux 插件是否可用。见 [linux-plugin-availability.md](../design/linux-plugin-availability.md)。
   - **关口 3**：原生文件服务、ripgrep 模拟和原生只读 Git。见 [native-official-tools.md](../design/native-official-tools.md)（含用户确认的 4 项收紧）和 [native-read-only-git.md](../design/native-read-only-git.md)。
@@ -37,7 +37,7 @@
   - 生成过程中切到后台的情况未在真机运行，只记录、不阻断。
   - 关口 2 的 hook 路径用的是研究适配器，官方 hook runner 留给关口 5。
 - **下一步**：
-  1. 由用户决定是否推送本分支、开 PR。
+  1. PR46 等 CI 和用户决定合并。
   2. 关口 5 依赖关口 2、3，现在可以开工。
 - **私有资产**：
   - `build/issue39-gate3/device/`：关口 2、3、4 的收据，`*-safe.json`。

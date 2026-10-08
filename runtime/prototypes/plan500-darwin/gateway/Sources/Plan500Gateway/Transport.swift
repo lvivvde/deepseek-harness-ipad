@@ -33,7 +33,9 @@ public final class HTTPTransport: GuestTransport {
     public func rpc(_ route: String, _ body: [String: Any]?) throws -> [String: Any] {
         lock.lock(); let port = self.port, token = self.token; lock.unlock()
         guard port > 0, let url = URL(string: "http://127.0.0.1:\(port)\(route)") else { throw TransportError.unreachable("NOT_ATTACHED") }
-        var request = URLRequest(url: url, timeoutInterval: route == "/ready" ? 2 : 25)
+        // /execute answers only when the command ends: wait past the agent's own stop for it.
+        let wait = route == "/ready" ? 2 : route == "/execute" ? Double(body?["timeoutMs"] as? Int ?? 15000) / 1000 + 25 : 25
+        var request = URLRequest(url: url, timeoutInterval: wait)
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         if let body {

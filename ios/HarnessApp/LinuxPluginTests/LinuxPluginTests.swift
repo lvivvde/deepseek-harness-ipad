@@ -60,6 +60,15 @@ final class LinuxPluginTests: XCTestCase {
         XCTAssertEqual(LinuxPlugin.Task.native("fs.write").path, .native)
         XCTAssertEqual(LinuxPlugin.Task.shell("npm test").path, .linux)
         XCTAssertEqual(LinuxPlugin.Task.hook("PreToolUse").path, .linux)
+        XCTAssertEqual(LinuxPlugin.Task.git("commit").path, .linux)
+    }
+
+    /// #39 gate 5: every repository-changing Git operation and its hooks run on Linux; reads stay native.
+    func testGitWritesAreDeclaredOnLinuxAndGitReadsNative() {
+        let paths = Dictionary(uniqueKeysWithValues: CapabilityDeclaration.scope.map { ($0.0, $0.1) })
+        XCTAssertEqual(paths["git.write"], .linux)
+        XCTAssertEqual(paths["git.read"], .native)
+        XCTAssertEqual(paths["review"], .native)
     }
 
     // MARK: missing branch

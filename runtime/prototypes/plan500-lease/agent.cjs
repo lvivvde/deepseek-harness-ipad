@@ -5,6 +5,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const cp = require('node:child_process');
+const crypto = require('node:crypto');
 const root = '/workspace';
 const writable = '/run/ws/rw';
 const groups = '/sys/fs/cgroup/plan500';
@@ -18,6 +19,10 @@ const mapsDevice = (((shareDevice >> 8) & 0xfff).toString(16).padStart(2, '0') +
   ((shareDevice & 0xff) | ((shareDevice >> 12) & 0xfff00)).toString(16).padStart(2, '0'));
 const allowed = new Set(['/bin/sh', '/usr/bin/git', '/opt/node/bin/node']);
 const operations = new Map();
+// Per-request secrets that reach only the command's environment: never echoed, logged or kept.
+const secretNames = new Set(['DSH_GIT_TOKEN']);
+// Commands stop at this length; the native transport waits longer than this.
+const maxTimeoutMs = 60000;
 const sockets = new Set();
 let epoch = null, lastFence = 0, activeLease = null, generation = 0;
 
@@ -90,10 +95,21 @@ fs.mkdirSync(groups, {recursive: true});
 fs.mkdirSync(published, {recursive: true, mode: 0o755});
 publish();
 
+function secretsOf(request) {
+  const given = request.secretEnv ?? {};
+  if (typeof given !== 'object' || given === null || Array.isArray(given)) throw new Error('SECRET_REFUSED');
+  for (const [name, value] of Object.entries(given))
+    if (!secretNames.has(name) || typeof value !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(value)) throw new Error('SECRET_REFUSED');
+  return given;
+}
+
 function execute(request) {
   const lease = request.lease ?? null;
+  const secrets = secretsOf(request);
+  // A retry must carry the same secrets; only their digest is kept.
+  const secret = crypto.createHash('sha256').update(JSON.stringify(Object.entries(secrets).sort())).digest('hex');
   const signature = JSON.stringify({projectId: request.projectId, argv: request.argv,
-    cwd: request.cwd, timeoutMs: request.timeoutMs, lease, asOwner: request.asOwner, skipSweep: request.testSkipSweep});
+    cwd: request.cwd, timeoutMs: request.timeoutMs, lease, asOwner: request.asOwner, skipSweep: request.testSkipSweep, secret});
   if (operations.has(request.id)) {
     const previous = operations.get(request.id);
     if (previous.signature !== signature) throw new Error('OPERATION_ID_CONFLICT');
@@ -122,7 +138,7 @@ function execute(request) {
     let stdout = '', stderr = '', timeout = false;
     const child = cp.spawn('/bin/sh', ['-c', WRAPPER, 'plan500', group, lease ? '1' : '0',
       String(user.uid), String(user.gid), cwd, ...request.argv], {
-      cwd: '/', detached: true, env: {PATH: '/opt/node/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8'},
+      cwd: '/', detached: true, env: {PATH: '/opt/node/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8', ...secrets},
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const closed = new Promise(done => child.on('close', done));
@@ -130,7 +146,7 @@ function execute(request) {
     child.stderr.on('data', data => { stderr = (stderr + data).slice(-65536); });
     child.on('error', error => { stderr += String(error); });
     const timer = setTimeout(() => { timeout = true; drain(group); },
-      Math.max(10, Math.min(request.timeoutMs ?? 10000, 15000)));
+      Math.max(10, Math.min(request.timeoutMs ?? 10000, maxTimeoutMs)));
     child.on('exit', (code, signal) => (async () => {
       clearTimeout(timer);
       let stragglers = 0, quiescent = null, leaked = [];

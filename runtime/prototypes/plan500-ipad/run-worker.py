@@ -8,10 +8,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
 from fault_server import FAKE_KEY, PLACEHOLDER, FaultServer
+
+# The shape of WorkerCoordinator.randomToken() (#39 gate 5).
+TOKEN_SHAPE = re.compile(rb'dsh-gate5-[0-9a-f]{48}')
 
 SOURCE = Path(__file__).resolve().parent
 REPO = SOURCE.parents[2]
@@ -83,7 +87,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--only', choices=['gate3', 'gate4'], help='Run one stage while iterating; the full run is the evidence')
+    parser.add_argument('--only', choices=['gate3', 'gate4', 'gate5'], help='Run one stage while iterating; the full run is the evidence')
     args = parser.parse_args()
     prepare()
     web = worker.OUTPUT / 'web'
@@ -98,7 +102,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     gateway = SOURCE.parent / 'plan500-darwin/gateway/Sources/Plan500Gateway'
     sources = [SOURCE / 'Sources' / name for name in ('WorkerHostMain.swift', 'WorkerBridge.swift', 'ResearchApp.swift',
-                                                      'NativeToolsBridge.swift')]
+                                                      'NativeToolsBridge.swift', 'Gate5Review.swift')]
     sources += sorted(gateway.glob('*.swift'))
     # The host build compiles the plugin into the same module (WorkerBridge guards its import).
     sources += sorted((REPO / 'ios/HarnessApp/Sources/LinuxPlugin').glob('*.swift'))
@@ -160,10 +164,26 @@ def main():
         if code or not data['passed'] or not wire_ok or data['vmStarts'] != 0 or FAKE_KEY in text or PLACEHOLDER in text:
             raise RuntimeError('GATE4_FAULTS_FAILED')
         results.append({'model': 'none', 'stage': 'gate4', 'checks': len(data['checks']), 'passed': True, 'wire': wire})
+    # #39 gate 5: Git writes and hooks on Linux under the lease, native read-only review; then the two refusal branches.
+    if args.only in (None, 'gate5'):
+        for stage, receipt in (('gate5', 'gate5-safe.json'), ('gate5-unavailable', 'gate5-unavailable-safe.json'),
+                               ('gate5-prepare-failed', 'gate5-prepare-failed-safe.json')):
+            project = output / stage
+            with (output / f'{stage}-private.log').open('w') as log:
+                code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', stage],
+                                      stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
+            data = json.loads((project / receipt).read_text())
+            starts = 1 if stage == 'gate5' else 0
+            # The app scans its own project root; this covers the host's log outside it. The run's token
+            # is random and never shown here, so any string of its shape fails the stage.
+            leaked = TOKEN_SHAPE.search((output / f'{stage}-private.log').read_bytes())
+            if code or not data['passed'] or data['vmStarts'] != starts or data['gitTokenPersisted'] is not False or leaked:
+                raise RuntimeError('GATE5_FAILED ' + stage)
+            results.append({'model': 'none', 'stage': stage, 'checks': len(data['checks']), 'passed': True, 'gate5': data['gate5']})
     assets = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
     summary = {'passed': True, 'partial': bool(args.only), 'physicalDevice': False, 'results': results, 'modelNetworkVerified': False,
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sources + list((SOURCE / 'web').iterdir())
-                                 + [SOURCE / 'fault_server.py', SOURCE / 'gate3_fixture.py']},
+                                 + [SOURCE / 'fault_server.py', SOURCE / 'gate3_fixture.py', SOURCE / 'git_http_fixture.cjs']},
                'workerAssetSha256': {name: digest(web / name) for name in assets},
                'pack': json.loads((worker.OUTPUT / 'pack-safe.json').read_text())}
     (output / 'worker-host-safe.json').write_text(json.dumps(summary, indent=2) + '\n')

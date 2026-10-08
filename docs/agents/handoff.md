@@ -9,6 +9,40 @@
 3. 真机任务读 [真机自动化](../validation/ipad-device-automation.md)；其他任务读对应验收记录。先用只读 `probe` 确认连接，按明确缺项推进，减少用户交互。
 4. 完成后更新本文件的状态、验证和下一步；原始日志/设备/签名参数保存到忽略的 `build/`，公开文档只记脱敏结果。
 
+## 2026-10-08 #39 关口 5（Git 写操作与 hook）
+
+- **当前状态**：
+  - 代码在分支 `feat/issue39-gate5-git-hooks`，叠在 PR46 之上，单独开 PR，base 是 `feat/issue39-gate1-durability`。合并需另获用户同意。
+  - 设计与限制见 [git-writes-and-hooks.md](../design/git-writes-and-hooks.md)。
+  - push 只在自建测试远端上验证过，标为部分通过；还没有用户授权的外部测试远端。
+- **落点**：
+  - Linux 事务：`web/git-write.js`，包括 shim、事件顺序、拒绝 `--no-verify`、credential helper。
+  - runHook 执行器：`web/hook-shell.js`，没有运行的 hook 一律阻断。
+  - 原生复核：`Sources/Gate5Review.swift`。
+  - 令牌注入：`WorkerBridge.swift` 的 `execute(trigger:network:)`。
+  - agent 以属主 uid 运行，并接受 `secretEnv`。
+  - 自建远端：`git_http_fixture.cjs`。
+  - 集成检查：`integration.html` 的 `gate5Checks` 和 `gate5Refused`。
+  - `agent.cjs` 和 `init.sh` 有改动，所以私有 inputs 的 initramfs 已重建；旧文件留在 `inputs-pre-gate5/`。
+- **已验证**：
+  - macOS 宿主 `run-worker.py --only gate5`：35/35、5/5、5/5。
+  - iPad 真机：35/35、5/5、5/5，令牌没有落盘，卷区分大小写。
+  - gate5 包括预热时排队的 `git init`，以及 stash、stash pop、checkout、merge --no-ff、reset --hard，每步两侧一致。
+  - `test_git_write` 在 macOS 和 Lima（`/opt/node/bin`）上都是 16/16。
+  - 其余单元测试与 Swift 测试全部通过，macOS 完整 `run-worker.py`（`mac-full/`）通过。
+  - 审查后修了：`--no-verify` 缩写、credential helper 只答 https 和回环 http、超时与取消一律阻断、init/clone 不包 hook、日志令牌扫描。
+- **设备状态**：
+  - 演练 App `g6drill` 已卸载，研究 App `plan500.research` 重新装上（关口 5 版本）。
+  - 正式 Harness 和 LinuxPrototype 的数据没有动过。
+- **未完成**：
+  - 对接授权外部远端的 push。需要用户提供远端，并在设备上输入 token。
+  - hook 的 `workdir` 被忽略，hook 一律在 `/workspace` 运行。
+  - 只有 Git 工具受 hook 保护，shell 工具可以直接跑 `git commit --no-verify`；同 uid 代码能从 `/proc` 读到令牌。均已写进设计文档的限制。
+- **私有资产**：
+  - `build/issue39-gate5/device/device-private.py`：步骤为 uninstall-drill、sign、install、launch、wait。
+  - 收据：`device/*-safe.json`（当前版本）；旧版本在 `device/r0/`、`device/r1/`。
+  - macOS 运行目录：`mac-1/`、`mac-full/`、`mac-2/`、`mac-3/`（最新）。
+
 ## 2026-10-08 #39 关口 2、3、4、6
 
 - **当前状态**：
@@ -33,12 +67,12 @@
   - 免费签名最多 3 个 App，所以研究 App `plan500.research` 已卸载；关口 5 需要时用 `build/issue39-gate3/device/device-private.py sign/install` 重装，装前先卸演练 App。
   - 正式 Harness 和 LinuxPrototype 的数据没有动过。
 - **未完成**：
-  - 关口 5 未开始。
+  - 关口 5 见上一节。
   - 生成过程中切到后台的情况未在真机运行，只记录、不阻断。
-  - 关口 2 的 hook 路径用的是研究适配器，官方 hook runner 留给关口 5。
+  - 关口 2 的 hook 路径用的是研究适配器；官方 runHook 已在关口 5 接上。
 - **下一步**：
   1. PR46 等 CI 和用户决定合并。
-  2. 关口 5 依赖关口 2、3，现在可以开工。
+  2. 关口 5 见上一节。
 - **私有资产**：
   - `build/issue39-gate3/device/`：关口 2、3、4 的收据，`*-safe.json`。
   - `build/issue39-gate6/`：`synthetic-matrix.json`；`device/gate6-private.py` 的步骤为 sign、resign-old、synthetic、conflict-export、install-old/new、boot-old、push、drill、real、push-conflicts、conflicts、kills；`device/` 下还有收据。

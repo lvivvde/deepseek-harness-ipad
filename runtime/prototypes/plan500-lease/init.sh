@@ -27,8 +27,11 @@ echo 0 > /proc/sys/user/max_user_namespaces
 cp /probe-agent.cjs /rootfs/run/probe-agent.cjs
 cp /probe-token /rootfs/run/probe-token
 chmod 0600 /rootfs/run/probe-token
+ip link set lo up
 ip link set eth0 up
 ip addr add 10.0.2.15/24 dev eth0
 ip route add default via 10.0.2.2
+# QEMU user networking's resolver, for a push to an authorised test remote (#39 gate 5).
+rm -f /rootfs/etc/resolv.conf; echo 'nameserver 10.0.2.3' > /rootfs/etc/resolv.conf
 chroot /rootfs /opt/node/bin/node /run/probe-agent.cjs &
 exec /bin/sh

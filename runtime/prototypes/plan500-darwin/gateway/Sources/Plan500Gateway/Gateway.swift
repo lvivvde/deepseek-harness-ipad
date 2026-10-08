@@ -230,10 +230,14 @@ public final class Gateway {
         return s.lease
     }
 
-    public func runLeased(_ operation: String, argv: [String], timeout: Int, test: [String: Any] = [:]) throws -> [String: Any] {
+    /// `secrets` reach only the command's environment in the guest (the agent allows DSH_GIT_TOKEN);
+    /// nothing here keeps, persists or returns them.
+    public func runLeased(_ operation: String, argv: [String], timeout: Int, secrets: [String: String] = [:],
+                          test: [String: Any] = [:]) throws -> [String: Any] {
         guard let lease = try acquire(operation) else { return ["status": "LEASE_BUSY"] }
         var request: [String: Any] = ["id": operation, "projectId": identity, "argv": argv, "timeoutMs": timeout,
                                       "cwd": "/workspace", "lease": ["epoch": lease.epoch, "fence": lease.fence]]
+        if !secrets.isEmpty { request["secretEnv"] = secrets }
         for (key, value) in test { request[key] = value }
         let result: [String: Any]
         do { result = try transport.rpc("/execute", request) }

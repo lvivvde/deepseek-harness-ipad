@@ -279,6 +279,28 @@ test('packed objects, a linked worktree and a subdirectory cwd', {skip}, () => {
   both(wt, ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--git-path', 'objects'], {cwd: join(wt, 'p'), gitdir});
 });
 
+test('rev-parse -q --verify HEAD: unborn, branch, detached, packed refs and a linked worktree', {skip}, () => {
+  const verify = ['rev-parse', '-q', '--verify', 'HEAD'];
+  const dir = repo({'f.txt': 'f\n', 'sub/g.txt': 'g\n'});
+  assert.equal(both(dir, verify).exitCode, 1);  // unborn branch: no output, exit 1
+  commit(dir);
+  assert.equal(both(dir, verify).exitCode, 0);
+  both(dir, verify, {cwd: join(dir, 'sub')});
+  commit(dir, 'second');
+  sh(dir, 'pack-refs', '--all');
+  assert.equal(fs.existsSync(join(dir, '.git/refs/heads/main')), false);
+  assert.equal(both(dir, verify).exitCode, 0);
+  sh(dir, 'checkout', '-q', '--detach', 'HEAD~1');
+  assert.equal(both(dir, verify).stdout, sh(dir, 'rev-parse', 'HEAD') + '\n');
+  sh(dir, 'symbolic-ref', 'HEAD', 'refs/heads/topic');
+  assert.equal(both(dir, verify).exitCode, 1);  // HEAD names a branch that does not exist
+  sh(dir, 'checkout', '-q', 'main');
+  const wt = join(root, `wt${serial++}`);
+  sh(dir, 'worktree', 'add', '-q', '-b', 'side', wt, 'HEAD~1');
+  const gitdir = sh(wt, 'rev-parse', '--absolute-git-dir');
+  assert.equal(both(wt, verify, {gitdir}).stdout, sh(wt, 'rev-parse', 'HEAD') + '\n');
+});
+
 test('lock conflicts, unreadable files and missing objects', {skip}, () => {
   const dir = repo({'ok.txt': 'ok\n', 'locked.txt': 'l\n'});
   const base = commit(dir);
@@ -349,6 +371,8 @@ test('unsupported requests fail closed with exit 128', {skip}, () => {
   refuse(['add', '--all', '--ignore-errors', '--', '.', ':(exclude)s*']);
   refuse(['add', '-A']);
   refuse(['commit', '-m', 'x']);
+  refuse(['rev-parse', '--verify', 'HEAD']);
+  refuse(['rev-parse', '-q', '--verify', 'main']);
   refuse(['ls-tree', '-z', '-l', 'HEAD', '--', 'f.txt']);
   refuse(['cat-file', 'blob', 'HEAD:f.txt']);
   refuse(['diff-tree', '-r', '-M', '-z', '--numstat', 'HEAD', tree]);

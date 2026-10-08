@@ -12,7 +12,8 @@
 ## 2026-10-08 #39 关口 5（Git 写操作与 hook）
 
 - **当前状态**：
-  - 代码在分支 `feat/issue39-gate5-git-hooks`，叠在 PR46 之上，单独开 PR，base 是 `feat/issue39-gate1-durability`。合并需另获用户同意。
+  - 代码在分支 `feat/issue39-gate5-git-hooks`，PR47（https://github.com/lvivvde/deepseek-harness-ipad/pull/47），叠在 PR46 之上，base 是 `feat/issue39-gate1-durability`。合并需另获用户同意。
+  - 证据已作为评论贴在 #39。关口 5 **还没勾选**：验收要求在 iPad 上向用户授权的测试远端 push 一次，token 由用户在设备上输入。其余各项都已通过。
   - 设计与限制见 [git-writes-and-hooks.md](../design/git-writes-and-hooks.md)。
   - push 只在自建测试远端上验证过，标为部分通过；还没有用户授权的外部测试远端。
 - **落点**：
@@ -35,7 +36,7 @@
   - 演练 App `g6drill` 已卸载，研究 App `plan500.research` 重新装上（关口 5 版本）。
   - 正式 Harness 和 LinuxPrototype 的数据没有动过。
 - **未完成**：
-  - 对接授权外部远端的 push。需要用户提供远端，并在设备上输入 token。
+  - 对接授权外部远端的 push（勾选关口 5 前必须完成）。需要用户提供远端，并在设备上输入 token；研究 App 目前只会生成随机令牌，接用户令牌还需要一个设备上的输入入口。
   - hook 的 `workdir` 被忽略，hook 一律在 `/workspace` 运行。
   - 只有 Git 工具受 hook 保护，shell 工具可以直接跑 `git commit --no-verify`；同 uid 代码能从 `/proc` 读到令牌。均已写进设计文档的限制。
 - **私有资产**：

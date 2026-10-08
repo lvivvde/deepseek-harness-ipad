@@ -34,9 +34,20 @@ struct Gate6DrillApp: App {
             }
             .task {
                 let arguments = ProcessInfo.processInfo.arguments
-                Drill.progress("launched", ["drillArgument": arguments.contains("--drill-migrate")])
-                if let index = arguments.firstIndex(of: "--drill-migrate"), arguments.indices.contains(index + 1) {
-                    model.drill(run: arguments[index + 1])
+                func value(_ flag: String, _ offset: Int = 1) -> String? {
+                    guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + offset) else { return nil }
+                    return arguments[index + offset]
+                }
+                Drill.nonce = value("--nonce").flatMap { $0.range(of: "^[a-z0-9]{1,16}$", options: .regularExpression) != nil ? $0 : nil }
+                Drill.progress("launched", ["drillArgument": arguments.count > 1])
+                if let run = value("--drill-migrate") {
+                    model.start("演练 \(run)", receipt: "drill-\(run)-safe.json") { Drill.migrateAndCheck() }
+                } else if let point = value("--drill-kill"), let tag = value("--drill-kill", 2) {
+                    model.start("在 \(point) 被杀", receipt: "\(tag)-unexpected-safe.json") { Drill.killAt(point, tag: tag) }
+                } else if let tag = value("--drill-retry"), let point = value("--drill-retry", 2) {
+                    model.start("被杀后重试 \(tag)", receipt: "\(tag)-safe.json") { Drill.retryAfterKill(tag: tag, point: point) }
+                } else if let name = value("--drill-conflict") {
+                    model.start("冲突 \(name)", receipt: "conflict-\(name)-safe.json") { Drill.conflict(name) }
                 }
             }
         }
@@ -54,6 +65,9 @@ struct DrillPaths {
     var target: URL { drill.appendingPathComponent("UserData") }
     var state: URL { drill.appendingPathComponent("state.json") }
     var edit: URL { target.appendingPathComponent("projects/demo/after-migration.txt") }
+    var archive: URL { documents.appendingPathComponent("HarnessBackup.tar") }
+    /// One fresh target per kill point, so each case starts from nothing.
+    func matrixTarget(_ tag: String) -> URL { support.appendingPathComponent("Gate6Matrix/\(tag)/UserData") }
 }
 
 @MainActor
@@ -62,15 +76,16 @@ final class DrillModel: ObservableObject {
     @Published var log = ""
     @Published var busy = false
 
-    func drill(run: String) {
-        guard !busy, run.range(of: "^[A-Za-z0-9-]{1,32}$", options: .regularExpression) != nil else { return }
-        busy = true; status = "演练 \(run) 进行中"
+    /// Runs one launch-argument mode off the main thread and writes its receipt under Documents/Gate6Drill.
+    func start(_ title: String, receipt name: String, _ work: @escaping @Sendable () -> [String: Any]) {
+        guard !busy, name.range(of: "^[A-Za-z0-9-]{1,48}-safe\\.json$", options: .regularExpression) != nil else { return }
+        busy = true; status = title + " 进行中"
         Task.detached(priority: .userInitiated) {
-            let receipt = Drill.migrateAndCheck()
-            let paths = DrillPaths()
-            Drill.write(receipt, to: paths.documents.appendingPathComponent("drill-\(run)-safe.json"))
+            var receipt = work()
+            receipt["nonce"] = Drill.nonce
+            Drill.write(receipt, to: DrillPaths().documents.appendingPathComponent(name))
             await MainActor.run {
-                self.status = "演练 \(run)：" + ((receipt["passed"] as? Bool) == true ? "通过" : "未通过")
+                self.status = title + "：" + ((receipt["passed"] as? Bool) == true ? "通过" : "未通过")
                 self.log = Drill.text(receipt); self.busy = false
             }
         }
@@ -91,6 +106,9 @@ final class DrillModel: ObservableObject {
 }
 
 enum Drill {
+    /// Echoed into receipts and progress so the Mac can tell this launch's output from an earlier one's.
+    nonisolated(unsafe) static var nonce: String?
+
     static func write(_ receipt: [String: Any], to url: URL) {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]) {
@@ -103,6 +121,7 @@ enum Drill {
         var entry = extra
         entry["phase"] = phase
         entry["at"] = Date().timeIntervalSince1970
+        entry["nonce"] = nonce
         write(entry, to: DrillPaths().documents.appendingPathComponent("progress.json"))
     }
 
@@ -111,12 +130,14 @@ enum Drill {
         return String(decoding: data, as: UTF8.self)
     }
 
+    static func hex(_ digest: SHA256.Digest) -> String { digest.map { String(format: "%02x", $0) }.joined() }
+
     static func sha256(_ url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         var hasher = SHA256()
         while let chunk = try? handle.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return hex(hasher.finalize())
     }
 
     /// Read-only identity of the old app's disk: it must be the same before and after a migration. ctime
@@ -142,13 +163,17 @@ enum Drill {
         var buffer = [UInt8](repeating: 0, count: 8 << 20)
         while offset < end {
             let start = lseek(fd, offset, SEEK_DATA)
-            if start < 0 { break }  // ENXIO: only a hole remains
+            if start < 0 {
+                guard errno == ENXIO else { return nil }
+                break  // only a hole remains
+            }
             let stop = lseek(fd, start, SEEK_HOLE)
             guard stop > start else { return nil }
             withUnsafeBytes(of: (Int64(start), Int64(stop - start))) { hasher.update(bufferPointer: $0) }
             var at = start
             while at < stop {
                 let count = buffer.withUnsafeMutableBytes { pread(fd, $0.baseAddress, min($0.count, Int(stop - at)), at) }
+                if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { return nil }
                 buffer.withUnsafeBytes { hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
                 at += off_t(count); total += Int64(count)
@@ -156,7 +181,7 @@ enum Drill {
             }
             offset = stop
         }
-        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), total)
+        return (hex(hasher.finalize()), total)
     }
 
     static func redacted(_ report: MigrationReport) -> [String: Any] {
@@ -168,19 +193,32 @@ enum Drill {
          "sessionsOutsideProjects": report.sessionsOutsideProjects]
     }
 
-    static func migrate(archive: URL, checksum: URL, target: URL) -> (outcome: String, report: MigrationReport?, codec: Bool) {
+    static func migrate(archive: URL, checksum: URL, target: URL, fault: MigrationFaultHook? = nil)
+        -> (outcome: String, report: MigrationReport?, codec: Bool) {
         var options = MigrationOptions()
         options.codec = try? DynamicZstd()
+        options.fault = fault
+        let codec = options.codec != nil
         do {
             switch try UserDataMigrator(archive: archive.path, checksum: checksum.path, target: target.path, options: options).run() {
-            case .migrated(let report): return ("migrated", report, options.codec != nil)
-            case .alreadyMigrated(let report): return ("already", report, options.codec != nil)
+            case .migrated(let report): return ("migrated", report, codec)
+            case .alreadyMigrated(let report): return ("already", report, codec)
             }
         } catch let error as MigrationError {
-            return ("ERROR " + error.code, nil, options.codec != nil)
+            return ("ERROR " + error.code, nil, codec)
         } catch {
-            return ("ERROR UNEXPECTED", nil, options.codec != nil)
+            return ("ERROR UNEXPECTED", nil, codec)
         }
+    }
+
+    /// The old disk must be readable for "unchanged" to mean anything.
+    static func unchanged(_ before: [String: Any], _ after: [String: Any]) -> Bool {
+        before["exists"] as? Bool == true && before["sha256"] as? String != "unreadable" && NSDictionary(dictionary: before).isEqual(to: after)
+    }
+
+    static func noStageLeft(beside target: URL) -> Bool {
+        ((try? FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path)) ?? [])
+            .allSatisfy { !$0.hasPrefix(UserDataMigrator.stagePrefix) }
     }
 
     /// First run: migrate, compare with the synthetic expected tree, then make a later change. A run after
@@ -193,17 +231,15 @@ enum Drill {
         let before = diskSnapshot(paths.oldDisk)
         progress("migrating")
         try? FileManager.default.createDirectory(at: paths.drill, withIntermediateDirectories: true)
-        let archive = paths.documents.appendingPathComponent("HarnessBackup.tar")
-        let result = migrate(archive: archive, checksum: archive.appendingPathExtension("sha256"), target: paths.target)
+        let result = migrate(archive: paths.archive, checksum: paths.archive.appendingPathExtension("sha256"), target: paths.target)
         progress("snapshot after")
         let after = diskSnapshot(paths.oldDisk)
         progress("checking")
         var checks: [String: Bool] = [
             "oldDiskPresent": before["exists"] as? Bool == true,
-            "oldDiskUnchangedByMigration": NSDictionary(dictionary: before).isEqual(to: after),
+            "oldDiskUnchangedByMigration": unchanged(before, after),
             "zstdDecoderLoaded": result.codec,
-            "noStageLeft": ((try? FileManager.default.contentsOfDirectory(atPath: paths.drill.path)) ?? [])
-                .allSatisfy { !$0.hasPrefix(UserDataMigrator.stagePrefix) }
+            "noStageLeft": noStageLeft(beside: paths.target)
         ]
         let marker = sha256(paths.target.appendingPathComponent(UserDataMigrator.marker))
         var receipt: [String: Any] = ["outcome": result.outcome, "firstRun": state == nil, "oldDisk": before]
@@ -218,17 +254,109 @@ enum Drill {
             try? Data("changed after migration \(token)\n".utf8).write(to: paths.edit)
             let edit = sha256(paths.edit)
             checks["laterChangeWritten"] = edit != nil
-            write(["markerSha256": marker ?? "", "editSha256": edit ?? "", "oldDiskSha256": before["sha256"] ?? ""], to: paths.state)
+            // Only a passing first run arms the second-run checks; a failed one is simply run again.
+            if checks.values.allSatisfy({ $0 }) {
+                write(["markerSha256": marker ?? "", "editSha256": edit ?? "", "oldDiskSha256": before["sha256"] ?? ""], to: paths.state)
+            }
         } else {
             checks["alreadyMigrated"] = result.outcome == "already"
             checks["markerUnchanged"] = marker != nil && marker == state?["markerSha256"] as? String
-            checks["laterChangeKept"] = sha256(paths.edit) != nil && sha256(paths.edit) == state?["editSha256"] as? String
+            let edit = sha256(paths.edit)
+            checks["laterChangeKept"] = edit != nil && edit == state?["editSha256"] as? String
             receipt["oldDiskChangedSinceFirstRun"] = before["sha256"] as? String != state?["oldDiskSha256"] as? String
         }
         receipt["checks"] = checks
         receipt["passed"] = checks.values.allSatisfy { $0 }
         receipt["elapsedMilliseconds"] = Int(Date().timeIntervalSince(started) * 1000)
         return receipt
+    }
+
+    /// Kill matrix, first half: migrate the synthetic backup into a fresh target and SIGKILL this process at
+    /// the n-th time `point` (`stage` or `stage#n`) is reached. Returns only if the kill never happened.
+    static func killAt(_ point: String, tag: String) -> [String: Any] {
+        let parts = point.split(separator: "#")
+        guard let stage = MigrationStage(rawValue: String(parts[0])),
+              tag.range(of: "^[a-z0-9-]{1,24}$", options: .regularExpression) != nil else {
+            return ["passed": false, "outcome": "ERROR BAD_POINT"]
+        }
+        let wanted = parts.count > 1 ? Int(parts[1]) ?? 1 : 1
+        let paths = DrillPaths()
+        let target = paths.matrixTarget(tag)
+        try? FileManager.default.removeItem(at: target.deletingLastPathComponent())
+        try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        write(diskSnapshot(paths.oldDisk), to: target.deletingLastPathComponent().appendingPathComponent("old-disk-before.json"))
+        var seen = 0
+        let result = migrate(archive: paths.archive, checksum: paths.archive.appendingPathExtension("sha256"), target: target) { reached in
+            guard reached == stage else { return }
+            seen += 1
+            guard seen == wanted else { return }
+            progress("killing", ["point": point, "tag": tag])
+            kill(getpid(), SIGKILL)
+            // The signal is process-wide; in a multi-threaded app this thread can run on for a moment and
+            // reach the rename. Never return to the migrator.
+            while true { pause() }
+        }
+        return ["passed": false, "outcome": "NOT_KILLED " + result.outcome, "point": point, "reached": seen]
+    }
+
+    /// Kill matrix, second half (a fresh process): the killed run left the target untouched, or switched in
+    /// whole; a retry finishes it, a further run is a no-op, nothing is left behind, and the old disk is the same.
+    static func retryAfterKill(tag: String, point: String) -> [String: Any] {
+        guard tag.range(of: "^[a-z0-9-]{1,24}$", options: .regularExpression) != nil else { return ["passed": false, "outcome": "ERROR BAD_TAG"] }
+        let paths = DrillPaths()
+        let started = Date()
+        let target = paths.matrixTarget(tag)
+        let marker = target.appendingPathComponent(UserDataMigrator.marker)
+        let switched = point == MigrationStage.switched.rawValue
+        let leftByKill = FileManager.default.fileExists(atPath: target.path) ? (switched && FileManager.default.fileExists(atPath: marker.path)) : !switched
+        let checksum = paths.archive.appendingPathExtension("sha256")
+        let retry = migrate(archive: paths.archive, checksum: checksum, target: target)
+        let again = migrate(archive: paths.archive, checksum: checksum, target: target)
+        let problems = treeProblems(target: target, expected: paths.documents.appendingPathComponent("expected.json"))
+        let json = { (url: URL) in (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? NSDictionary } }
+        let before = (try? Data(contentsOf: target.deletingLastPathComponent().appendingPathComponent("old-disk-before.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let after = diskSnapshot(paths.oldDisk)
+        let checks: [String: Bool] = [
+            "killedRunLeftTargetIntact": leftByKill,
+            "retryCompletes": retry.outcome == (switched ? "already" : "migrated"),
+            "againIsNoOp": again.outcome == "already" && again.report != nil && again.report == retry.report,
+            "markerMatchesFirstDrill": json(marker) != nil && json(marker) == json(paths.target.appendingPathComponent(UserDataMigrator.marker)),
+            "treeMatchesExpected": problems.isEmpty,
+            "noStageLeft": noStageLeft(beside: target),
+            "oldDiskUnchanged": unchanged(before, after)
+        ]
+        try? FileManager.default.removeItem(at: target.deletingLastPathComponent())
+        return ["point": point, "outcome": retry.outcome, "againOutcome": again.outcome, "treeProblems": problems.count,
+                "checks": checks, "passed": checks.values.allSatisfy { $0 },
+                "elapsedMilliseconds": Int(Date().timeIntervalSince(started) * 1000)]
+    }
+
+    /// A backup exported from case-sensitive ext4 whose names differ only in case or Unicode normalisation
+    /// must be refused whole on this volume, leaving no target and no stage.
+    static func conflict(_ name: String) -> [String: Any] {
+        guard ["case", "unicode"].contains(name) else { return ["passed": false, "outcome": "ERROR BAD_NAME"] }
+        let paths = DrillPaths()
+        let source = paths.documents.appendingPathComponent(name)
+        let target = paths.support.appendingPathComponent("Gate6Matrix/conflict-\(name)/UserData")
+        try? FileManager.default.removeItem(at: target.deletingLastPathComponent())
+        try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let archive = source.appendingPathComponent("HarnessBackup.tar")
+        let result = migrate(archive: archive, checksum: archive.appendingPathExtension("sha256"), target: target)
+        // What this volume does with such names: probe in the same parent directory.
+        let probe = target.deletingLastPathComponent().appendingPathComponent("probe")
+        try? FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
+        let pairs = [("Readme.md", "README.md"), ("caf\u{e9}.txt", "cafe\u{301}.txt")]
+        let (first, second) = name == "case" ? pairs[0] : pairs[1]
+        FileManager.default.createFile(atPath: probe.appendingPathComponent(first).path, contents: Data("1".utf8))
+        let collides = FileManager.default.fileExists(atPath: probe.appendingPathComponent(second).path)
+        let checks: [String: Bool] = [
+            "refusedWithNameConflict": result.outcome == "ERROR NAME_CONFLICT",
+            "targetAbsent": !FileManager.default.fileExists(atPath: target.path),
+            "noStageLeft": noStageLeft(beside: target)
+        ]
+        try? FileManager.default.removeItem(at: target.deletingLastPathComponent())
+        return ["outcome": result.outcome, "volumeTreatsNamesAsSame": collides, "checks": checks, "passed": checks.values.allSatisfy { $0 }]
     }
 
     /// The same comparison as scripts/gate6/synthetic-matrix.py `check_tree`.
@@ -316,7 +444,7 @@ enum Drill {
             return ["passed": false, "outcome": "ERROR SELECTION_NEEDS_TAR_AND_SHA256", "selected": urls.count]
         }
         let scoped = [archive, checksum].map { $0.startAccessingSecurityScopedResource() }
-        defer { for (url, started) in zip([archive, checksum], scoped) where started { url.stopAccessingSecurityScopedResource() } }
+        defer { for (url, granted) in zip([archive, checksum], scoped) where granted { url.stopAccessingSecurityScopedResource() } }
         let scratch = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Gate6Real-" + UUID().uuidString)
         try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -330,7 +458,7 @@ enum Drill {
         let checks: [String: Bool] = [
             "migrated": first.outcome == "migrated",
             "repeatIsNoOp": second?.outcome == "already",
-            "repeatReportEqual": second?.report == first.report,
+            "repeatReportEqual": second?.report != nil && second?.report == first.report,
             "zstdDecoderLoaded": first.codec,
             "extractedTreeRemoved": !FileManager.default.fileExists(atPath: scratch.path)
         ]

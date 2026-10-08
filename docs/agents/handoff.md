@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-06，北京时间。此文件是接手入口，GitHub Issues 是任务状态源；旧聊天和临时目录不作为接手前提。
+最后更新：2026-10-08，北京时间。此文件是接手入口，GitHub Issues 是任务状态源；旧聊天和临时目录不作为接手前提。
 
 ## 开始工作
 
@@ -8,6 +8,40 @@
 2. 查 `gh pr list --state open` 和下表涉及的 Issues。已有待合并工具分支时先继续该分支，避免重新实现；每个新 PR 合并都另获用户同意。
 3. 真机任务读 [真机自动化](../validation/ipad-device-automation.md)；其他任务读对应验收记录。先用只读 `probe` 确认连接，按明确缺项推进，减少用户交互。
 4. 完成后更新本文件的状态、验证和下一步；原始日志/设备/签名参数保存到忽略的 `build/`，公开文档只记脱敏结果。
+
+## 2026-10-08 #39 关口 2、3、4、6
+
+- **当前状态**：
+  - 关口 1、2、3、4、6 已在 #39 勾选，证据见各自评论；只剩关口 5（Git 写操作与 hook，走项目 Linux）。
+  - 代码仍在分支 `feat/issue39-gate1-durability`，未推送、未开 PR，从 `c198b49` 起的提交都只在本地。合并需另获用户同意。
+- **各关口落点**：
+  - **关口 2**：检测 `pthread_fchdir_np`，启动时据此决定 Linux 插件是否可用。见 [linux-plugin-availability.md](../design/linux-plugin-availability.md)。
+  - **关口 3**：原生文件服务、ripgrep 模拟和原生只读 Git。见 [native-official-tools.md](../design/native-official-tools.md)（含用户确认的 4 项收紧）和 [native-read-only-git.md](../design/native-read-only-git.md)。
+  - **关口 4**：Swift 流式模型网关。见 [model-gateway.md](../design/model-gateway.md)。
+  - **关口 6**：迁移器 `Sources/Migration`、合成矩阵和真机演练 App `scripts/gate6/drill`。见 [user-data-migration.md](../design/user-data-migration.md)。
+- **已验证**：
+  - 完整测试通过：`make check`、`test-app`、`test-runtime`、`test-device-tools`、`test-plan500-ipad`（含网关 18 项）。
+  - iPad 真机：
+    - 关口 2 两个分支都通过：Linux 可用 29/29；缺少私有符号时 15/15，且关口 3 仍为 34/34。
+    - 关口 3 为 33/33。
+    - 关口 4 为流式 7/7、无效 Key 2/2、离线 2/2。
+    - 关口 6 回退演练两轮都是 7/7；用户经“文件”导出的真实备份 5/5。
+    - 关口 6 审查后补测：被杀矩阵 10/10，名字冲突 2/2。#39 第 200 行要求的被杀和大小写/Unicode 语义因此有了真机证据，不只靠 macOS 和 Lima。iPad 容器区分大小写，但不区分 Unicode 规范化。
+  - 关口 4 首轮在真机发现一个缺陷：流结束后才到的取消会让下一个同号请求失败。已在 `98a7143` 修复，修复后按原顺序重测通过。
+- **设备状态**：
+  - iPad 上装有正式 Harness、LinuxPrototype 和演练 App `org.lvivvde.harness.g6drill`（新版）。
+  - 免费签名最多 3 个 App，所以研究 App `plan500.research` 已卸载；关口 5 需要时用 `build/issue39-gate3/device/device-private.py sign/install` 重装，装前先卸演练 App。
+  - 正式 Harness 和 LinuxPrototype 的数据没有动过。
+- **未完成**：
+  - 关口 5 未开始。
+  - 生成过程中切到后台的情况未在真机运行，只记录、不阻断。
+  - 关口 2 的 hook 路径用的是研究适配器，官方 hook runner 留给关口 5。
+- **下一步**：
+  1. 由用户决定是否推送本分支、开 PR。
+  2. 关口 5 依赖关口 2、3，现在可以开工。
+- **私有资产**：
+  - `build/issue39-gate3/device/`：关口 2、3、4 的收据，`*-safe.json`。
+  - `build/issue39-gate6/`：`synthetic-matrix.json`；`device/gate6-private.py` 的步骤为 sign、resign-old、synthetic、conflict-export、install-old/new、boot-old、push、drill、real、push-conflicts、conflicts、kills；`device/` 下还有收据。
 
 ## 2026-10-06 #39 关口 1（G2 崩溃耐久）
 

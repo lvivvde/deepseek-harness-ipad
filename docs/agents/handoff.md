@@ -13,9 +13,9 @@
 
 - **当前状态**：
   - 代码在分支 `feat/issue39-gate5-git-hooks`，PR47（https://github.com/lvivvde/deepseek-harness-ipad/pull/47），叠在 PR46 之上，base 是 `feat/issue39-gate1-durability`。合并需另获用户同意。
-  - 证据已作为评论贴在 #39。关口 5 **还没勾选**：验收要求在 iPad 上向用户授权的测试远端 push 一次，token 由用户在设备上输入。其余各项都已通过。
+  - 证据已作为评论贴在 #39，关口 5 已勾选（2026-10-09）。授权推送在 iPad 上 7/7 通过：token 由用户在设备上输入，推到本仓库专用分支 `gate5-push-test`，核对后已删除该分支。
   - 设计与限制见 [git-writes-and-hooks.md](../design/git-writes-and-hooks.md)。
-  - push 只在自建测试远端上验证过，标为部分通过；还没有用户授权的外部测试远端。
+  - iPad 上完整 clone 本仓库超过单条命令 60 s 上限，授权推送改用部分 clone（只取提交和目录树）。大项目的 clone 时长留给 #18。
 - **落点**：
   - Linux 事务：`web/git-write.js`，包括 shim、事件顺序、拒绝 `--no-verify`、credential helper。
   - runHook 执行器：`web/hook-shell.js`，没有运行的 hook 一律阻断。
@@ -23,7 +23,7 @@
   - 令牌注入：`WorkerBridge.swift` 的 `execute(trigger:network:)`。
   - agent 以属主 uid 运行，并接受 `secretEnv`。
   - 自建远端：`git_http_fixture.cjs`。
-  - 集成检查：`integration.html` 的 `gate5Checks` 和 `gate5Refused`。
+  - 集成检查：`integration.html` 的 `gate5Checks` 和 `gate5Refused`；授权推送是 `plan500RunGate5Push`，研究 App 以 `--gate5-push` 启动时显示 token 输入框。
   - `agent.cjs` 和 `init.sh` 有改动，所以私有 inputs 的 initramfs 已重建；旧文件留在 `inputs-pre-gate5/`。
 - **已验证**：
   - macOS 宿主 `run-worker.py --only gate5`：35/35、5/5、5/5。
@@ -31,23 +31,24 @@
   - gate5 包括预热时排队的 `git init`，以及 stash、stash pop、checkout、merge --no-ff、reset --hard，每步两侧一致。
   - `test_git_write` 在 macOS 和 Lima（`/opt/node/bin`）上都是 16/16。
   - 其余单元测试与 Swift 测试全部通过，macOS 完整 `run-worker.py`（`mac-full/`）通过。
+  - 授权推送：iPad 7/7（pre-push 拦下非测试分支，测试分支落到远端、父提交是 main，main 不变，token 没有落盘）；macOS 无 token 试跑（`--only gate5-push-dry`）7/7。
   - 审查后修了：`--no-verify` 缩写、credential helper 只答 https 和回环 http、超时与取消一律阻断、init/clone 不包 hook、日志令牌扫描。
 - **设备状态**：
   - 演练 App `g6drill` 已卸载，研究 App `plan500.research` 重新装上（关口 5 版本）。
   - 正式 Harness 和 LinuxPrototype 的数据没有动过。
 - **未完成**：
-  - 对接授权外部远端的 push（勾选关口 5 前必须完成）。需要用户提供远端，并在设备上输入 token；研究 App 目前只会生成随机令牌，接用户令牌还需要一个设备上的输入入口。
+  - PR46、PR47 待用户同意后合并。
   - hook 的 `workdir` 被忽略，hook 一律在 `/workspace` 运行。
   - 只有 Git 工具受 hook 保护，shell 工具可以直接跑 `git commit --no-verify`；同 uid 代码能从 `/proc` 读到令牌。均已写进设计文档的限制。
 - **私有资产**：
   - `build/issue39-gate5/device/device-private.py`：步骤为 uninstall-drill、sign、install、launch、wait。
-  - 收据：`device/*-safe.json`（当前版本）；旧版本在 `device/r0/`、`device/r1/`。
-  - macOS 运行目录：`mac-1/`、`mac-full/`、`mac-2/`、`mac-3/`（最新）。
+  - 收据：`device/*-safe.json`（当前版本）；旧版本在 `device/r0/`、`device/r1/`。授权推送的收据是 `device/gate5-push-gate5-push-safe.json`，clone 超时那次是 `device/gate5-push-r1-clone-timeout.json`。
+  - macOS 运行目录：`mac-1/`、`mac-full/`、`mac-2/`、`mac-3/`（最新）、`mac-push-dry/`。
 
 ## 2026-10-08 #39 关口 2、3、4、6
 
 - **当前状态**：
-  - 关口 1、2、3、4、6 已在 #39 勾选，证据见各自评论；只剩关口 5（Git 写操作与 hook，走项目 Linux）。
+  - 关口 1–6 已全部在 #39 勾选，证据见各自评论；关口 5 见上一节。
   - 代码仍在分支 `feat/issue39-gate1-durability`，已推送并开 [PR46](https://github.com/lvivvde/deepseek-harness-ipad/pull/46)（2026-10-08，含关口 1–4、6）。合并需另获用户同意。
 - **各关口落点**：
   - **关口 2**：检测 `pthread_fchdir_np`，启动时据此决定 Linux 插件是否可用。见 [linux-plugin-availability.md](../design/linux-plugin-availability.md)。

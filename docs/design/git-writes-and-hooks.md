@@ -73,7 +73,7 @@ Linux 正在启动时，hook 排队等待就绪。等待中被取消的 hook 不
 - **只有 Git 工具受 hook 保护。** 经事务和 runHook 的 Git 操作不能跳过 hook。模型的 shell 工具在 Linux 上执行的是任意命令，它直接运行的 `git commit --no-verify` 或对 `.git` 的改写不受这层保护。这与桌面上的 shell 工具相同：shell 有用户本人的权限。
 - **hook 的工作目录被忽略。** `runHook` 请求里的 `workdir` 不生效，hook 命令一律在 `/workspace` 运行。
 - **macOS 宿主上锁定 `core.ignorecase`。** 宿主的共享目录在 APFS 上，大小写不敏感。Linux git 在 `init` 时会写 `core.ignorecase=true`，而原生子集拒绝这种仓库（见 `native-git.js`）。关口 5 的仓库先记录检测到的值，再设成 `false`。iPad 上检测结果是未设置，说明那里的卷大小写敏感。
-- **push 只算部分通过。** 远端是项目自建的 smart-HTTP 测试远端（`git_http_fixture.cjs`），跑在 guest 内部，用 basic auth，口令就是本次运行的随机令牌。测试没有对接经授权的外部远端。
+- **iPad 上 60 s 内做不完完整 clone。** iPad 的 guest 是单核解释执行（TCG）。完整 clone 本仓库 main（约 2.2 MB）并检出全部文件，超过单条命令 60 s 的上限，结果是写者未知。授权推送因此改用 `--depth 1 --filter=blob:none --no-checkout`：只取 main 的提交和目录树，再用 `git read-tree HEAD` 建索引。完整 clone 大一些的项目，需要另定时长或分步方案，留给 #18。
 
 ## 代码与验证
 
@@ -85,6 +85,7 @@ Linux 正在启动时，hook 排队等待就绪。等待中被取消的 hook 不
   - `WorkerBridge.swift`：`SecretBox`、`execute`、令牌扫描。
 - Linux：`runtime/prototypes/plan500-lease/agent.cjs`（`secretEnv`、以属主 uid 运行）。
 - 单元：`runtime/prototypes/plan500-ipad/test_git_write.mjs`，macOS 16/16。
+- 授权推送：`integration.html` 的 `plan500RunGate5Push`。研究 App 带 `--gate5-push` 启动时，显示 GitHub token 输入框和推送按钮；token 只放进 `SecretBox`，写收据前会扫描收据里有没有它，写完即清掉。macOS 上的 `run-worker.py --only gate5-push-dry` 不带 token 跑同一流程，要求两次推送都停在认证、早于 pre-push，并且远端什么也没收到。
 - 集成：`run-worker.py --only gate5` 依次运行三段：gate5、gate5-unavailable、gate5-prepare-failed。gate5 除 hook 矩阵外，还在预热时排队一条 `git init`，并在 push 之后依次运行 stash push、stash pop、checkout -b、commit、checkout、merge --no-ff、reset --hard。每一步之后，Linux 的 status 与 numstat 都要和原生复核一致。
 
 2026-10-08 的结果：
@@ -109,4 +110,17 @@ hook 矩阵的事件顺序（两端相同）：
 - push：`start git, start pre-push, end pre-push 0, end git 0`
   - 远端统计：认证 2 次，推送 1 次
 - pre-push 失败：推送 0 次，远端 HEAD 不变
+
+### 授权远端推送（2026-10-09）
+
+用户授权的测试远端是本仓库的专用分支 `gate5-push-test`。它不存在于远端，推送时从当前 main 新建，验证后删除，main 不动。token 由用户在 iPad 上输入（fine-grained，只限本仓库，Contents 读写，1 天有效期）。
+
+- 流程：Linux git 部分 clone main，然后在 main 上做一次只新增 `gate5-push-test.md` 的提交，再推送两次。仓库的 pre-push hook 只放行 `refs/heads/gate5-push-test`。
+- iPad 真机 7/7：
+  - 推到 `gate5-push-refused`：`start git, start pre-push, end pre-push 1, end git 1`，被 pre-push 阻断，远端没有这个分支；
+  - 推到 `gate5-push-test`：`start git, start pre-push, end pre-push 0, end git 0`，远端分支指向本次提交，其父提交就是 main；
+  - main 不变；`.git/config` 里只有不带凭据的远端 URL；token 没有落盘。
+  - 耗时：clone 7.9 s，add 5.8 s，commit 9.1 s，两次 push 6.1 s 和 8.0 s。
+- macOS 无 token 试跑 7/7：两次推送都以 128 结束，事件只有 `start git, end git 128`，Git 报告读不到用户名；远端没有收到任何东西。
+- 之后从 Mac 核对了远端提交（只新增一个文件、父提交是 main），随后删除了 `gate5-push-test`。
 - merge --no-ff：`start git, start commit-msg, end commit-msg 0, end git 0`；stash、checkout、reset 只有 `start git, end git 0`

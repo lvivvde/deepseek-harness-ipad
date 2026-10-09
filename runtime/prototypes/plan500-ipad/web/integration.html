@@ -767,9 +767,106 @@ async function gate5Refused(cold) {
   await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
     gate5: {branch: reason, elapsedMs, hookDecision: hook.decision, gitOutcome: git.outcome}}});
 }
+// #39 gate 5 on the iPad: one push to the branch of the project repository the user authorised, with the token the
+// user typed on the device. Linux git clones main over HTTPS, commits one file and pushes; a pre-push hook lets
+// only the test branch through, so main is never a target. The Mac dry run has no token and stops at authentication.
+const GATE5_GITHUB = 'https://github.com/lvivvde/deepseek-harness-ipad.git';
+const GATE5_PUSH_BRANCH = 'refs/heads/gate5-push-test';
+const GATE5_PUSH_REFUSED = 'refs/heads/gate5-push-refused';
+// The iPad guest is an interpreter on one core, too slow to fetch and check out every file within a
+// command's 60 s: the clone takes main's commit and trees only, and the index comes from them.
+const GATE5_PUSH_SETUP = `cd gate5-push || exit 3
+git read-tree HEAD || exit 4
+rm -f .git/hooks/*.sample
+cat > .git/hooks/pre-push <<'HOOK'
+#!/bin/sh
+while read -r lref lsha rref rsha; do
+  [ "$rref" = ${GATE5_PUSH_BRANCH} ] || { echo "pre-push: only ${GATE5_PUSH_BRANCH} may be pushed" >&2; exit 1; }
+done
+exit 0
+HOOK
+chmod 755 .git/hooks/pre-push || exit 5
+printf 'Gate 5 test commit, pushed by Linux git on the iPad (#39). %s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > gate5-push-test.md
+git rev-parse HEAD
+`;
+window.plan500RunGate5Push = async dry => {
+  const deviceChecks = [];
+  const summary = {remote: 'github.com/lvivvde/deepseek-harness-ipad', branch: GATE5_PUSH_BRANCH, dry: !!dry};
+  const verify = (name, passed, detail) => {
+    deviceChecks.push({name, passed: !!passed, ...(passed || detail === undefined ? {} : {detail})});
+    document.querySelector('#state').textContent = JSON.stringify(deviceChecks, null, 2);
+    progress((passed ? 'PASS ' : 'FAIL ') + name);
+    if (!passed) throw new Error(name);
+  };
+  let worker, n = 0;
+  const id = name => `g5p-${name}-${++n}`;
+  const sh = async (name, command) => {
+    const answer = await native('execute', {operationId: id(name), command, trigger: 'shell', timeoutMs: 60000});
+    if (answer.status !== 'RELEASED' || answer.result?.code !== 0) throw new Error('GATE5_PUSH_SHELL_FAILED ' + name);
+    return answer.result.stdout;
+  };
+  // Only the fields the receipt needs: Git's stderr could echo the remote's messages.
+  const brief = r => ({outcome: r.outcome, exitCode: r.exitCode, events: r.events, blockedBy: r.blockedBy, reason: r.reason});
+  // Elapsed time per Git operation, so a slow guest shows where the time went.
+  summary.ms = {};
+  const git = async (name, argv, cwd) => {
+    const started = performance.now();
+    try { return await instrument(worker, 'gate5-git', {operationId: id(name), argv, identity: gate5Identity, ...(cwd ? {cwd} : {})}); }
+    finally { summary.ms[name] = (summary.ms[name] ?? 0) + Math.round(performance.now() - started); }
+  };
+  const remoteRef = async ref => {
+    const r = await git('ls-remote', ['ls-remote', 'origin', ref], 'gate5-push');
+    if (r.outcome !== 'completed') throw new Error('GATE5_LS_REMOTE_FAILED ' + JSON.stringify(brief(r)));
+    return r.output.trim().split(/\s/)[0] || null;
+  };
+  try {
+    worker = (await boot(undefined)).worker;
+    if ((await native('status')).phase !== 'READY') await native('project-open', {pluginEnabled: true});
+    await sh('clean', 'rm -rf gate5-push');
+    const cloned = await git('clone', ['clone', '-q', '--depth', '1', '--filter=blob:none', '--no-checkout', '--single-branch', '--branch', 'main', GATE5_GITHUB, 'gate5-push']);
+    verify('Linux git clones main over HTTPS', cloned.outcome === 'completed' && gate5Same(cloned.events, ['start git', 'end git 0']), brief(cloned));
+    const base = (await sh('setup', GATE5_PUSH_SETUP)).trim();
+    const added = await git('add', ['add', 'gate5-push-test.md'], 'gate5-push');
+    const committed = await git('commit', ['commit', '-q', '-m', 'test: gate 5 push from the iPad (#39)'], 'gate5-push');
+    const tip = (await sh('head', 'git -C gate5-push rev-parse HEAD')).trim();
+    const parent = (await sh('parent', 'git -C gate5-push rev-parse HEAD~1')).trim();
+    // Only the test file changes: every other path keeps main's blob.
+    const changed = (await sh('changed', 'git -C gate5-push diff-tree --no-commit-id --name-status -r HEAD~1 HEAD')).trim();
+    verify('one test commit on top of main', added.outcome === 'completed' && committed.outcome === 'completed' && parent === base
+      && changed === 'A\tgate5-push-test.md',
+      {added: brief(added), committed: brief(committed)});
+    verify('test branches absent before the push', await remoteRef(GATE5_PUSH_BRANCH) === null && await remoteRef(GATE5_PUSH_REFUSED) === null);
+    const refused = await git('push-refused', ['push', 'origin', 'HEAD:' + GATE5_PUSH_REFUSED], 'gate5-push');
+    const pushed = await git('push', ['push', 'origin', 'HEAD:' + GATE5_PUSH_BRANCH], 'gate5-push');
+    const landed = await remoteRef(GATE5_PUSH_BRANCH), refusedRemote = await remoteRef(GATE5_PUSH_REFUSED);
+    const main = await remoteRef('refs/heads/main');
+    summary.refused = brief(refused); summary.pushed = brief(pushed);
+    if (dry) {
+      const stopped = r => r.outcome === 'failed' && r.exitCode === 128 && gate5Same(r.events, ['start git', 'end git 128']);
+      // Only a yes/no leaves the run: Git asked for credentials and found none, so TLS and DNS worked.
+      summary.noCredentials = [refused, pushed].every(r => /could not read Username/.test(r.stderr ?? ''));
+      verify('without a token, both pushes stop at authentication before pre-push', stopped(refused) && stopped(pushed) && summary.noCredentials, summary);
+      verify('nothing reached the remote', landed === null && refusedRemote === null);
+    } else {
+      verify('pre-push refuses any branch but the test branch; nothing pushed', refused.outcome === 'failed' && refused.blockedBy === 'pre-push'
+        && gate5Same(refused.events, [...gate5Events(['pre-push', 1]), 'end git 1']) && refusedRemote === null, summary);
+      verify('push with the token typed on the device reaches the test branch', pushed.outcome === 'completed'
+        && gate5Same(pushed.events, [...gate5Events(['pre-push', 0]), 'end git 0']) && landed === tip, summary);
+    }
+    verify('main is unchanged', main === base);
+    const urls = (await sh('urls', 'git -C gate5-push config --get-regexp "^remote\\..*\\.url$"')).trim();
+    verify('.git/config holds only the plain remote URL', urls === 'remote.origin.url ' + GATE5_GITHUB);
+    Object.assign(summary, {base, tip: dry ? null : tip, landed});
+    await native('model-done', {gate5Push: true, result: JSON.parse(JSON.stringify({passed: true, checks: deviceChecks, gate5Push: summary}))});
+  } catch (error) {
+    await native('model-done', {gate5Push: true, result: JSON.parse(JSON.stringify({passed: false, checks: deviceChecks, error: String(error), gate5Push: summary}))});
+  } finally { worker?.terminate(); }
+};
 try {
   const cold = await native('status');
-  if (window.plan500Gate5) await (cold.injectedMissingPrivateSymbol || cold.injectedPrepareFailure ? gate5Refused(cold) : gate5Checks(cold));
+  // The push waits for the token typed on the device; the Mac dry run starts at once without one.
+  if (window.plan500Gate5Push) { if (window.plan500Gate5PushDry) await window.plan500RunGate5Push(true); }
+  else if (window.plan500Gate5) await (cold.injectedMissingPrivateSymbol || cold.injectedPrepareFailure ? gate5Refused(cold) : gate5Checks(cold));
   else if (window.plan500Gate3) await gate3Checks();
   else if (window.plan500Gate4) await gate4Faults();
   else if (window.plan500Gate2Missing) await gate2Missing(cold);

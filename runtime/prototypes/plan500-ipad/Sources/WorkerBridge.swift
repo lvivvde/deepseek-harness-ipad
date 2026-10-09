@@ -399,15 +399,18 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
     let gate3: Bool
     /// #39 gate 5: run the Git write and hook suite instead of the base checks.
     let gate5: Bool
+    /// #39 gate 5 authorised push: `.device` waits for the token typed on the iPad; `.dry` runs at once without one.
+    enum Gate5Push { case device, dry }
+    let gate5Push: Gate5Push?
     let completion: (Bool) -> Void
     var view: WKWebView!
     /// Gate 4 records whether the App left the foreground during a model run; it does not decide the result.
     private var backgroundTransitions = 0
     private var observer: NSObjectProtocol?
     init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, gate3: Bool = false, gate5: Bool = false,
-         completion: @escaping (Bool) -> Void) {
+         gate5Push: Gate5Push? = nil, completion: @escaping (Bool) -> Void) {
         self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.gate3 = gate3
-        self.gate5 = gate5; self.completion = completion
+        self.gate5 = gate5; self.gate5Push = gate5Push; self.completion = completion
         // The self-built remote's token lives only in this process; a Git network command gets it in its Linux environment.
         if gate5 { coordinator.setGitToken(WorkerCoordinator.randomToken()) }
         coordinator.gate3 = Gate3Tools(root: coordinator.probe.root.appendingPathComponent("gate3"), web: webRoot)
@@ -426,7 +429,7 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
 #endif
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3); window.plan500Gate5 = \(gate5);",
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3); window.plan500Gate5 = \(gate5); window.plan500Gate5Push = \(gate5Push != nil); window.plan500Gate5PushDry = \(gate5Push == .dry);",
                                                                  injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
 #if os(iOS)
@@ -470,6 +473,14 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
             if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
         }
     }
+    /// Gate 5 authorised push: the user's token lives only in this process until the receipt is written.
+    func runGate5Push(token: String) {
+        guard gate5Push == .device, !token.isEmpty else { completion(false); return }
+        coordinator.setGitToken(token)
+        view.evaluateJavaScript("void window.plan500RunGate5Push(false)") { [weak self] _, error in
+            if error != nil { self?.coordinator.setGitToken(""); self?.completion(false) }
+        }
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         if message.name == "log" {
@@ -491,23 +502,29 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 result["linuxAvailabilityDetected"] = WorkerCoordinator.name(coordinator.detectedAvailability)
                 result["injectedMissingPrivateSymbol"] = coordinator.injectedMissingPrivateSymbol
                 result["injectedPrepareFailure"] = coordinator.injectedPrepareFailure
-                if gate5 { result["gitTokenPersisted"] = coordinator.gitTokenPersisted() }
+                if gate5 || gate5Push != nil { result["gitTokenPersisted"] = coordinator.gitTokenPersisted() }
                 result["vmStarts"] = coordinator.vmStartCount
                 result["backgroundTransitions"] = backgroundTransitions
                 let gate4 = (body["gate4"] as? String).flatMap { Self.gate4Modes.contains($0) ? $0 : nil }
                 let gate3Device = operation == "model-done" && body["gate3"] as? Bool == true
                 let gate5Receipt = coordinator.injectedMissingPrivateSymbol ? "gate5-unavailable-safe.json"
                     : coordinator.injectedPrepareFailure ? "gate5-prepare-failed-safe.json" : "gate5-safe.json"
-                let receipt = gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
+                let pushReceipt = body["gate5Push"] as? Bool == true && gate5Push != nil
+                    ? (gate5Push == .dry ? "gate5-push-dry-safe.json" : "gate5-push-safe.json") : nil
+                let receipt = pushReceipt ?? (gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
                     : gate5 ? gate5Receipt : gate3 ? "gate3-safe.json" : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
-                    : resume ? "worker-resume-safe.json" : "worker-safe.json")
+                    : resume ? "worker-resume-safe.json" : "worker-safe.json"))
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
+                guard !coordinator.gitTokenFound(in: data) else { throw WorkerBridgeError.refused("RECEIPT_HOLDS_TOKEN") }
                 try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
                 view.evaluateJavaScript("window.prototypeNativeReply(\(id), {accepted: true})", completionHandler: nil)
                 if operation == "model-done" { coordinator.setModelKey("") }
-                if gate5 { coordinator.setGitToken("") }
+                if gate5 || gate5Push != nil { coordinator.setGitToken("") }
                 completion(result["passed"] as? Bool == true && result["gitTokenPersisted"] as? Bool != true)
-            } catch { completion(false) }
+            } catch {
+                if gate5 || gate5Push != nil { coordinator.setGitToken("") }
+                completion(false)
+            }
             return
         }
         let coordinator = coordinator
@@ -550,6 +567,12 @@ struct WorkerResearchView: View {
                     model.runGate3(key: model.apiKey); model.apiKey = ""
                 }.disabled(model.apiKey.isEmpty || model.modelRunning)
             }
+            if model.gate5Push {
+                SecureField("GitHub token（只用于本次推送，不保存）", text: $model.gitToken).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("关口 5：推送到 gate5-push-test 分支") {
+                    model.runGate5Push(token: model.gitToken); model.gitToken = ""
+                }.disabled(model.gitToken.isEmpty || model.modelRunning)
+            }
             if let host = model.host { WorkerResearchWebView(view: host.view) }
         }.padding().task { model.start() }
     }
@@ -568,6 +591,8 @@ private final class WorkerResearchModel: ObservableObject {
     @Published var apiKey = ""
     @Published var finished = false
     @Published var modelRunning = false
+    @Published var gitToken = ""
+    @Published var gate5Push = false
     func runModel(key: String) {
         modelRunning = true; status = "真实模型检查进行中"; host?.runModel(key: key)
     }
@@ -576,6 +601,9 @@ private final class WorkerResearchModel: ObservableObject {
     }
     func runGate3(key: String) {
         modelRunning = true; status = "关口 3 检查进行中"; host?.runGate3(key: key)
+    }
+    func runGate5Push(token: String) {
+        modelRunning = true; status = "关口 5 推送进行中"; host?.runGate5Push(token: token)
     }
     func start() {
         guard host == nil else { return }
@@ -604,9 +632,11 @@ private final class WorkerResearchModel: ObservableObject {
                                                     injectPrepareFailure: args.contains("--inject-prepare-failure"))
             // #39 gate 5 runs on its own at launch, on a fresh project, and never resumes the base checks.
             let gate5 = args.contains("--gate5")
-            let resume = !gate5 && !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
+            // The authorised push waits for the token typed here; it also never resumes the base checks.
+            gate5Push = args.contains("--gate5-push")
+            let resume = !gate5 && !gate5Push && !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
-                                     resume: resume, gate5: gate5) { [weak self] passed in
+                                     resume: resume, gate5: gate5, gate5Push: gate5Push ? .device : nil) { [weak self] passed in
                 // A model check result never hides the buttons that the passed base checks unlocked.
                 if self?.modelRunning != true { self?.finished = passed }
                 self?.modelRunning = false
@@ -614,7 +644,7 @@ private final class WorkerResearchModel: ObservableObject {
             }
             self.host = host
             try host.start()
-            status = "官方 Worker 检查进行中"
+            status = gate5Push ? "输入 GitHub token 后点推送" : "官方 Worker 检查进行中"
         } catch { status = "研究启动失败；未登记通过" }
     }
 }

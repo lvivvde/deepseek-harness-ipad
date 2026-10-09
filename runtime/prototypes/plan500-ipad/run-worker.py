@@ -87,7 +87,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--only', choices=['gate3', 'gate4', 'gate5'], help='Run one stage while iterating; the full run is the evidence')
+    parser.add_argument('--only', choices=['gate3', 'gate4', 'gate5', 'gate5-push-dry'], help='Run one stage while iterating; the full run is the evidence')
     args = parser.parse_args()
     prepare()
     web = worker.OUTPUT / 'web'
@@ -180,6 +180,17 @@ def main():
             if code or not data['passed'] or data['vmStarts'] != starts or data['gitTokenPersisted'] is not False or leaked:
                 raise RuntimeError('GATE5_FAILED ' + stage)
             results.append({'model': 'none', 'stage': stage, 'checks': len(data['checks']), 'passed': True, 'gate5': data['gate5']})
+    # #39 gate 5 push without a token against the public repository: needs github.com, so it runs only on request.
+    # Both pushes must stop at authentication, before pre-push, and nothing may reach the remote.
+    if args.only == 'gate5-push-dry':
+        project = output / 'gate5-push-dry'
+        with (output / 'gate5-push-dry-private.log').open('w') as log:
+            code = subprocess.run([str(binary), str(args.inputs.resolve()), str(web), str(project), 'none', 'gate5-push-dry'],
+                                  stdout=log, stderr=subprocess.STDOUT, timeout=780).returncode
+        data = json.loads((project / 'gate5-push-dry-safe.json').read_text())
+        if code or not data['passed'] or data['gitTokenPersisted'] is not False:
+            raise RuntimeError('GATE5_PUSH_DRY_FAILED')
+        results.append({'model': 'none', 'stage': 'gate5-push-dry', 'checks': len(data['checks']), 'passed': True, 'gate5Push': data['gate5Push']})
     assets = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
     summary = {'passed': True, 'partial': bool(args.only), 'physicalDevice': False, 'results': results, 'modelNetworkVerified': False,
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sources + list((SOURCE / 'web').iterdir())

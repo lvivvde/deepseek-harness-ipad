@@ -39,14 +39,31 @@
 - 关口 5 的代码在 [PR47](https://github.com/lvivvde/deepseek-harness-ipad/pull/47)，设计与限制见 [Git 写操作与 hook](../design/git-writes-and-hooks.md)。Git 写操作和 hook 走项目 Linux，原生只读复核。授权推送用的是本仓库的专用分支 `gate5-push-test`，token 由用户在 iPad 上输入；核对后该分支已删除。
 - 遗留限制：系统崩溃和断电未验；关口 1 真机写租约中的 Linux 写者是模拟的，真实 VM 补测记在 #17；快照或日志中段损坏时会丢草稿和租约记录；生成中切后台未在真机运行；hook 的 `workdir` 被忽略；shell 工具能直接 `git commit --no-verify`，同 uid 代码能从 `/proc` 读到 Git 令牌；iPad 上完整 clone 本仓库超过单条命令 60 s 的上限，大项目的 clone 时长留给 #18。
 
-**下一步：** 开始 #17。
+#17 进展（分支 `feat/issue17-core-scheduler`，待开 PR）：
+
+- 已完成 macOS 可测的核心切片和文档，范围由用户 2026-10-09 确认。多项目时，Linux 绑定到本进程第一个打开的启用项目，其余启用项目为 `unavailable(LINUX_BOUND_TO_OTHER_PROJECT)`，提示关闭并重开 App。
+- 代码：
+  - `LinuxPlugin`：每个项目的阶段、准入，以及 VM 退出诊断。
+  - 新模块 `HarnessHost`：`ProjectGateway`（写租约下执行，以及写者未知与显式释放）、`LinuxBringUp`、`ReadyProof`。
+  - `WorkspaceStore` 新增释放原因 `RECONCILED`。
+  - 研究 App 的 `WorkerBridge` 已改用新接口；按 `run-worker.py` 的方式只做了类型检查，没有重跑集成。
+- 文档：[调度与隔离边界](../design/linux-plugin-scheduling.md)、[能力声明](../design/capability-declaration.md)、[分发组件清单（构建前）](../design/distribution-components.md)。
+- 已验证（macOS）：`make test-app` 全部通过（含 `LinuxPluginTests` 19 项、`HarnessHostTests` 20 项），`make check` 和 `make test-plan500-ipad` 也通过。没有真机证据。
+
+**下一步：** 合并核心切片 PR（需用户同意），然后是正式候选 App 的接线：
+
+- 固定官方 Worker 与适配接入。
+- QEMU 生命周期，包括准备失败后停止仍在运行的 QEMU，以及宿主侧用哨兵文件核对挂载。
+- iPad 真机验收，并用真实 VM 写者补测关口 1。
+- #17 要求的测量和迁移演练。
+- 用候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 
 ## 开放任务
 
 | Issue | 依赖与边界 |
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#19、#32、#39 已关闭，作为历史保留。 |
-| [#17 实现](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 当前任务，#39 已关闭。实现原生 Harness 宿主、同一项目工作区、Linux 预热及准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验项转兼容插件技术债，不标记通过。 |
+| [#17 实现](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 当前任务，核心切片见上文“#17 进展”。实现原生 Harness 宿主、同一项目工作区、Linux 预热及准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验项转兼容插件技术债，不标记通过。 |
 | [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |

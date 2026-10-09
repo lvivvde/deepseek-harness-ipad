@@ -25,12 +25,16 @@ public enum LinuxAvailability: Equatable, Sendable {
     }
 }
 
-/// Process-wide Linux plugin lifecycle and task admission. One instance per App process: QEMU is
-/// started at most once, and a failure is not retried inside the same process (ADR 0003).
+/// Linux plugin lifecycle and task admission, per project. One instance per App process: QEMU is
+/// started at most once, and a failure is not retried inside the same process (ADR 0003). The guest
+/// mounts exactly one project, so Linux binds to the first plugin-enabled project opened; another
+/// plugin project in the same process is unavailable until the App is closed and reopened.
 public final class LinuxPlugin: @unchecked Sendable {
+    /// `disabled → preparing → ready | failed | unavailable`, with a fixed reason code where it applies.
     public enum Phase: Equatable, Sendable {
-        case cold, preparing, ready, failed
-        case unavailable(LinuxAvailability.Reason)
+        case disabled, preparing, ready
+        case failed(String)
+        case unavailable(String)
     }
 
     public enum ExecutionPath: String, Codable, Sendable { case native, linux, unsupported }
@@ -62,65 +66,134 @@ public final class LinuxPlugin: @unchecked Sendable {
 
     public static let notEnabledCode = "LINUX_PLUGIN_NOT_ENABLED"
     public static let prepareFailedCode = "LINUX_PREPARE_FAILED"
+    public static let boundToOtherProjectCode = "LINUX_BOUND_TO_OTHER_PROJECT"
+    public static let vmExitedCode = "LINUX_VM_EXITED"
 
-    public let availability: LinuxAvailability
-    private let launcher: () throws -> Void
-    private let queue: DispatchQueue
-    private let condition = NSCondition()
-    private var current: Phase
-
-    public init(availability: LinuxAvailability, queue: DispatchQueue = .global(qos: .userInitiated),
-                launcher: @escaping () throws -> Void) {
-        self.availability = availability
-        self.launcher = launcher
-        self.queue = queue
-        if case .unavailable(let reason) = availability { current = .unavailable(reason) } else { current = .cold }
+    /// A launcher error with a fixed code, recorded as the failure's cause. Any other error is recorded
+    /// as `LAUNCH_ERROR`, so no free text from the guest or QEMU reaches the diagnostics.
+    public struct LaunchFailure: Error, Equatable, Sendable {
+        public let code: String
+        public init(_ code: String) { self.code = code }
     }
 
-    public var phase: Phase { condition.lock(); defer { condition.unlock() }; return current }
+    /// Fixed-field record saved when Linux fails, before the failure is published. The user is then
+    /// asked to close and reopen the App; Linux never restarts inside the process.
+    public struct Diagnostic: Codable, Equatable, Sendable {
+        public let code: String
+        public let project: String
+        /// Phase of the guest when it failed: `PREPARING` or `READY`.
+        public let stage: String
+        public let status: Int32?
+        public let cause: String?
 
-    /// Opening a project never waits for Linux; a plugin-enabled project starts preparation.
-    @discardableResult
-    public func open(pluginEnabled: Bool) -> Phase { pluginEnabled ? prepare() : phase }
+        public init(code: String, project: String, stage: String, status: Int32? = nil, cause: String? = nil) {
+            self.code = code; self.project = project; self.stage = stage; self.status = status; self.cause = cause
+        }
+    }
 
-    /// Starts preparation once. Unavailable, preparing, ready and failed are all left unchanged.
+    public let availability: LinuxAvailability
+    private let launcher: (String) throws -> Void
+    private let diagnostics: (Diagnostic) -> Void
+    private let queue: DispatchQueue
+    private let condition = NSCondition()
+    /// Serializes failures, so only the first is saved and published.
+    private let failing = NSLock()
+    private var enabled: [String: Bool] = [:]
+    private var bound: String?
+    /// Phase of the bound project's guest; meaningless while `bound` is nil.
+    private var guest: Phase = .disabled
+
+    /// `launcher` boots the guest for the given project and returns only after its verified ready proof.
+    /// `diagnostics` must save the record durably before returning; it is called without any plugin lock.
+    public init(availability: LinuxAvailability, queue: DispatchQueue = .global(qos: .userInitiated),
+                launcher: @escaping (String) throws -> Void, diagnostics: @escaping (Diagnostic) -> Void = { _ in }) {
+        self.availability = availability
+        self.launcher = launcher
+        self.diagnostics = diagnostics
+        self.queue = queue
+    }
+
+    /// The project Linux is bound to in this process, if any.
+    public var boundProject: String? { condition.lock(); defer { condition.unlock() }; return bound }
+
+    public func phase(of project: String) -> Phase {
+        condition.lock(); defer { condition.unlock() }; return phaseLocked(project)
+    }
+
+    private func phaseLocked(_ project: String) -> Phase {
+        guard enabled[project] == true else { return .disabled }
+        if case .unavailable(let reason) = availability { return .unavailable(reason.rawValue) }
+        guard let bound else { return .disabled }
+        return bound == project ? guest : .unavailable(Self.boundToOtherProjectCode)
+    }
+
+    /// Opening a project never waits for Linux. The first plugin-enabled project binds Linux and starts
+    /// its preparation; reopening never prepares again.
     @discardableResult
-    public func prepare() -> Phase {
+    public func open(project: String, pluginEnabled: Bool) -> Phase {
         condition.lock()
-        guard current == .cold else { defer { condition.unlock() }; return current }
-        current = .preparing
+        enabled[project] = pluginEnabled
+        guard pluginEnabled, availability == .available, bound == nil else {
+            defer { condition.unlock() }; return phaseLocked(project)
+        }
+        bound = project; guest = .preparing
         condition.unlock()
         queue.async { [self] in
-            let next: Phase
-            do { try launcher(); next = .ready } catch { next = .failed }
-            condition.lock(); current = next; condition.broadcast(); condition.unlock()
+            do {
+                try launcher(project)
+                condition.lock(); if guest == .preparing { guest = .ready }; condition.broadcast(); condition.unlock()
+            } catch {
+                let cause = (error as? LaunchFailure)?.code ?? "LAUNCH_ERROR"
+                fail(Diagnostic(code: Self.prepareFailedCode, project: project, stage: "PREPARING", cause: cause))
+            }
         }
         return .preparing
+    }
+
+    /// The bound guest's QEMU exited. Ignored before any launch and after an earlier failure.
+    public func vmExited(status: Int32?) {
+        condition.lock()
+        let stage: String
+        switch guest {
+        case .preparing: stage = "PREPARING"
+        case .ready: stage = "READY"
+        default: condition.unlock(); return
+        }
+        let project = bound ?? ""
+        condition.unlock()
+        fail(Diagnostic(code: Self.vmExitedCode, project: project, stage: stage, status: status))
+    }
+
+    /// Saves the record, then publishes the failure once. The first failure of the guest wins.
+    private func fail(_ record: Diagnostic) {
+        failing.lock(); defer { failing.unlock() }
+        condition.lock(); let live = guest == .preparing || guest == .ready; condition.unlock()
+        guard live else { return }
+        diagnostics(record)
+        condition.lock(); guest = .failed(record.code); condition.broadcast(); condition.unlock()
     }
 
     /// Wakes waiting admissions so they can re-check their cancellation.
     public func wake() { condition.lock(); condition.broadcast(); condition.unlock() }
 
-    /// Decides where a task may run. Linux tasks of an enabled project wait for real ready, start
-    /// preparation if needed, and are refused at once when the plugin cannot run.
-    public func admit(_ task: Task, pluginEnabled: Bool, isCancelled: () -> Bool) -> Admission {
+    /// Decides where a task may run. A Linux task waits only for its own project's preparation, and is
+    /// refused at once when that project cannot run Linux.
+    public func admit(_ task: Task, project: String, isCancelled: () -> Bool) -> Admission {
         guard task.path == .linux else { return .native }
-        guard pluginEnabled else { return .refused(Self.notEnabledCode) }
-        prepare()
         condition.lock(); defer { condition.unlock() }
         while true {
             if isCancelled() { return .cancelledBeforeDispatch }
-            switch current {
+            switch phaseLocked(project) {
             case .ready: return .linux
-            case .failed: return .refused(Self.prepareFailedCode)
-            case .unavailable(let reason): return .refused(reason.rawValue)
-            case .cold, .preparing: condition.wait()
+            case .preparing: condition.wait()
+            case .disabled: return .refused(Self.notEnabledCode)
+            case .failed(let reason), .unavailable(let reason): return .refused(reason)
             }
         }
     }
 
-    public func declaration(pluginEnabled: Bool) -> CapabilityDeclaration {
-        CapabilityDeclaration(phase: phase, pluginEnabled: pluginEnabled)
+    public func declaration(project: String) -> CapabilityDeclaration {
+        CapabilityDeclaration(phase: phase(of: project), availability: availability)
     }
 }
 
@@ -152,20 +225,21 @@ public struct CapabilityDeclaration: Codable, Equatable, Sendable {
         ("workspace.fifo", .unsupported), ("workspace.unix-socket", .unsupported),
     ]
 
-    public init(phase: LinuxPlugin.Phase, pluginEnabled: Bool) {
+    public init(phase: LinuxPlugin.Phase, availability: LinuxAvailability) {
         let state: String, reason: String?
-        switch (phase, pluginEnabled) {
-        case (.unavailable(let why), _): state = "UNAVAILABLE"; reason = why.rawValue
-        case (_, false): state = "NOT_ENABLED"; reason = LinuxPlugin.notEnabledCode
-        case (.cold, true): state = "COLD"; reason = nil
-        case (.preparing, true): state = "PREPARING"; reason = nil
-        case (.ready, true): state = "READY"; reason = nil
-        case (.failed, true): state = "FAILED"; reason = LinuxPlugin.prepareFailedCode
+        switch (phase, availability) {
+        case (.disabled, .unavailable(let why)): state = "UNAVAILABLE"; reason = why.rawValue
+        case (.disabled, .available): state = "NOT_ENABLED"; reason = LinuxPlugin.notEnabledCode
+        case (.preparing, _): state = "PREPARING"; reason = nil
+        case (.ready, _): state = "READY"; reason = nil
+        case (.failed(let why), _): state = "FAILED"; reason = why
+        case (.unavailable(let why), _): state = "UNAVAILABLE"; reason = why
         }
+        let pluginEnabled = phase != .disabled
         plugin = Plugin(enabled: pluginEnabled, state: state, reason: reason,
                         requiredPrivateSymbol: LinuxAvailability.privateSymbol)
-        // Cold or preparing Linux items are still usable: their tasks wait for ready.
-        let linuxUsable = state == "COLD" || state == "PREPARING" || state == "READY"
+        // Preparing Linux items are still usable: their tasks wait for ready.
+        let linuxUsable = state == "PREPARING" || state == "READY"
         items = Self.scope.map { name, path in
             switch path {
             case .native: return Item(name: name, path: path, available: true, reason: nil)

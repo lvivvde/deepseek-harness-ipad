@@ -266,6 +266,19 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertEqual(lease["epoch"], guest.bodies("/bind").first?["epoch"] as? Int)
     }
 
+    func testVMExitAfterRestartLeavesTheEarlierProcessesUnknownWriterForTheUser() throws {
+        do {
+            let guest = FakeGuest()
+            guest.handlers["/execute"] = { _ in throw GuestRPCError.unreachable("APP_KILLED") }
+            let (gateway, _) = try readyGateway(guest)
+            XCTAssertEqual(gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .writerUnknown(nil))
+        }
+        let (gateway, _) = try readyGateway(FakeGuest())
+        gateway.guestExited(status: 1)
+        XCTAssertEqual(gateway.lease?.state, .writerUnknown, "this VM never ran the earlier writer")
+        guard case .released = gateway.releaseUnknownWriter() else { return XCTFail("still released on confirmation") }
+    }
+
     func testALiveUnknownWriterIsReleasedOnlyAfterTheGuestConfirmsItStopped() throws {
         let guest = FakeGuest()
         guest.handlers["/cancel"] = { _ in throw GuestRPCError.unreachable("SEVERED") }

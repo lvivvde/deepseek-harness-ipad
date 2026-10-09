@@ -24,10 +24,10 @@
 | `subprocess` | `linux` | 官方工具派生的子进程 |
 | `hook.command` | `linux` | 运行外部命令的 hook |
 | `git.write` | `linux` | 一切会修改仓库的 Git 操作，包括 commit、checkout 和 push |
-| `workspace.fifo` | `unsupported` | 9P 共享模式 `none` 不能在共享工作区里创建 FIFO |
+| `workspace.fifo` | `unsupported` | 9P 共享模式 `none` 不能在 Linux 挂载的原生工作区里创建 FIFO |
 | `workspace.unix-socket` | `unsupported` | 同上，不能创建 Unix socket |
 
-需要 FIFO 或 Unix socket 的工具，改用 guest 内的私有路径（如 `/tmp`），而不是共享工作区。做不到的，就按上表声明为 `unsupported`。
+需要 FIFO 或 Unix socket 的工具，改用 guest 内的私有路径（如 `/tmp`），而不是原生工作区。做不到的，就按上表声明为 `unsupported`。
 
 ## 当前是否可用
 
@@ -35,11 +35,11 @@
 
 | 插件状态 | 何时 | `linux` 项 |
 | --- | --- | --- |
-| `NOT_ENABLED` | 项目未启用插件 | 不可用，原因 `LINUX_PLUGIN_NOT_ENABLED` |
+| `NOT_ENABLED` | 项目未启用插件，且 Linux 可用 | 不可用，原因 `LINUX_PLUGIN_NOT_ENABLED` |
 | `PREPARING` | 准备中 | 可用，任务等待就绪 |
 | `READY` | 就绪 | 可用 |
 | `FAILED` | 准备失败或 VM 退出 | 不可用，原因 `LINUX_PREPARE_FAILED` 或 `LINUX_VM_EXITED` |
-| `UNAVAILABLE` | 私有符号缺失，或 Linux 已绑定到另一个项目 | 不可用，原因 `LINUX_PRIVATE_SYMBOL_MISSING` 或 `LINUX_BOUND_TO_OTHER_PROJECT` |
+| `UNAVAILABLE` | 私有符号缺失（无论项目是否启用插件），或 Linux 已绑定到另一个项目 | 不可用，原因 `LINUX_PRIVATE_SYMBOL_MISSING` 或 `LINUX_BOUND_TO_OTHER_PROJECT` |
 
 `native` 项在任何状态下都可用。`unsupported` 项始终不可用，原因 `SHARE_MODE_NONE`。阶段规则见 [linux-plugin-scheduling.md](linux-plugin-scheduling.md)。
 

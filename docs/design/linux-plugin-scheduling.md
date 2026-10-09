@@ -69,11 +69,12 @@ guest 断连、没回报 `writerQuiescent`，或者取消没能确认时，网�
 - 工具调用记为 `UNKNOWN`，不重放，也不换执行器重跑。
 - 原生写继续保存为草稿。
 
-租约只能按下表释放，**从不自动释放**：
+租约只能按下表释放。只有写者停止得到证实时才释放，**从不凭超时或猜测释放**：
 
 | 情形 | 释放方式 | 原因 | epoch |
 | --- | --- | --- | --- |
-| 本进程的 VM 已退出 | `guestExited` 自动释放，因为 VM 退出已证明写者停止 | `GUEST_TERMINATED` | +1 |
+| 取消超时后，同一条 `/execute` 迟到地回报 `writerQuiescent` | 该命令照常结束，由 guest 的回报证实写者已停 | `COMPLETED` | 不变 |
+| 本进程派发的写者，本进程的 VM 已退出 | `guestExited` 释放，因为 VM 退出证实写者已停 | `GUEST_TERMINATED` | +1 |
 | 本进程派发的写者，guest 仍在线 | 用户确认后调用 `releaseUnknownWriter`。只有 guest 的 `/revoke` 回答 `revoked: true` 才释放；guest 回答仍在运行或不可达时，租约保持 | `RECONCILED` | 不变 |
 | 租约来自更早的 App 进程 | 用户确认后调用 `releaseUnknownWriter`。旧进程的 VM 已随进程消失 | `RECONCILED` | 不变 |
 
@@ -85,9 +86,9 @@ guest 断连、没回报 `writerQuiescent`，或者取消没能确认时，网�
 
 QEMU 退出后：
 
-1. 先保存固定诊断：错误码、项目、阶段（`PREPARING` 或 `READY`）、退出状态，以及准备失败时的原因。保存完成后，阶段才变为 `failed`。只保存第一条：之后的失败、重复的退出和迟到的启动结果都被忽略。
+1. 先保存固定诊断：错误码、项目、阶段（`PREPARING` 或 `READY`）、退出状态，以及准备失败时的原因。保存完成后，阶段才变为 `failed`。只保存第一条：之后的失败、重复的退出和迟到的启动结果都被忽略。因此，准备已因 `READY_TIMEOUT` 或证明被拒而失败后，QEMU 再退出不会另存一条；此时仍在运行的 QEMU 由 App 接线负责停止，见文末“未完成”。
 2. 阶段变为 `failed(LINUX_VM_EXITED)`，等待中的任务立即被拒。
-3. 释放本进程的租约（`GUEST_TERMINATED`）。
+3. 释放本进程派发的写者所持的租约（`GUEST_TERMINATED`）。更早进程留下的写者未知租约不受影响，仍等用户确认。
 4. 同一进程内不重新初始化 QEMU。界面提示关闭并重开 App。
 
 ## 数据访问范围与项目隔离边界
@@ -137,4 +138,10 @@ macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPl
 
 guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写租约研究中的 `runtime/prototypes/plan500-lease/agent.cjs`，这里只测网关对它的调用合同。
 
-**未完成**：正式候选 App 的接线、iPad 真机验证，以及 #17 要求的测量。这些不算通过，见[开发交接](../agents/handoff.md)。
+**未完成**（不算通过，见[开发交接](../agents/handoff.md)）：
+
+- 正式候选 App 的接线：固定官方 Worker 与适配接入、QEMU 生命周期，以及准备失败后停止仍在运行的 QEMU。
+- 就绪证明目前是 guest 的自报。接线时由宿主侧核对挂载的确实是本项目的原生工作区，例如经网关写一个哨兵文件，再由 guest 读回。
+- iPad 真机验证，以及关口 1 用真实 VM 写者补测写租约（#17 的 2026-10-05 评论）。
+- #17 要求的测量。
+- 迁移演练：只用 #39 关口 6 核验过的隔离副本。

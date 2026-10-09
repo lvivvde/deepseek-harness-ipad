@@ -41,11 +41,13 @@ public final class LinuxPlugin: @unchecked Sendable {
         case shell(String)
         /// Command hooks run through the shell capability, so they need Linux.
         case hook(String)
+        /// A repository-changing Git operation and the hooks it runs (#39 gate 5). Git reads stay native.
+        case git(String)
 
         public var path: ExecutionPath {
             switch self {
             case .native: return .native
-            case .shell, .hook: return .linux
+            case .shell, .hook, .git: return .linux
             }
         }
     }
@@ -146,7 +148,7 @@ public struct CapabilityDeclaration: Codable, Equatable, Sendable {
     public static let scope: [(String, LinuxPlugin.ExecutionPath)] = [
         ("session", .native), ("fs.read", .native), ("fs.write", .native), ("fs.edit", .native),
         ("fs.search", .native), ("git.read", .native), ("review", .native), ("drafts", .native),
-        ("shell", .linux), ("subprocess", .linux), ("hook.command", .linux),
+        ("shell", .linux), ("subprocess", .linux), ("hook.command", .linux), ("git.write", .linux),
         ("workspace.fifo", .unsupported), ("workspace.unix-socket", .unsupported),
     ]
 

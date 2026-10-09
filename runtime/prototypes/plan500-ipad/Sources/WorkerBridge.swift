@@ -15,8 +15,9 @@ import ModelGateway
 
 private enum WorkerBridgeError: Error { case refused(String) }
 
-/// The real key, read only by the gateway when it builds a request. Never logged, returned or given to the Worker.
-private final class ModelKeyBox: @unchecked Sendable {
+/// A secret read only where a request is built: the model key, or the Git token of #39 gate 5.
+/// Never logged, returned or given to the Worker.
+private final class SecretBox: @unchecked Sendable {
     private let lock = NSLock()
     private var key = ""
     var value: String { lock.lock(); defer { lock.unlock() }; return key }
@@ -28,6 +29,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     let gateway: Gateway
     /// Research-only: the missing branch of #39 gate 2 forced by a launch argument of this separate app.
     let injectedMissingPrivateSymbol: Bool
+    /// Research-only (#39 gate 5): Linux preparation fails before QEMU starts, forced by a launch argument.
+    let injectedPrepareFailure: Bool
     /// Real detection on this process, recorded even when the research run injects the missing branch.
     let detectedAvailability = LinuxAvailability.detect()
     private(set) var plugin: LinuxPlugin!
@@ -38,7 +41,11 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var cancelled = Set<String>()
     /// #39 gate 4: streams model requests to the official endpoint; the Worker parses, retries and cancels.
     let model: ModelGateway
-    private let modelKey: ModelKeyBox
+    private let modelKey: SecretBox
+    /// #39 gate 5: the token a Git network operation gets in its Linux environment, and nowhere else.
+    private let gitToken = SecretBox()
+    /// #39 gate 5: native reads of the project the Linux Git transactions change.
+    var gate5: Gate5Review?
     private var modelRequests = 0
     static let modelRequestBudget = 40
     /// Fixed, obviously invalid key for the invalid-key and offline checks; never a user's key.
@@ -52,12 +59,13 @@ final class WorkerCoordinator: @unchecked Sendable {
     var gate3: Gate3Tools?
 
     /// Availability is detected here, at App start and before any Linux preparation.
-    init(probe: ResearchProbe, injectMissingPrivateSymbol: Bool = false) throws {
+    init(probe: ResearchProbe, injectMissingPrivateSymbol: Bool = false, injectPrepareFailure: Bool = false) throws {
         self.probe = probe
         injectedMissingPrivateSymbol = injectMissingPrivateSymbol
+        injectedPrepareFailure = injectPrepareFailure
         gateway = try Gateway(workspace: probe.workspace.path, state: probe.state.path,
                               identity: probe.identity, transport: probe.transport)
-        let key = ModelKeyBox()
+        let key = SecretBox()
         modelKey = key
 #if canImport(ModelGateway)
         model = ModelGateway { key.value }
@@ -82,7 +90,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                 "pluginEnabled": pluginEnabled, "capabilities": declaration, "vmStarts": vmStartCount,
                 "linuxAvailability": Self.name(plugin.availability),
                 "linuxAvailabilityDetected": Self.name(detectedAvailability),
-                "injectedMissingPrivateSymbol": injectedMissingPrivateSymbol]
+                "injectedMissingPrivateSymbol": injectedMissingPrivateSymbol, "injectedPrepareFailure": injectedPrepareFailure]
     }
 
     static func name(_ phase: LinuxPlugin.Phase) -> String {
@@ -109,6 +117,7 @@ final class WorkerCoordinator: @unchecked Sendable {
     /// The plugin's only launcher: start QEMU once, wait for the verified 9P ready proof, bind the gateway.
     private func bringUpLinux() throws {
         do {
+            if injectedPrepareFailure { throw WorkerBridgeError.refused("PREPARE_FAILURE_INJECTED") }
             try probe.startVM()
             let deadline = Date().addingTimeInterval(600)
             var proof: [String: Any]?
@@ -138,14 +147,19 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
     }
 
-    func execute(id: String, command: String, timeout: Int, hook: Bool = false) throws -> [String: Any] {
-        guard !id.isEmpty, id.count <= 128, command.utf8.count <= 32000,
-              timeout > 0, timeout <= 30000 else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
+    enum Trigger: String { case shell, hook, git }
+    static let maxCommandTimeout = 60000
+
+    /// `network` (Git only) adds the Git token to the command's Linux environment, never to its text.
+    func execute(id: String, command: String, timeout: Int, trigger: Trigger = .shell, network: Bool = false) throws -> [String: Any] {
+        guard !id.isEmpty, id.count <= 128, command.utf8.count <= 32000, timeout > 0, timeout <= Self.maxCommandTimeout,
+              !network || trigger == .git else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
         condition.lock()
         guard operations[id] == nil else { condition.unlock(); throw WorkerBridgeError.refused("DUPLICATE_OPERATION") }
         operations[id] = "WAITING_READY"; let enabled = pluginEnabled; condition.unlock()
         // Lock order: plugin, then coordinator. Never call the plugin while holding `condition`.
-        let admission = plugin.admit(hook ? .hook(command) : .shell(command), pluginEnabled: enabled) { [self] in
+        let task: LinuxPlugin.Task = trigger == .hook ? .hook(command) : trigger == .git ? .git(command) : .shell(command)
+        let admission = plugin.admit(task, pluginEnabled: enabled) { [self] in
             condition.lock(); defer { condition.unlock() }; return cancelled.contains(id)
         }
         switch admission {
@@ -168,7 +182,9 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
         operations[id] = "DISPATCHING"; condition.unlock()
         let answer: [String: Any]
-        do { answer = try gateway.runLeased(id, argv: ["/bin/sh", "-c", command], timeout: timeout) }
+        let token = network ? gitToken.value : ""
+        do { answer = try gateway.runLeased(id, argv: ["/bin/sh", "-c", command], timeout: timeout,
+                                            secrets: token.isEmpty ? [:] : ["DSH_GIT_TOKEN": token]) }
         catch {
             condition.lock(); operations[id] = "FAILED"; condition.broadcast(); condition.unlock(); throw error
         }
@@ -198,6 +214,26 @@ final class WorkerCoordinator: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.05)
         }
         return ["status": "WRITER_UNKNOWN"] // Caller must keep the lease; no release here.
+    }
+
+    func setGitToken(_ token: String) { gitToken.set(token) }
+    /// A fresh random token for the self-built test remote of one research run.
+    static func randomToken() -> String {
+        var generator = SystemRandomNumberGenerator()  // The system CSPRNG.
+        return "dsh-gate5-" + (0..<24).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }.joined()
+    }
+    /// True when any file under the research project root (workspace, gateway state, logs, receipts) holds the token.
+    func gitTokenPersisted() -> Bool {
+        guard let files = FileManager.default.enumerator(at: probe.root, includingPropertiesForKeys: [.isRegularFileKey]) else { return true }
+        for case let file as URL in files where (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+            if let data = try? Data(contentsOf: file, options: .mappedIfSafe), gitTokenFound(in: data) { return true }
+        }
+        return false
+    }
+    /// The research run checks persisted bytes against the token without ever exposing it.
+    func gitTokenFound(in data: Data) -> Bool {
+        let token = gitToken.value
+        return !token.isEmpty && data.range(of: Data(token.utf8)) != nil
     }
 
     func setModelKey(_ key: String) {
@@ -256,6 +292,9 @@ final class WorkerCoordinator: @unchecked Sendable {
         case "gate3":
             guard let gate3 else { throw WorkerBridgeError.refused("GATE3_REFUSED") }
             return try gate3.handle(body)
+        case "gate5":
+            guard let gate5 else { throw WorkerBridgeError.refused("GATE5_REFUSED") }
+            return try gate5.handle(body)
         case "status": return status()
         case "prepare": prepare(); return status()
         case "read":
@@ -270,8 +309,9 @@ final class WorkerCoordinator: @unchecked Sendable {
             return try gateway.nativeWrite(RelativePath(path), Data(text.utf8), base: body["base"] as? String)
         case "execute":
             guard let id = body["operationId"] as? String, let command = body["command"] as? String else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
+            guard let trigger = Trigger(rawValue: body["trigger"] as? String ?? "shell") else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
             return try execute(id: id, command: command, timeout: body["timeoutMs"] as? Int ?? 15000,
-                               hook: body["trigger"] as? String == "hook")
+                               trigger: trigger, network: body["network"] as? Bool == true)
         case "project-open":
             // Research stand-in for opening a project with or without the Linux plugin enabled.
             guard let enabled = body["pluginEnabled"] as? Bool else { throw WorkerBridgeError.refused("PROJECT_REFUSED") }
@@ -338,7 +378,7 @@ final class WorkerAssetServer {
                 if complete { connection.cancel() } else { receive(connection, request) }; return
             }
             let line = String(decoding: request[..<end.lowerBound], as: UTF8.self).components(separatedBy: "\r\n")[0].split(separator: " ")
-            let assets = ["integration.html", "worker.js", "client.js", "apply-injections.js", "vfs-image.tar.gz"]
+            let assets = ["integration.html", "worker.js", "client.js", "apply-injections.js", "vfs-image.tar.gz", "git-http-fixture.cjs"]
             guard line.count == 3, line[0] == "GET", let asset = assets.first(where: { line[1] == "/" + $0 }),
                   let bytes = try? Data(contentsOf: root.appendingPathComponent(asset)) else { connection.cancel(); return }
             let mime = asset.hasSuffix(".js") ? "text/javascript" : asset.hasSuffix(".html") ? "text/html; charset=utf-8" : "application/octet-stream"
@@ -357,14 +397,28 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
     let resume: Bool
     /// macOS host only: run the gate 3 suite instead of the base checks.
     let gate3: Bool
+    /// #39 gate 5: run the Git write and hook suite instead of the base checks.
+    let gate5: Bool
+    /// #39 gate 5 authorised push: `.device` waits for the token typed on the iPad; `.dry` runs at once without one.
+    enum Gate5Push { case device, dry }
+    let gate5Push: Gate5Push?
     let completion: (Bool) -> Void
     var view: WKWebView!
     /// Gate 4 records whether the App left the foreground during a model run; it does not decide the result.
     private var backgroundTransitions = 0
     private var observer: NSObjectProtocol?
-    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, gate3: Bool = false, completion: @escaping (Bool) -> Void) {
-        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.gate3 = gate3; self.completion = completion
+    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, gate3: Bool = false, gate5: Bool = false,
+         gate5Push: Gate5Push? = nil, completion: @escaping (Bool) -> Void) {
+        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.gate3 = gate3
+        self.gate5 = gate5; self.gate5Push = gate5Push; self.completion = completion
+        // The self-built remote's token lives only in this process; a Git network command gets it in its Linux environment.
+        if gate5 { coordinator.setGitToken(WorkerCoordinator.randomToken()) }
         coordinator.gate3 = Gate3Tools(root: coordinator.probe.root.appendingPathComponent("gate3"), web: webRoot)
+        let gateway = coordinator.gateway
+        coordinator.gate5 = Gate5Review(workspace: coordinator.probe.workspace.appendingPathComponent(Gate5Review.directory),
+                                        root: coordinator.probe.root.appendingPathComponent("gate5-native"), web: webRoot) {
+            gateway.snapshot().0.lease != nil
+        }
         super.init()
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
 #if os(macOS)
@@ -375,7 +429,7 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
 #endif
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3);",
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3); window.plan500Gate5 = \(gate5); window.plan500Gate5Push = \(gate5Push != nil); window.plan500Gate5PushDry = \(gate5Push == .dry);",
                                                                  injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
 #if os(iOS)
@@ -419,6 +473,14 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
             if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
         }
     }
+    /// Gate 5 authorised push: the user's token lives only in this process until the receipt is written.
+    func runGate5Push(token: String) {
+        guard gate5Push == .device, !token.isEmpty else { completion(false); return }
+        coordinator.setGitToken(token)
+        view.evaluateJavaScript("void window.plan500RunGate5Push(false)") { [weak self] _, error in
+            if error != nil { self?.coordinator.setGitToken(""); self?.completion(false) }
+        }
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         if message.name == "log" {
@@ -439,26 +501,40 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 result["resume"] = resume; result["fullGatesPassed"] = false
                 result["linuxAvailabilityDetected"] = WorkerCoordinator.name(coordinator.detectedAvailability)
                 result["injectedMissingPrivateSymbol"] = coordinator.injectedMissingPrivateSymbol
+                result["injectedPrepareFailure"] = coordinator.injectedPrepareFailure
+                if gate5 || gate5Push != nil { result["gitTokenPersisted"] = coordinator.gitTokenPersisted() }
                 result["vmStarts"] = coordinator.vmStartCount
                 result["backgroundTransitions"] = backgroundTransitions
                 let gate4 = (body["gate4"] as? String).flatMap { Self.gate4Modes.contains($0) ? $0 : nil }
                 let gate3Device = operation == "model-done" && body["gate3"] as? Bool == true
-                let receipt = gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
-                    : gate3 ? "gate3-safe.json" : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
-                    : resume ? "worker-resume-safe.json" : "worker-safe.json")
+                let gate5Receipt = coordinator.injectedMissingPrivateSymbol ? "gate5-unavailable-safe.json"
+                    : coordinator.injectedPrepareFailure ? "gate5-prepare-failed-safe.json" : "gate5-safe.json"
+                let pushReceipt = body["gate5Push"] as? Bool == true && gate5Push != nil
+                    ? (gate5Push == .dry ? "gate5-push-dry-safe.json" : "gate5-push-safe.json") : nil
+                let receipt = pushReceipt ?? (gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
+                    : gate5 ? gate5Receipt : gate3 ? "gate3-safe.json" : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
+                    : resume ? "worker-resume-safe.json" : "worker-safe.json"))
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
+                guard !coordinator.gitTokenFound(in: data) else { throw WorkerBridgeError.refused("RECEIPT_HOLDS_TOKEN") }
                 try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
                 view.evaluateJavaScript("window.prototypeNativeReply(\(id), {accepted: true})", completionHandler: nil)
                 if operation == "model-done" { coordinator.setModelKey("") }
-                completion(result["passed"] as? Bool == true)
-            } catch { completion(false) }
+                if gate5 || gate5Push != nil { coordinator.setGitToken("") }
+                completion(result["passed"] as? Bool == true && result["gitTokenPersisted"] as? Bool != true)
+            } catch {
+                if gate5 || gate5Push != nil { coordinator.setGitToken("") }
+                completion(false)
+            }
             return
         }
         let coordinator = coordinator
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var result: [String: Any]
             do { result = try coordinator.handle(body) }
-            catch {
+            catch WorkerBridgeError.refused(let code) {
+                // A fixed refusal made before anything ran: the caller may rely on its code.
+                result = ["error": code]
+            } catch {
                 try? String(describing: error).write(to: coordinator.probe.root.appendingPathComponent("bridge-error-private.log"), atomically: true, encoding: .utf8)
                 result = ["error": "BRIDGE_REQUEST_FAILED"]
             }
@@ -491,6 +567,12 @@ struct WorkerResearchView: View {
                     model.runGate3(key: model.apiKey); model.apiKey = ""
                 }.disabled(model.apiKey.isEmpty || model.modelRunning)
             }
+            if model.gate5Push {
+                SecureField("GitHub token（只用于本次推送，不保存）", text: $model.gitToken).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("关口 5：推送到 gate5-push-test 分支") {
+                    model.runGate5Push(token: model.gitToken); model.gitToken = ""
+                }.disabled(model.gitToken.isEmpty || model.modelRunning)
+            }
             if let host = model.host { WorkerResearchWebView(view: host.view) }
         }.padding().task { model.start() }
     }
@@ -509,6 +591,8 @@ private final class WorkerResearchModel: ObservableObject {
     @Published var apiKey = ""
     @Published var finished = false
     @Published var modelRunning = false
+    @Published var gitToken = ""
+    @Published var gate5Push = false
     func runModel(key: String) {
         modelRunning = true; status = "真实模型检查进行中"; host?.runModel(key: key)
     }
@@ -517,6 +601,9 @@ private final class WorkerResearchModel: ObservableObject {
     }
     func runGate3(key: String) {
         modelRunning = true; status = "关口 3 检查进行中"; host?.runGate3(key: key)
+    }
+    func runGate5Push(token: String) {
+        modelRunning = true; status = "关口 5 推送进行中"; host?.runGate5Push(token: token)
     }
     func start() {
         guard host == nil else { return }
@@ -541,10 +628,15 @@ private final class WorkerResearchModel: ObservableObject {
             let probe = try ResearchProbe(model: selection,
                 projectRoot: documents.appendingPathComponent("Plan500Research/worker-" + selection + (projectId.map { "-" + $0 } ?? ""))) { _ in }
             // Research-only switch of this separate bundle; the formal App has no way to force the missing branch.
-            let coordinator = try WorkerCoordinator(probe: probe, injectMissingPrivateSymbol: args.contains("--inject-missing-private-symbol"))
-            let resume = !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
+            let coordinator = try WorkerCoordinator(probe: probe, injectMissingPrivateSymbol: args.contains("--inject-missing-private-symbol"),
+                                                    injectPrepareFailure: args.contains("--inject-prepare-failure"))
+            // #39 gate 5 runs on its own at launch, on a fresh project, and never resumes the base checks.
+            let gate5 = args.contains("--gate5")
+            // The authorised push waits for the token typed here; it also never resumes the base checks.
+            gate5Push = args.contains("--gate5-push")
+            let resume = !gate5 && !gate5Push && !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
-                                     resume: resume) { [weak self] passed in
+                                     resume: resume, gate5: gate5, gate5Push: gate5Push ? .device : nil) { [weak self] passed in
                 // A model check result never hides the buttons that the passed base checks unlocked.
                 if self?.modelRunning != true { self?.finished = passed }
                 self?.modelRunning = false
@@ -552,7 +644,7 @@ private final class WorkerResearchModel: ObservableObject {
             }
             self.host = host
             try host.start()
-            status = "官方 Worker 检查进行中"
+            status = gate5Push ? "输入 GitHub token 后点推送" : "官方 Worker 检查进行中"
         } catch { status = "研究启动失败；未登记通过" }
     }
 }

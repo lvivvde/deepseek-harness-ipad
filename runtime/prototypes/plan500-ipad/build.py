@@ -61,7 +61,8 @@ def project(output):
     """Small generated project: research sources only, no dependency on the production target."""
     stage = output / 'project'; stage.mkdir()
     sources = stage / 'Sources'; sources.mkdir()
-    for name in ('ResearchApp.swift', 'WorkerBridge.swift', 'DurabilityProbe.swift', 'NativeToolsBridge.swift'):
+    for name in ('ResearchApp.swift', 'WorkerBridge.swift', 'DurabilityProbe.swift', 'NativeToolsBridge.swift',
+                 'Gate5Review.swift'):
         shutil.copyfile(SOURCE / 'Sources' / name, sources / name)
     for path in GATEWAY.glob('*.swift'):
         shutil.copyfile(path, sources / path.name)
@@ -150,8 +151,9 @@ def main():
     if args.worker_web:
         worker_web = args.worker_web.resolve()
         # Gate 3 adds native git and the system-git fixture; the Worker reads them through the native bridge.
+        # Gate 5 adds the self-built Git remote the page starts inside the Linux guest.
         names = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz', 'gate3-fixture.json',
-                 'native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js')
+                 'native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js', 'git-http-fixture.cjs')
         pack = json.loads((worker_web.parent / 'pack-safe.json').read_text())
         if pack.get('integrated') is not True or digest(worker_web / 'vfs-image.tar.gz') != pack['sha256']:
             raise ValueError('WORKER_IMAGE_REFUSED')
@@ -159,7 +161,8 @@ def main():
             raise ValueError('WORKER_PROBE_SOURCE_MISMATCH')
         worker_manifest = {'files': {name: digest(worker_web / name) for name in names}, 'pack': pack,
                            'bridgeSourceSha256': digest(SOURCE / 'web/worker-bridge.js'),
-                           'gate3SourceSha256': digest(SOURCE / 'web/gate3-worker.js')}
+                           'gate3SourceSha256': digest(SOURCE / 'web/gate3-worker.js'),
+                           'gate5SourceSha256': {name: digest(SOURCE / 'web' / name) for name in ('hook-shell.js', 'git-write.js')}}
 
     output.mkdir(parents=True, exist_ok=False)
     xcode = project(output)

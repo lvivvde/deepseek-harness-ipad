@@ -3,7 +3,8 @@
  *
  * Answers the eight git invocations the official dsh-workspace-changes plugin
  * makes (rev-parse, add, write-tree, ls-tree, cat-file, diff-tree, ls-files and
- * check-ignore) without a Linux guest. Behaviour follows git v2.54.0: setup.c
+ * check-ignore) without a Linux guest, plus `rev-parse -q --verify HEAD` for the
+ * native review of Linux commits (#39 gate 5). Behaviour follows git v2.54.0: setup.c
  * discovery, config.c parsing, read-cache.c and dir.c for `add`, cache-tree.c,
  * tree-diff.c and diffcore-rename.c, and the builtins themselves. Anything
  * outside the subset the plugin needs fails closed with exit 128 and
@@ -1041,6 +1042,11 @@
 				} else if (name !== "noop" && name !== "preciousobjects" && name !== "partialclone" && name !== "worktreeconfig") unsupported(`nested repository ${key}`);
 			}
 		}
+		return resolveHead(host, gitdir, common);
+	}
+
+	/** refs/files-backend.c: the object HEAD names through up to five symbolic refs, or null. */
+	function resolveHead(host, gitdir, common) {
 		let ref = "HEAD";
 		for (let depth = 0; depth <= 5; depth++) {
 			const perWorktree = ref === "HEAD" || !ref.startsWith("refs/") || /^refs\/(bisect|worktree|rewritten)\//.test(ref);
@@ -2074,12 +2080,21 @@
 	const same = (args, expected) => args.length === expected.length && args.every((arg, k) => expected[k] === null || arg === expected[k]);
 
 	/** Dispatch one invocation; returns the exit code. */
+	/** rev-parse -q --verify HEAD: the commit HEAD names, or exit 1 quietly when unborn or dangling. */
+	function cmdVerifyHead(ctx) {
+		const oid = resolveHead(ctx.host, ctx.repo.gitdir, ctx.repo.common);
+		if (oid === null) return 1;
+		ctx.out(`${oid}\n`);
+		return 0;
+	}
+
 	function dispatch(ctx, args, cwd, rawEnv, stdin) {
 		const command = args[0];
 		ctx.env = gitEnv(rawEnv, cwd, command);
 		ctx.repo = openRepo(ctx.host, cwd, ctx.env);
 		ctx.config = ctx.repo.config;
 		if (command === "rev-parse") {
+			if (same(args, ["rev-parse", "-q", "--verify", "HEAD"])) return cmdVerifyHead(ctx);
 			if (!same(args, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-path", "objects"])) unsupported(`rev-parse ${args.slice(1).join(" ")}`);
 			return cmdRevParse(ctx);
 		}

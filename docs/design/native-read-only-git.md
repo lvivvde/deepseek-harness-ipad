@@ -29,7 +29,7 @@
 
 这个选择的代价是：官方插件以后如果新增 Git 调用，原生实现不会自动跟上。新调用会以退出码 128 拒绝，而不是给出错误结果，所以升级官方包时要重跑差分测试。
 
-Git 写操作和 hook 不在本选型内，仍然走项目 Linux（#39 关口 5）。
+Git 写操作和 hook 不在本选型内，仍然走项目 Linux，见 [git-writes-and-hooks.md](git-writes-and-hooks.md)（#39 关口 5）。Linux 提交后，原生侧用本子集的 `rev-parse -q --verify HEAD` 和 `diff-tree` 复核，结果必须与 Linux 一致，`.git` 不能有变动。
 
 ## 代码与验证
 

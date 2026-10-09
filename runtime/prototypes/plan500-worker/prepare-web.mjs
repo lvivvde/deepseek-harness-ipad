@@ -1,5 +1,5 @@
 // Probe-only instrumentation; never replaces the installed app or upstream package.
-import {readFileSync, writeFileSync, copyFileSync} from 'node:fs';
+import {readFileSync, writeFileSync, copyFileSync, existsSync} from 'node:fs';
 import {resolve, join} from 'node:path';
 const root = resolve('build/prototypes/plan500-worker');
 const lib = join(root, 'dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib');
@@ -60,11 +60,19 @@ copyFileSync('runtime/prototypes/plan500-worker/probe.html', join(root, 'web/ind
 if (process.argv.includes('--integration')) {
   const integration = 'runtime/prototypes/plan500-ipad/web/';
   const workerPath = join(root, 'web/worker.js');
-  writeFileSync(workerPath, readFileSync(workerPath, 'utf8') + '\n' + readFileSync(integration + 'worker-bridge.js', 'utf8')
-    + '\n' + readFileSync(integration + 'gate3-worker.js', 'utf8'));
+  // #39 gate 5: the official hook runner, scoped so its module names never meet the Worker's own.
+  const hooks = ['harness-dependencies', '../test-dependencies/harness'].map(x =>
+    join(root, x, 'node_modules/@deepseek-ai/dsh-hook-protocol/lib/index.js')).find(x => existsSync(x));
+  if (!hooks) throw new Error('dsh-hook-protocol is not prepared');
+  const protocol = readFileSync(hooks, 'utf8').replace(/^export \{([^}]*)\};\s*$/m, 'globalThis.DshHookProtocol = {$1};');
+  if (!protocol.includes('globalThis.DshHookProtocol')) throw new Error('Upstream hook protocol export changed');
+  writeFileSync(workerPath, [readFileSync(workerPath, 'utf8'), '(() => {\n' + protocol + '\n})();',
+    ...['hook-shell.js', 'git-write.js', 'worker-bridge.js', 'gate3-worker.js'].map(name => readFileSync(integration + name, 'utf8'))].join('\n'));
   // Native git runs in the app's JavaScriptCore, not in the Worker; the page only ships its sources.
   for (const name of ['native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js']) {
     copyFileSync(integration + name, join(root, 'web', name));
   }
   copyFileSync(integration + 'integration.html', join(root, 'web/integration.html'));
+  // #39 gate 5: the self-built test remote the page starts inside the Linux guest.
+  copyFileSync('runtime/prototypes/plan500-ipad/git_http_fixture.cjs', join(root, 'web/git-http-fixture.cjs'));
 }

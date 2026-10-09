@@ -82,26 +82,26 @@ globalThis.fetch = async (input, options = {}) => {
   });
   return new Response(body, {status: opened.status, headers: opened.headers});
 };
-// The official hook runner (dsh-hook-protocol) is not packed in this Worker image. This adapter has the
-// ShellExecutor shape it calls (resolve, execute, result) and routes a command hook to the Linux path
-// with trigger "hook", so the native side admits it as a hook task. Refusals keep their fixed code.
-const plan500HookShell = {
-  resolve: request => request,
-  execute: request => ({result: async () => {
-    const answer = await plan500Native('execute', {command: request.command, timeoutMs: request.timeoutMs,
-      operationId: request.operationId, trigger: 'hook'});
-    if (answer.status !== 'RELEASED') throw new Error(answer.reason ?? answer.status);
-    return {exitCode: answer.result.code, stdout: {text: answer.result.stdout}, stderr: {text: answer.result.stderr}};
-  }}),
-};
-async function plan500RunHook(shell, hook, operationId) {
+// #39 gate 5: a hook runs through the official dsh-hook-protocol runHook (appended to this research Worker,
+// exposed as DshHookProtocol) over DshHookShell, which routes it to the Linux path with trigger "hook" and turns
+// any command that did not run there into a block with its fixed code, never runHook's non-blocking error branch.
+async function plan500RunHook(hook, operationId, signal) {
   const started = performance.now();
-  try {
-    const result = await shell.execute(shell.resolve({command: hook.command, timeoutMs: hook.timeoutMs ?? 15000, operationId})).result();
-    return {event: hook.event, ran: true, exitCode: result.exitCode, stdout: result.stdout.text, elapsedMs: performance.now() - started};
-  } catch (error) {
-    return {event: hook.event, ran: false, refusal: String(error.message), elapsedMs: performance.now() - started};
-  }
+  const shell = DshHookShell.create(plan500Native, () => operationId);
+  const {output} = await DshHookProtocol.runHook(shell, {command: hook.command, timeoutSec: hook.timeoutSec},
+    {payload: hook.payload ?? {hook_event_name: hook.event}, defaultTimeoutMs: 15000, expectedEventName: hook.event, signal},
+    () => performance.now());
+  const refusal = DshHookShell.notRun(output);
+  return {event: hook.event, ran: refusal === null, ...(refusal === null ? {} : {refusal}), exitCode: output.exitCode,
+    stdout: output.stdout, decision: output.decision, reason: output.reason, elapsedMs: performance.now() - started};
+}
+// #39 gate 5: one Git operation as a Linux transaction under the write lease (DshGitWrite, trigger "git").
+// `wrap` is research scaffolding around the transaction (a fixture remote); its output goes to stderr.
+function plan500GitWrite(data) {
+  return DshGitWrite.run(data.argv, {cwd: data.cwd, identity: data.identity, user: data.user}, ({command, network}) => {
+    const wrapped = data.wrap ? `${data.wrap.prefix}\n(\n${command})\nc=$?\n{\n${data.wrap.suffix}\n} >&2\nexit $c\n` : command;
+    return plan500Native('execute', {command: wrapped, operationId: data.operationId, trigger: 'git', network, timeoutMs: 60000});
+  });
 }
 const plan500OriginalMessage = prototypeMessage;
 const plan500Installed = new Set();
@@ -213,13 +213,15 @@ async function plan500ModelTurn(agent, data) {
 }
 prototypeMessage = async event => {
   const data = event.data;
-  if (!['bridge-install', 'bridge-tool', 'bridge-hook', 'home-snapshot', 'model-run', 'model-turn'].includes(data.operation)) return plan500OriginalMessage(event);
+  if (!['bridge-install', 'bridge-tool', 'bridge-hook', 'gate5-git', 'home-snapshot', 'model-run', 'model-turn'].includes(data.operation)) return plan500OriginalMessage(event);
   try {
     const ctx = host.prototypeContext;
     const agent = data.sessionId ? ctx.get('agents').get(data.sessionId) : undefined;
     let result;
     if (data.operation === 'bridge-hook') {
-      result = await plan500RunHook(plan500HookShell, data.hook, data.operationId);
+      result = await plan500RunHook(data.hook, data.operationId);
+    } else if (data.operation === 'gate5-git') {
+      result = await plan500GitWrite(data);
     } else if (data.operation === 'home-snapshot') {
       await ctx.get('sessionPersistence').flush();
       const snapshot = prototypeSnapshot(host.vfs);
@@ -277,7 +279,8 @@ prototypeMessage = async event => {
             exec.signal.addEventListener('abort', cancel, {once: true});
             try {
               if (exec.signal.aborted) throw new Error('ABORTED_BEFORE_DISPATCH');
-              return await plan500Native('execute', {...args, operationId});
+              // Only the shell trigger: a model call never picks the hook or Git path or the Git token.
+              return await plan500Native('execute', {command: args.command, timeoutMs: args.timeoutMs, operationId});
             } finally { exec.signal.removeEventListener('abort', cancel); }
           }}));
         plan500Installed.add(data.sessionId);

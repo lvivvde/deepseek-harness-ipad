@@ -188,8 +188,10 @@ final class Gate3Tools: @unchecked Sendable {
     // MARK: Evidence
 
     /// SHA-256 over path, mode, size, mtime and content of every entry under the real `.git`.
-    func gitTree() throws -> String {
-        let base = workspace.appendingPathComponent(".git").path
+    func gitTree() throws -> String { try Self.treeDigest(workspace.appendingPathComponent(".git").path) }
+
+    /// SHA-256 over path, mode, size, mtime and content of every entry under `base`.
+    static func treeDigest(_ base: String) throws -> String {
         var lines: [String] = []
         let enumerator = FileManager.default.enumerator(atPath: base)
         while let name = enumerator?.nextObject() as? String {
@@ -197,11 +199,11 @@ final class Gate3Tools: @unchecked Sendable {
             guard lstat(base + "/" + name, &info) == 0 else { continue }
             var line = "\(name) \(info.st_mode) \(info.st_size) \(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
             if info.st_mode & S_IFMT == S_IFREG {
-                line += " " + Self.hex(SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: base + "/" + name))))
+                line += " " + hex(SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: base + "/" + name))))
             }
             lines.append(line)
         }
-        return Self.hex(SHA256.hash(data: Data(lines.sorted().joined(separator: "\n").utf8)))
+        return hex(SHA256.hash(data: Data(lines.sorted().joined(separator: "\n").utf8)))
     }
 
     /// What is on disk for one workspace path, read directly (not through the tools).

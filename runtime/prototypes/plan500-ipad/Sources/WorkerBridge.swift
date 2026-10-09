@@ -3,86 +3,163 @@ import Darwin
 import Foundation
 import Network
 import WebKit
+#if os(iOS)
+import UIKit
+#endif
+#if canImport(LinuxPlugin)
+import LinuxPlugin
+#endif
+#if canImport(ModelGateway)
+import ModelGateway
+#endif
 
 private enum WorkerBridgeError: Error { case refused(String) }
+
+/// The real key, read only by the gateway when it builds a request. Never logged, returned or given to the Worker.
+private final class ModelKeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var key = ""
+    var value: String { lock.lock(); defer { lock.unlock() }; return key }
+    func set(_ value: String) { lock.lock(); key = value; lock.unlock() }
+}
 
 final class WorkerCoordinator: @unchecked Sendable {
     let probe: ResearchProbe
     let gateway: Gateway
+    /// Research-only: the missing branch of #39 gate 2 forced by a launch argument of this separate app.
+    let injectedMissingPrivateSymbol: Bool
+    /// Real detection on this process, recorded even when the research run injects the missing branch.
+    let detectedAvailability = LinuxAvailability.detect()
+    private(set) var plugin: LinuxPlugin!
     private let condition = NSCondition()
     private let execution = NSLock()
-    private var phase = "COLD"
+    private var pluginEnabled = true
     private var operations: [String: String] = [:]
     private var cancelled = Set<String>()
-    private var modelKey = ""
+    /// #39 gate 4: streams model requests to the official endpoint; the Worker parses, retries and cancels.
+    let model: ModelGateway
+    private let modelKey: ModelKeyBox
     private var modelRequests = 0
+    static let modelRequestBudget = 40
+    /// Fixed, obviously invalid key for the invalid-key and offline checks; never a user's key.
+    static let invalidModelKey = "sk-plan500-gate4-invalid-key"
+#if !canImport(ModelGateway)
+    /// macOS host build only (one module with the gateway sources): the local fault-injection server.
+    nonisolated(unsafe) static var modelFaultTarget: URL?
+#endif
     private var readyProof: [String: Any]?
+    /// #39 gate 3: the synthetic native project the official file, search and change tools run over.
+    var gate3: Gate3Tools?
 
-    init(probe: ResearchProbe) throws {
+    /// Availability is detected here, at App start and before any Linux preparation.
+    init(probe: ResearchProbe, injectMissingPrivateSymbol: Bool = false) throws {
         self.probe = probe
+        injectedMissingPrivateSymbol = injectMissingPrivateSymbol
         gateway = try Gateway(workspace: probe.workspace.path, state: probe.state.path,
                               identity: probe.identity, transport: probe.transport)
+        let key = ModelKeyBox()
+        modelKey = key
+#if canImport(ModelGateway)
+        model = ModelGateway { key.value }
+#else
+        model = Self.modelFaultTarget.map { ModelGateway(target: $0, idleTimeout: 2, key: { key.value }) } ?? ModelGateway { key.value }
+#endif
+        let availability = injectMissingPrivateSymbol ? LinuxAvailability.detect { _ in false } : detectedAvailability
+        plugin = LinuxPlugin(availability: availability) { [unowned self] in try bringUpLinux() }
     }
+
+    /// True only in the macOS host run against the local fault server.
+    var modelFaultInjection: Bool { model.target != ModelGateway.officialURL }
 
     func status() -> [String: Any] {
+        let phase = plugin.phase
         condition.lock(); defer { condition.unlock() }
         let state = gateway.snapshot().0
-        return ["phase": phase, "operations": operations, "identity": probe.identity,
+        let declaration = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(plugin.declaration(pluginEnabled: pluginEnabled)))) ?? NSNull()
+        return ["phase": Self.name(phase), "operations": operations, "identity": probe.identity,
                 "ready": readyProof != nil, "lease": state.lease?.op as Any? ?? NSNull(),
-                "drafts": state.drafts.map { ["id": $0.id, "status": $0.status, "path": $0.path.json] }]
+                "drafts": state.drafts.map { ["id": $0.id, "status": $0.status, "path": $0.path.json] },
+                "pluginEnabled": pluginEnabled, "capabilities": declaration, "vmStarts": vmStartCount,
+                "linuxAvailability": Self.name(plugin.availability),
+                "linuxAvailabilityDetected": Self.name(detectedAvailability),
+                "injectedMissingPrivateSymbol": injectedMissingPrivateSymbol]
     }
 
-    func prepare() {
-        condition.lock()
-        guard phase == "COLD" else { condition.unlock(); return }
-        phase = "PREPARING"; condition.unlock()
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            do {
-                try probe.startVM()
-                let deadline = Date().addingTimeInterval(600)
-                var proof: [String: Any]?
-                while Date() < deadline {
-                    probe.vmLock.lock(); let exited = probe.vmExited; probe.vmLock.unlock()
-                    if exited { throw WorkerBridgeError.refused("VM_EXIT_BEFORE_READY") }
-                    if let value = try? probe.transport.rpc("/ready", nil) { proof = value; break }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                guard let proof, proof["projectId"] as? String == probe.identity,
-                      proof["protocol"] as? Int == 1, proof["mount"] as? String == "9p",
-                      proof["workspaceReadOnly"] as? Bool == true, proof["cgroupKill"] as? Bool == true else {
-                    throw WorkerBridgeError.refused("READY_PROOF_REFUSED")
-                }
-                // Binding never grants a writer. A new guest must know the durable epoch
-                // before it can revoke an old fence; an existing active writer still refuses revoke.
-                _ = try gateway.attach()
-                if gateway.snapshot().0.lease != nil {
-                    guard try gateway.reconcile(vmExited: false)["status"] as? String == "RELEASED" else {
-                        throw WorkerBridgeError.refused("WRITER_NOT_RECONCILED")
-                    }
-                }
-                condition.lock(); readyProof = proof; phase = "READY"; condition.broadcast(); condition.unlock()
-            } catch {
-                try? String(describing: error).write(to: probe.root.appendingPathComponent("worker-error-private.log"), atomically: true, encoding: .utf8)
-                condition.lock(); phase = "FAILED"; condition.broadcast(); condition.unlock()
-            }
+    static func name(_ phase: LinuxPlugin.Phase) -> String {
+        switch phase {
+        case .cold: return "COLD"
+        case .preparing: return "PREPARING"
+        case .ready: return "READY"
+        case .failed: return "FAILED"
+        case .unavailable: return "UNAVAILABLE"
         }
     }
 
-    func execute(id: String, command: String, timeout: Int) throws -> [String: Any] {
+    static func name(_ availability: LinuxAvailability) -> String {
+        switch availability {
+        case .available: return "available"
+        case .unavailable(let reason): return reason.rawValue
+        }
+    }
+
+    var vmStartCount: Int { probe.vmLock.lock(); defer { probe.vmLock.unlock() }; return probe.vmStarts }
+
+    func prepare() { plugin.prepare() }
+
+    /// The plugin's only launcher: start QEMU once, wait for the verified 9P ready proof, bind the gateway.
+    private func bringUpLinux() throws {
+        do {
+            try probe.startVM()
+            let deadline = Date().addingTimeInterval(600)
+            var proof: [String: Any]?
+            while Date() < deadline {
+                probe.vmLock.lock(); let exited = probe.vmExited; probe.vmLock.unlock()
+                if exited { throw WorkerBridgeError.refused("VM_EXIT_BEFORE_READY") }
+                if let value = try? probe.transport.rpc("/ready", nil) { proof = value; break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            guard let proof, proof["projectId"] as? String == probe.identity,
+                  proof["protocol"] as? Int == 1, proof["mount"] as? String == "9p",
+                  proof["workspaceReadOnly"] as? Bool == true, proof["cgroupKill"] as? Bool == true else {
+                throw WorkerBridgeError.refused("READY_PROOF_REFUSED")
+            }
+            // Binding never grants a writer. A new guest must know the durable epoch
+            // before it can revoke an old fence; an existing active writer still refuses revoke.
+            _ = try gateway.attach()
+            if gateway.snapshot().0.lease != nil {
+                guard try gateway.reconcile(vmExited: false)["status"] as? String == "RELEASED" else {
+                    throw WorkerBridgeError.refused("WRITER_NOT_RECONCILED")
+                }
+            }
+            condition.lock(); readyProof = proof; condition.unlock()
+        } catch {
+            try? String(describing: error).write(to: probe.root.appendingPathComponent("worker-error-private.log"), atomically: true, encoding: .utf8)
+            throw error
+        }
+    }
+
+    func execute(id: String, command: String, timeout: Int, hook: Bool = false) throws -> [String: Any] {
         guard !id.isEmpty, id.count <= 128, command.utf8.count <= 32000,
               timeout > 0, timeout <= 30000 else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
         condition.lock()
         guard operations[id] == nil else { condition.unlock(); throw WorkerBridgeError.refused("DUPLICATE_OPERATION") }
-        operations[id] = "WAITING_READY"; condition.unlock()
-        prepare()
-        condition.lock()
-        while phase == "PREPARING", !cancelled.contains(id) { condition.wait() }
-        if cancelled.contains(id) {
-            operations[id] = "CANCELLED_BEFORE_DISPATCH"; condition.unlock()
-            return ["status": "CANCELLED_BEFORE_DISPATCH"]
+        operations[id] = "WAITING_READY"; let enabled = pluginEnabled; condition.unlock()
+        // Lock order: plugin, then coordinator. Never call the plugin while holding `condition`.
+        let admission = plugin.admit(hook ? .hook(command) : .shell(command), pluginEnabled: enabled) { [self] in
+            condition.lock(); defer { condition.unlock() }; return cancelled.contains(id)
         }
-        guard phase == "READY" else { operations[id] = "FAILED"; condition.unlock(); throw WorkerBridgeError.refused("LINUX_NOT_READY") }
-        condition.unlock()
+        switch admission {
+        case .linux: break
+        case .cancelledBeforeDispatch:
+            condition.lock(); operations[id] = "CANCELLED_BEFORE_DISPATCH"; condition.unlock()
+            return ["status": "CANCELLED_BEFORE_DISPATCH"]
+        case .refused(let reason):
+            condition.lock(); operations[id] = "UNAVAILABLE"; condition.broadcast(); condition.unlock()
+            return ["status": "UNAVAILABLE", "reason": reason]
+        case .native:
+            condition.lock(); operations[id] = "FAILED"; condition.unlock()
+            throw WorkerBridgeError.refused("PATH_REFUSED")
+        }
         execution.lock(); defer { execution.unlock() }
         condition.lock()
         if cancelled.contains(id) {
@@ -106,6 +183,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             return ["status": "CANCEL_REQUESTED"]
         }
         cancelled.insert(id); condition.broadcast(); condition.unlock()
+        plugin.wake()
         if current == "WAITING_READY" { return ["status": "CANCEL_REQUESTED"] }
         // Cancellation can race acquire or the guest accepting /execute. Keep retrying only
         // this idempotent cancellation, never /execute, until completion or confirmed drain.
@@ -123,42 +201,61 @@ final class WorkerCoordinator: @unchecked Sendable {
     }
 
     func setModelKey(_ key: String) {
-        condition.lock(); modelKey = key; modelRequests = 0; condition.unlock()
+        modelKey.set(key)
+        condition.lock(); modelRequests = 0; condition.unlock()
     }
 
-    private func modelRequest(_ body: [String: Any]) throws -> [String: Any] {
-        guard let urlText = body["url"] as? String, urlText == "https://api.deepseek.com/anthropic/v1/messages",
+    private static func failure(_ error: Error) -> [String: Any] {
+        ["failure": (error as? ModelFailure)?.rawValue ?? ModelFailure.transport.rawValue]
+    }
+
+    /// Opens one streamed request. Failures come back as fixed codes so the Worker's own error path classifies them.
+    private func modelOpen(_ body: [String: Any]) -> [String: Any] {
+        guard let id = body["streamId"] as? String, (1...64).contains(id.utf8.count), let url = body["url"] as? String,
               let text = body["body"] as? String, text.utf8.count <= 2 << 20,
-              var payload = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
-            throw WorkerBridgeError.refused("MODEL_ENDPOINT_REFUSED")
+              var payload = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
+            return ["failure": "MODEL_REQUEST_REFUSED"]
         }
-        condition.lock(); let key = modelKey; modelRequests += 1; let count = modelRequests; condition.unlock()
-        guard !key.isEmpty, count <= 12 else { throw WorkerBridgeError.refused("MODEL_KEY_OR_BUDGET_REQUIRED") }
+        let headers = (body["headers"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        condition.lock(); modelRequests += 1; let count = modelRequests; condition.unlock()
+        guard count <= Self.modelRequestBudget else { return ["failure": "MODEL_BUDGET_EXHAUSTED"] }
+        // Research spending cap; the request is otherwise the official adapter's own.
         payload["max_tokens"] = min(payload["max_tokens"] as? Int ?? 2048, 2048)
-        var request = URLRequest(url: URL(string: urlText)!, timeoutInterval: 120)
-        request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(key, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        let config = URLSessionConfiguration.ephemeral; config.connectionProxyDictionary = [:]
-        config.timeoutIntervalForResource = 150
-        let session = URLSession(configuration: config, delegate: ModelNoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let done = DispatchSemaphore(value: 0)
-        var outcome: (Data?, URLResponse?, Error?) = (nil, nil, nil)
-        session.dataTask(with: request) { data, response, error in outcome = (data, response, error); done.signal() }.resume()
-        guard done.wait(timeout: .now() + 160) == .success,
-              outcome.2 == nil, let data = outcome.0, data.count <= 8 << 20,
-              let response = outcome.1 as? HTTPURLResponse else { throw WorkerBridgeError.refused("MODEL_NETWORK_FAILED") }
-        // Prototype buffers the HTTP body; the official adapter still parses its SSE events.
-        return ["status": response.statusCode, "base64": data.base64EncodedString(),
-                "contentType": response.value(forHTTPHeaderField: "content-type") ?? "text/event-stream"]
+        do {
+            let head = try model.open(id: id, url: url, headers: headers, body: try JSONSerialization.data(withJSONObject: payload))
+            return ["status": head.status, "headers": head.headers]
+        } catch { return Self.failure(error) }
+    }
+
+    private func modelRead(_ body: [String: Any]) -> [String: Any] {
+        guard let id = body["streamId"] as? String else { return ["failure": ModelFailure.unknownStream.rawValue] }
+        do {
+            switch try model.read(id) {
+            case .chunk(let data): return ["chunk": data.base64EncodedString()]
+            case .end: return ["done": true]
+            }
+        } catch { return Self.failure(error) }
+    }
+
+    /// Redacted gateway evidence: per-request timings, counts and final codes only.
+    func modelRecords() -> [String: Any] {
+        let records = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(model.records))) ?? []
+        condition.lock(); defer { condition.unlock() }
+        return ["records": records, "requests": modelRequests, "faultInjection": modelFaultInjection]
     }
 
     func handle(_ body: [String: Any]) throws -> [String: Any] {
         guard let operation = body["operation"] as? String else { throw WorkerBridgeError.refused("OPERATION_REFUSED") }
         switch operation {
-        case "model-request": return try modelRequest(body)
+        case "model-open": return modelOpen(body)
+        case "model-read": return modelRead(body)
+        case "model-cancel":
+            if let id = body["streamId"] as? String { model.cancel(id) }
+            return ["cancelled": true]
+        case "model-records": return modelRecords()
+        case "gate3":
+            guard let gate3 else { throw WorkerBridgeError.refused("GATE3_REFUSED") }
+            return try gate3.handle(body)
         case "status": return status()
         case "prepare": prepare(); return status()
         case "read":
@@ -173,7 +270,14 @@ final class WorkerCoordinator: @unchecked Sendable {
             return try gateway.nativeWrite(RelativePath(path), Data(text.utf8), base: body["base"] as? String)
         case "execute":
             guard let id = body["operationId"] as? String, let command = body["command"] as? String else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
-            return try execute(id: id, command: command, timeout: body["timeoutMs"] as? Int ?? 15000)
+            return try execute(id: id, command: command, timeout: body["timeoutMs"] as? Int ?? 15000,
+                               hook: body["trigger"] as? String == "hook")
+        case "project-open":
+            // Research stand-in for opening a project with or without the Linux plugin enabled.
+            guard let enabled = body["pluginEnabled"] as? Bool else { throw WorkerBridgeError.refused("PROJECT_REFUSED") }
+            condition.lock(); pluginEnabled = enabled; condition.unlock()
+            plugin.open(pluginEnabled: enabled)
+            return status()
         case "cancel":
             guard let id = body["operationId"] as? String else { throw WorkerBridgeError.refused("ID_REFUSED") }
             return try cancel(id: id)
@@ -251,16 +355,34 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
     let coordinator: WorkerCoordinator
     let assets: WorkerAssetServer
     let resume: Bool
+    /// macOS host only: run the gate 3 suite instead of the base checks.
+    let gate3: Bool
     let completion: (Bool) -> Void
     var view: WKWebView!
-    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, completion: @escaping (Bool) -> Void) {
-        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.completion = completion
+    /// Gate 4 records whether the App left the foreground during a model run; it does not decide the result.
+    private var backgroundTransitions = 0
+    private var observer: NSObjectProtocol?
+    init(coordinator: WorkerCoordinator, webRoot: URL, resume: Bool, gate3: Bool = false, completion: @escaping (Bool) -> Void) {
+        self.coordinator = coordinator; assets = WorkerAssetServer(root: webRoot); self.resume = resume; self.gate3 = gate3; self.completion = completion
+        coordinator.gate3 = Gate3Tools(root: coordinator.probe.root.appendingPathComponent("gate3"), web: webRoot)
         super.init()
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
+#if os(macOS)
+        // The macOS host window is never shown. Without this, WebKit treats the page as hidden and stalls
+        // long Worker timers such as the official retry backoff. KVC reaches the `_set…` WebKit setters.
+        for key in ["hiddenPageDOMTimerThrottlingEnabled", "hiddenPageDOMTimerThrottlingAutoIncreases",
+                    "pageVisibilityBasedProcessSuppressionEnabled"] { config.preferences.setValue(false, forKey: key) }
+#endif
         config.userContentController.add(self, name: "native")
         config.userContentController.add(self, name: "log")
-        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        config.userContentController.addUserScript(WKUserScript(source: "window.plan500Resume = \(resume); window.plan500Gate2Missing = \(coordinator.injectedMissingPrivateSymbol); window.plan500Gate4 = \(coordinator.modelFaultInjection); window.plan500Gate3 = \(gate3);",
+                                                                 injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: config)
+#if os(iOS)
+        observer = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.backgroundTransitions += 1 }
+        }
+#endif
     }
     func start() throws {
         try assets.start { [weak self] answer in
@@ -279,9 +401,28 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
             if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
         }
     }
+    static let gate4Modes = ["stream", "invalid-key", "offline"]
+    /// Gate 4 device checks. Only "stream" uses the user's key; the others use the fixed invalid key.
+    func runGate4(mode: String, key: String) {
+        guard Self.gate4Modes.contains(mode) else { completion(false); return }
+        coordinator.setModelKey(mode == "stream" ? key : WorkerCoordinator.invalidModelKey)
+        backgroundTransitions = 0
+        view.evaluateJavaScript("void window.plan500RunGate4Device('\(mode)')") { [weak self] _, error in
+            if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
+        }
+    }
+    /// Gate 3 device check: the official tools over the native project, then one real model turn with the user's key.
+    func runGate3(key: String) {
+        coordinator.setModelKey(key)
+        backgroundTransitions = 0
+        view.evaluateJavaScript("void window.plan500RunGate3Device()") { [weak self] _, error in
+            if error != nil { self?.coordinator.setModelKey(""); self?.completion(false) }
+        }
+    }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         if message.name == "log" {
+            if let step = body["progress"] as? String { print("PROGRESS " + step.prefix(200)); return }
             // Bounded diagnostics stay in the ignored/private research container, never UI or console.
             if let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 65536 {
                 try? data.write(to: coordinator.probe.root.appendingPathComponent("worker-diagnostics-private.log"), options: .atomic)
@@ -296,8 +437,17 @@ final class WorkerWebHost: NSObject, WKScriptMessageHandler {
                 let args = ProcessInfo.processInfo.arguments
                 if let index = args.firstIndex(of: "--run-id"), args.indices.contains(index + 1) { result["runId"] = args[index + 1] }
                 result["resume"] = resume; result["fullGatesPassed"] = false
+                result["linuxAvailabilityDetected"] = WorkerCoordinator.name(coordinator.detectedAvailability)
+                result["injectedMissingPrivateSymbol"] = coordinator.injectedMissingPrivateSymbol
+                result["vmStarts"] = coordinator.vmStartCount
+                result["backgroundTransitions"] = backgroundTransitions
+                let gate4 = (body["gate4"] as? String).flatMap { Self.gate4Modes.contains($0) ? $0 : nil }
+                let gate3Device = operation == "model-done" && body["gate3"] as? Bool == true
+                let receipt = gate3Device ? "gate3-device-safe.json" : gate4.map { "gate4-\($0)-safe.json" } ?? (operation == "model-done" ? "model-safe.json"
+                    : gate3 ? "gate3-safe.json" : coordinator.modelFaultInjection ? "gate4-safe.json" : coordinator.injectedMissingPrivateSymbol ? "gate2-missing-safe.json"
+                    : resume ? "worker-resume-safe.json" : "worker-safe.json")
                 let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
-                try data.write(to: coordinator.probe.root.appendingPathComponent(operation == "model-done" ? "model-safe.json" : resume ? "worker-resume-safe.json" : "worker-safe.json"), options: .atomic)
+                try data.write(to: coordinator.probe.root.appendingPathComponent(receipt), options: .atomic)
                 view.evaluateJavaScript("window.prototypeNativeReply(\(id), {accepted: true})", completionHandler: nil)
                 if operation == "model-done" { coordinator.setModelKey("") }
                 completion(result["passed"] as? Bool == true)
@@ -332,6 +482,14 @@ struct WorkerResearchView: View {
                 Button("运行真实模型修改与 Linux 测试") {
                     model.runModel(key: model.apiKey); model.apiKey = ""
                 }.disabled(model.apiKey.isEmpty || model.modelRunning)
+                Button("关口 4：真实流式与中途取消") {
+                    model.runGate4(mode: "stream", key: model.apiKey); model.apiKey = ""
+                }.disabled(model.apiKey.isEmpty || model.modelRunning)
+                Button("关口 4：无效密钥（固定无效值）") { model.runGate4(mode: "invalid-key") }.disabled(model.modelRunning)
+                Button("关口 4：离线（先开启飞行模式）") { model.runGate4(mode: "offline") }.disabled(model.modelRunning)
+                Button("关口 3：官方文件、搜索与变更工具") {
+                    model.runGate3(key: model.apiKey); model.apiKey = ""
+                }.disabled(model.apiKey.isEmpty || model.modelRunning)
             }
             if let host = model.host { WorkerResearchWebView(view: host.view) }
         }.padding().task { model.start() }
@@ -353,6 +511,12 @@ private final class WorkerResearchModel: ObservableObject {
     @Published var modelRunning = false
     func runModel(key: String) {
         modelRunning = true; status = "真实模型检查进行中"; host?.runModel(key: key)
+    }
+    func runGate4(mode: String, key: String = "") {
+        modelRunning = true; status = "关口 4 检查进行中：" + mode; host?.runGate4(mode: mode, key: key)
+    }
+    func runGate3(key: String) {
+        modelRunning = true; status = "关口 3 检查进行中"; host?.runGate3(key: key)
     }
     func start() {
         guard host == nil else { return }
@@ -376,11 +540,14 @@ private final class WorkerResearchModel: ObservableObject {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let probe = try ResearchProbe(model: selection,
                 projectRoot: documents.appendingPathComponent("Plan500Research/worker-" + selection + (projectId.map { "-" + $0 } ?? ""))) { _ in }
-            let coordinator = try WorkerCoordinator(probe: probe)
-            let resume = args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path)
+            // Research-only switch of this separate bundle; the formal App has no way to force the missing branch.
+            let coordinator = try WorkerCoordinator(probe: probe, injectMissingPrivateSymbol: args.contains("--inject-missing-private-symbol"))
+            let resume = !coordinator.injectedMissingPrivateSymbol && (args.contains("--resume") || FileManager.default.fileExists(atPath: probe.state.appendingPathComponent("worker-home.json").path))
             let host = WorkerWebHost(coordinator: coordinator, webRoot: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb"),
                                      resume: resume) { [weak self] passed in
-                self?.finished = passed; self?.modelRunning = false
+                // A model check result never hides the buttons that the passed base checks unlocked.
+                if self?.modelRunning != true { self?.finished = passed }
+                self?.modelRunning = false
                 self?.status = passed ? "检查完成；详细范围见研究收据" : "检查未通过；详情见私有收据"
             }
             self.host = host
@@ -390,8 +557,3 @@ private final class WorkerResearchModel: ObservableObject {
     }
 }
 #endif
-
-private final class ModelNoRedirect: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}

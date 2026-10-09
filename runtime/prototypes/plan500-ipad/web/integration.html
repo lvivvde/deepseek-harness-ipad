@@ -19,9 +19,12 @@ function native(operation, payload = {}) {
     window.webkit.messageHandlers.native.postMessage({id, operation, ...payload});
   });
 }
+// Fixed step names only, so a stalled run shows where it stopped.
+function progress(step) { window.webkit.messageHandlers.log.postMessage({progress: String(step).slice(0, 200)}); }
 function assert(name, passed, detail = undefined) {
   checks.push({name, passed, ...(detail === undefined ? {} : {detail})});
   document.querySelector('#state').textContent = JSON.stringify(checks, null, 2);
+  progress((passed ? 'PASS ' : 'FAIL ') + name);
   if (!passed) throw new Error(name);
 }
 function instrument(worker, operation, payload = {}) {
@@ -82,80 +85,459 @@ async function until(test) {
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }
-try {
-  const cold = await native('status');
-  assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
-  const stored = await native('restore');
-  let {worker, tunnel} = await boot(stored.snapshot ?? undefined);
-  const sessionId = 'session-plan500-integrated';
+const linuxItems = status => status.capabilities.items.filter(x => x.path === 'linux');
+// #39 gate 2, missing branch (research injection only): native work is unaffected, Linux is refused at once.
+async function gate2Missing(cold) {
+  const reason = 'LINUX_PRIVATE_SYMBOL_MISSING';
+  assert('missing private symbol makes Linux unavailable at App start', cold.phase === 'UNAVAILABLE' && cold.linuxAvailability === reason && cold.vmStarts === 0);
+  assert('capability declaration shows the fixed reason', cold.capabilities.plugin.state === 'UNAVAILABLE' && cold.capabilities.plugin.reason === reason
+    && cold.capabilities.plugin.requiredPrivateSymbol === 'pthread_fchdir_np' && linuxItems(cold).every(x => !x.available && x.reason === reason)
+    && cold.capabilities.items.filter(x => x.path === 'native').every(x => x.available), cold.capabilities.plugin);
+  const plain = await native('project-open', {pluginEnabled: false});
+  assert('project without the plugin opens natively', plain.phase === 'UNAVAILABLE' && plain.vmStarts === 0);
+  const {worker, tunnel} = await boot(undefined);
+  const sessionId = 'session-plan500-gate2-missing';
   const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
-  assert('official Worker opens session before Linux ready', created.data.result?.ok === true);
+  assert('official Worker session opens without Linux', created.data.result?.ok === true);
+  const renamed = await api(tunnel, 'session/rename', {sessionId, title: '无私有符号'});
+  assert('official session rename unaffected', renamed.data.result?.ok === true);
   const install = await instrument(worker, 'bridge-install', {sessionId});
-  assert('official tool registry uses only native workspace and Linux bridge',
-    install.names.length === 3 && install.names.includes('plan500_linux'), install);
+  assert('official tool registry installs', install.names.includes('plan500_linux'), install);
   const read = path => tool(worker, sessionId, 'plan500_read', {path});
   const write = (path, text, base) => tool(worker, sessionId, 'plan500_write', {path, text, base});
-  const linux = (id, command, timeoutMs = 15000) => tool(worker, sessionId, 'plan500_linux', {command, timeoutMs}, id);
-  if (window.plan500Resume) {
-    const sessions = await api(tunnel, 'session/list', {});
-    assert('session identity and Chinese title survive App process restart',
-      sessions.data.result.value.items.some(x => x.sessionId === sessionId && x.projections?.values?.title === '同一工作区协作'));
-    assert('native file survives App restart', (await read('native.txt')).text === 'Worker原生值');
-    assert('Linux file survives App restart in the same workspace', (await read('linux.txt')).text === 'Linux共享值');
-    assert('Linux edit remains authoritative after restart', (await read('笔记.txt')).text === 'Linux修改');
-    const conflicts = (await native('status')).drafts.filter(x => x.status === 'CONFLICT');
-    let preserved = false;
-    for (const draft of conflicts) if ((await native('draft', {draft: draft.id})).text === '原生冲突草稿') preserved = true;
-    assert('conflicting draft survives App restart', preserved);
-    assert('restart does not start Linux for session or file recovery', (await native('status')).phase === 'COLD');
-  } else {
-    assert('Worker reads authoritative native workspace while Linux cold', (await read('笔记.txt')).text === '初始笔记');
-    const written = await write('native.txt', 'Worker原生值', null);
-    assert('Worker native write has gateway durable version before Linux ready', written.status === 'WRITTEN' && typeof written.version === 'string');
-    assert('Worker native read observes saved native bytes', (await read('native.txt')).text === 'Worker原生值');
-    const renamed = await api(tunnel, 'session/rename', {sessionId, title: '同一工作区协作'});
-    assert('official session rename accepted before Linux ready', renamed.data.result?.ok === true);
-    const preparing = await native('prepare');
-    assert('enabling Linux project starts asynchronous preparation on open', preparing.phase === 'PREPARING');
-    const queued = linux('queued-real-ready', 'test "$(cat native.txt)" = "Worker原生值" && printf Linux共享值 > linux.txt && printf QUEUED_OK');
-    await until(async () => (await native('status')).operations['queued-real-ready'] === 'WAITING_READY');
-    const waiting = await native('status');
-    assert('Linux tool waits for actual ready without acquiring a write lease', !waiting.ready && waiting.lease === null);
-    assert('native work remains available during Linux preparation', (await read('native.txt')).text === 'Worker原生值');
-    const cancelledBeforeReady = linux('cancel-before-ready', 'printf SHOULD_NOT_RUN > cancelled-before.txt');
-    await until(async () => (await native('status')).operations['cancel-before-ready'] === 'WAITING_READY');
-    await native('cancel', {operationId: 'cancel-before-ready'});
-    assert('cancelled queued Linux tool never dispatches', (await cancelledBeforeReady).status === 'CANCELLED_BEFORE_DISPATCH');
-    const completed = await queued;
-    assert('queued Worker tool automatically executes after verified 9P ready', completed.status === 'RELEASED' && completed.result.code === 0 && completed.result.stdout === 'QUEUED_OK' && completed.result.writerQuiescent);
-    assert('Linux writes appear immediately to Worker native reads', (await read('linux.txt')).text === 'Linux共享值');
-    assert('cancelled queued operation left no file', (await read('cancelled-before.txt')).status === 'ABSENT');
-    const base = (await read('笔记.txt')).version;
-    const editing = linux('shared-lease-conflict', 'printf Linux修改 > 笔记.txt; sleep 2');
-    await until(async () => (await native('status')).lease === 'shared-lease-conflict');
-    const draft = await write('笔记.txt', '原生冲突草稿', base);
-    assert('native edit during Linux write uses the same lease and preserves draft', draft.status === 'DRAFT_HELD');
-    assert('native reads refuse partially written Linux files', (await read('笔记.txt')).status === 'LEASE_BUSY');
-    const edited = await editing;
-    assert('conflicting draft is retained after Linux writer drains', edited.status === 'RELEASED' && edited.drafts.some(x => x.status === 'CONFLICT'));
-    assert('conflict preserves native draft bytes and Linux project bytes', (await native('draft', {draft: draft.draft})).text === '原生冲突草稿' && (await read('笔记.txt')).text === 'Linux修改');
-    const running = linux('cancel-running-writer', 'while :; do printf running >> running.txt; sleep 0.1; done', 30000);
-    await until(async () => (await native('status')).lease === 'cancel-running-writer');
-    await new Promise(resolve => setTimeout(resolve, 250));
-    const held = await write('after-cancel.txt', '取消后草稿', null);
-    assert('native draft held while cancellable writer is active', held.status === 'DRAFT_HELD');
-    await native('cancel', {operationId: 'cancel-running-writer'});
-    const stopped = await running;
-    assert('cancel waits for guest writer quiescence before releasing lease', stopped.status === 'RELEASED' && stopped.result.writerQuiescent && stopped.result.cancelled && (await native('status')).lease === null);
-    assert('nonconflicting held edit applies after confirmed cancellation', (await read('after-cancel.txt')).text === '取消后草稿');
-    const final = (await read('running.txt')).text;
-    await new Promise(resolve => setTimeout(resolve, 400));
-    assert('cancelled Linux writer stops changing project bytes', (await read('running.txt')).text === final);
-    const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
-    assert('official session flushed into native durable home checkpoint', saved.durable);
-  }
+  const timed = async run => { const started = performance.now(); const value = await run(); return {value, elapsedMs: Math.round(performance.now() - started)}; };
+  const opened = await native('project-open', {pluginEnabled: true});
+  assert('project with the plugin opens natively and never prepares', opened.phase === 'UNAVAILABLE' && opened.vmStarts === 0 && opened.capabilities.plugin.enabled);
+  const first = await read('笔记.txt');
+  assert('native read unaffected', first.text === '初始笔记');
+  const written = await write('native.txt', '缺失分支原生写', null);
+  assert('native write unaffected', written.status === 'WRITTEN' && (await read('native.txt')).text === '缺失分支原生写');
+  const updated = await write('笔记.txt', '新笔记', first.version);
+  const stale = await write('笔记.txt', '过期草稿', first.version);
+  assert('stale native edit is kept as a draft', updated.status === 'WRITTEN' && stale.status === 'CONFLICT' && typeof stale.draft === 'string', stale);
+  assert('draft bytes readable', (await native('draft', {draft: stale.draft})).text === '过期草稿');
+  const shell = await timed(() => tool(worker, sessionId, 'plan500_linux', {command: 'printf SHOULD_NOT_RUN > shell.txt'}, 'gate2-shell'));
+  assert('Linux task returns explicitly at once', shell.value.status === 'UNAVAILABLE' && shell.value.reason === reason && shell.elapsedMs < 2000, shell);
+  const hook = await timed(() => instrument(worker, 'bridge-hook', {sessionId, operationId: 'gate2-hook',
+    hook: {event: 'PostToolUse', command: 'printf SHOULD_NOT_RUN > hook.txt'}}));
+  assert('hook-triggered task returns explicitly at once', !hook.value.ran && hook.value.refusal === reason && hook.elapsedMs < 2000, hook);
+  const after = await native('status');
+  assert('no task ran and QEMU never started', after.vmStarts === 0 && after.phase === 'UNAVAILABLE'
+    && after.operations['gate2-shell'] === 'UNAVAILABLE' && after.operations['gate2-hook'] === 'UNAVAILABLE'
+    && (await read('shell.txt')).status === 'ABSENT' && (await read('hook.txt')).status === 'ABSENT');
+  const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+  assert('official session still checkpoints natively', saved.durable);
   worker.terminate();
-  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false}});
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
+    gate2: {branch: 'missing-injected', shellElapsedMs: shell.elapsedMs, hookElapsedMs: hook.elapsedMs,
+      hookPath: 'ShellExecutor-shaped research adapter; official hook runner not packed'}}});
+}
+// #39 gate 4: redacted per-request view, timings relative to each request's start.
+const gate4Streams = turn => turn.streams.filter(x => x.kind === 'agent').map(x => JSON.parse(JSON.stringify({
+  status: x.status, failure: x.failure, chunks: x.chunks, bytes: x.bytes, headMs: x.headMs - x.startMs,
+  firstChunkMs: x.firstChunkMs - x.startMs, lastChunkMs: x.lastChunkMs - x.startMs, endMs: x.endMs - x.startMs,
+  cancelMs: x.cancelMs - x.startMs})));
+const gate4Summary = turn => ({turnEnd: turn.turnEnd, retries: turn.retries, retriesStarted: turn.retriesStarted,
+  attempts: turn.attempts, toolCalls: turn.toolCalls, toolResults: turn.toolResults.length, order: turn.order,
+  replies: turn.replies, elapsedMs: turn.elapsedMs, cancelledAfterMs: turn.cancelledAtMs === undefined ? undefined
+    : turn.cancelledAtMs - turn.streams.find(x => x.kind === 'agent')?.startMs, streams: gate4Streams(turn), live: gate4Live(turn)});
+// Official transient reply frames (what the UI renders), timed from the last request's start.
+const gate4Live = turn => {
+  const start = turn.streams.filter(x => x.kind === 'agent').at(-1)?.startMs ?? 0, at = v => v === null ? null : v - start;
+  return {chunks: turn.live.chunks, firstMs: at(turn.live.firstMs), lastMs: at(turn.live.lastMs), endMs: at(turn.live.endMs)};
+};
+async function gate4Session(worker, tunnel, name) {
+  const sessionId = 'session-plan500-gate4-' + name;
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+  if (created.data.result?.ok !== true) throw new Error('GATE4_SESSION_REFUSED');
+  await instrument(worker, 'bridge-install', {sessionId});
+  return sessionId;
+}
+// macOS host only: the local fault server scripts each scenario by the tag in the prompt.
+async function gate4Faults() {
+  const refused = await native('model-open', {streamId: 'gate4-refused', url: 'https://api.deepseek.com.invalid/anthropic/v1/messages', headers: {}, body: '{}'});
+  assert('only the official endpoint is accepted', refused.failure === 'MODEL_ENDPOINT_REFUSED', refused);
+  const {worker, tunnel} = await boot(undefined);
+  const results = {};
+  const turn = async (scenario, extra = {}) => {
+    progress('gate4 scenario ' + scenario);
+    const sessionId = await gate4Session(worker, tunnel, scenario);
+    const value = await instrument(worker, 'model-turn', {sessionId, prompt: `[[gate4:${scenario}]] 故障注入检查`, ...extra});
+    results[scenario] = gate4Summary(value);
+    return {...value, agent: gate4Streams(value)};
+  };
+  const completed = t => t.turnEnd.kind === 'completed' && t.replies.at(-1)?.marker === true && !t.replies.at(-1).interrupted;
+  const codes = t => t.retries.map(x => x.code).join(',');
+
+  const stream = await turn('stream');
+  const head = stream.agent[0];
+  assert('stream: official parser completes the turn', completed(stream) && stream.retries.length === 0, results.stream);
+  assert('stream: chunks reach the Worker in arrival order, not at the end', head.chunks >= 4 && head.firstChunkMs < head.lastChunkMs - 900, head);
+  const live = results.stream.live;
+  assert('stream: the official reply frames fill in before the response ends', live.chunks >= 2 && live.firstMs < head.lastChunkMs - 900
+    && live.lastMs >= head.lastChunkMs, live);
+  const auth = await turn('auth');
+  assert('invalid key: official AUTH error, one request, no retry', auth.turnEnd.kind === 'error' && auth.turnEnd.code === 'AUTH'
+    && auth.retries.length === 0 && auth.agent.length === 1 && auth.agent[0].status === 401, results.auth);
+  const rate = await turn('rate');
+  assert('429: official retry honours retry-after once', completed(rate) && codes(rate) === 'RATE_LIMIT' && rate.retries[0].delayMs === 1000
+    && rate.agent.length === 2, results.rate);
+  const server = await turn('server');
+  assert('5xx: retried by the official policy, then completes', completed(server) && codes(server) === 'SERVER,SERVER' && server.agent.length === 3, results.server);
+  const dropHead = await turn('drop-head');
+  assert('connection lost before the head: transport retry, then completes', completed(dropHead) && codes(dropHead) === 'TRANSPORT'
+    && ['MODEL_DISCONNECTED', 'MODEL_TRANSPORT'].includes(dropHead.agent[0].failure), results['drop-head']);
+  const dropTool = await turn('drop-tool');
+  const resultAt = dropTool.order.indexOf('tool/result'), retryAt = dropTool.order.indexOf('llm/retry');
+  assert('mid-stream disconnect after a tool: retried without replaying the tool', completed(dropTool) && codes(dropTool) === 'TRANSPORT'
+    && dropTool.toolCalls.length === 1 && dropTool.toolResults.length === 1 && resultAt >= 0 && resultAt < retryAt
+    && dropTool.agent.length === 3 && dropTool.agent[1].chunks > 0 && ['MODEL_DISCONNECTED', 'MODEL_TRANSPORT'].includes(dropTool.agent[1].failure), results['drop-tool']);
+  const idle = await turn('idle');
+  assert('idle stream times out explicitly, then the retry completes', completed(idle) && codes(idle) === 'TRANSPORT'
+    && idle.agent[0].failure === 'MODEL_TIMEOUT', results.idle);
+  const exhaust = await turn('exhaust');
+  assert('persistent 5xx ends in an explicit error after the official retry budget', exhaust.turnEnd.kind === 'error'
+    && exhaust.turnEnd.code === 'SERVER' && exhaust.retries.length === 5 && exhaust.agent.length === 6, results.exhaust);
+  const cancel = await turn('cancel', {cancelAfterFirstChunk: true});
+  assert('cancel mid-stream: turn aborted, partial reply interrupted, no tool runs', cancel.turnEnd.kind === 'aborted'
+    && (cancel.replies.some(x => x.interrupted) || cancel.attempts > 0) && cancel.toolCalls.length === 0
+    && cancel.agent.length === 1 && cancel.agent[0].cancelMs >= 0, results.cancel);
+  const records = await native('model-records');
+  assert('native request was cancelled, not left running', records.records.some(x => x.outcome === 'MODEL_CANCELLED' && x.chunks > 0));
+  worker.terminate();
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false,
+    gate4: {scenarios: results, records: records.records, requests: records.requests}}});
+}
+// #39 gate 3: the official file, search and change tools over the native workspace, one real call each.
+const gate3Mount = '/dsh/workspace/gate3';
+const gate3Text = r => (r.content ?? []).filter(x => x.type === 'text').map(x => x.text).join('\n');
+const gate3Bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+const gate3Utf8 = b64 => new TextDecoder().decode(gate3Bytes(b64));
+const gate3Brief = r => ({isError: !!r.isError, text: gate3Text(r).slice(0, 300)});
+async function gate3Disk(path) {
+  const value = (await native('gate3', {call: 'disk', args: {path}})).value;
+  return value === null ? null : value.data === undefined ? {mode: value.mode} : {mode: value.mode, text: gate3Utf8(value.data)};
+}
+// Shared by the macOS suite and the iPad run; `turn` and `child` reach the model through the native gateway.
+async function gate3Run(worker, tunnel, check, {turnPrompt, childPrompt}) {
+  const results = {};
+  const installed = await instrument(worker, 'gate3-install');
+  check('native project seeded from the system-git fixture', installed.mount === gate3Mount && installed.entries > 20 && /^[0-9a-f]{64}$/.test(installed.gitTree), installed);
+  const sessionId = 'session-plan500-gate3-' + Date.now();
+  const created = await api(tunnel, 'session/create', {sessionId, cwd: gate3Mount});
+  check('official session opens on the native workspace', created.data.result?.ok === true, created.data);
+  const call = (name, args) => instrument(worker, 'gate3-tool', {sessionId, name, args});
+  const service = (service, method, args) => instrument(worker, 'gate3-service', {sessionId, service, method, args});
+
+  // dsh-tool-fs: read.
+  const readme = await call('read', {file_path: 'README.md'});
+  check('read: CRLF file through the official tool', !readme.isError && gate3Text(readme).includes('line two'), gate3Brief(readme));
+  const chinese = await call('read', {file_path: 'src/中文/文件.md'});
+  check('read: Chinese path and content', !chinese.isError && gate3Text(chinese).includes('第二行 GATE3_NEEDLE'), gate3Brief(chinese));
+  const viaLink = await call('read', {file_path: 'link'});
+  check('read: symlink resolves inside the workspace', !viaLink.isError && gate3Text(viaLink).includes('中文内容'), gate3Brief(viaLink));
+  const large = await call('read', {file_path: 'large.txt'});
+  const largeText = gate3Text(large);
+  check('read: large file is windowed by the official limits', !large.isError && largeText.includes('row 000000 alpha')
+    && !largeText.includes('row 199999 alpha'), {chars: largeText.length, tail: largeText.slice(-200)});
+  const window = await call('read', {file_path: 'large.txt', offset: 199999, limit: 2});
+  check('read: offset reaches the end of the large file', !window.isError && gate3Text(window).includes('row 199999 alpha'), gate3Brief(window));
+  const binary = await call('read', {file_path: 'bin.dat'});
+  const missing = await call('read', {file_path: 'absent.txt'});
+  const outside = await call('read', {file_path: '../prototype/笔记.txt'});
+  results.readErrors = {binary: gate3Brief(binary), missing: gate3Brief(missing), outside: gate3Brief(outside)};
+  check('read: binary, missing and outside paths fail with the official errors', binary.isError && missing.isError && outside.isError, results.readErrors);
+  const image = await call('read_image', {file_path: 'image.png'});
+  check('read_image: PNG returned as an image block', !image.isError && (image.content ?? []).some(x => x.type === 'image'),
+    {isError: image.isError, types: (image.content ?? []).map(x => x.type), text: gate3Text(image).slice(0, 300)});
+
+  // dsh-tool-fs: write and edit, with the version and lease guards.
+  const blind = await call('write', {file_path: 'untracked.txt', content: 'blind\n'});
+  check('write: overwriting an unread file is refused', blind.isError && gate3Text(blind).includes('has not been read'), gate3Brief(blind));
+  const created1 = await call('write', {file_path: '工具/新建.txt', content: '工具写入\n'});
+  check('write: new file under a new Chinese directory', !created1.isError && (await gate3Disk('工具/新建.txt'))?.text === '工具写入\n', gate3Brief(created1));
+  await call('read', {file_path: 'src/main.js'});
+  const edited = await call('edit', {file_path: 'src/main.js', old_string: 'answer = 42', new_string: 'answer = 43'});
+  check('edit: literal replacement lands on the native file', !edited.isError
+    && (await gate3Disk('src/main.js'))?.text === 'export const answer = 43;\n// GATE3_NEEDLE in code\n', gate3Brief(edited));
+  await call('read', {file_path: 'tool.sh'});
+  const scriptEdit = await call('edit', {file_path: 'tool.sh', old_string: 'echo gate3', new_string: 'echo gate3 edited'});
+  check('edit: executable bit survives', !scriptEdit.isError && ((await gate3Disk('tool.sh'))?.mode & 0o777) === 0o755, gate3Brief(scriptEdit));
+  // Out-of-band change through the native service (the Linux side in production), then a stale edit.
+  await native('gate3', {call: 'fs', method: 'write', args: {path: gate3Mount + '/src/main.js', data: btoa('changed outside\n')}});
+  const stale = await call('edit', {file_path: 'src/main.js', old_string: 'answer = 43', new_string: 'answer = 44'});
+  check('edit: a file changed since it was read is refused', stale.isError && (await gate3Disk('src/main.js'))?.text === 'changed outside\n', gate3Brief(stale));
+  await call('read', {file_path: '工具/新建.txt'});
+  const fence = await native('gate3', {call: 'lease-hold'});
+  const busy = await call('edit', {file_path: '工具/新建.txt', old_string: '工具写入', new_string: '租约期间'});
+  await native('gate3', {call: 'lease-release'});
+  check('edit: refused while a Linux write lease is held', busy.isError && (await gate3Disk('工具/新建.txt'))?.text === '工具写入\n', {fence: fence.value, ...gate3Brief(busy)});
+
+  // str_replace_editor over the same file service.
+  const sre = (args) => call('str_replace_editor', args);
+  const sreCreate = await sre({command: 'create', path: gate3Mount + '/编辑器.txt', file_text: '第一行\n第二行\n'});
+  const sreReplace = await sre({command: 'str_replace', path: gate3Mount + '/编辑器.txt', old_str: '第二行', new_str: '第二行已改'});
+  const sreInsert = await sre({command: 'insert', path: gate3Mount + '/编辑器.txt', insert_line: 1, new_str: '插入行'});
+  const sreView = await sre({command: 'view', path: gate3Mount + '/编辑器.txt'});
+  results.strReplaceEditor = [sreCreate, sreReplace, sreInsert, sreView].map(gate3Brief);
+  check('str_replace_editor: create, replace, insert and view', [sreCreate, sreReplace, sreInsert, sreView].every(x => !x.isError)
+    && (await gate3Disk('编辑器.txt'))?.text === '第一行\n插入行\n第二行已改\n' && gate3Text(sreView).includes('插入行'), results.strReplaceEditor);
+  const sreMissing = await sre({command: 'str_replace', path: gate3Mount + '/编辑器.txt', old_str: '不存在', new_str: 'x'});
+  check('str_replace_editor: a missing old_str is an error', sreMissing.isError, gate3Brief(sreMissing));
+
+  // fs-search: glob and grep through the native rg emulation.
+  const globbed = await call('glob', {pattern: '**/*.md'});
+  const globText = gate3Text(globbed);
+  check('glob: Chinese paths listed', !globbed.isError && globText.includes('src/中文/文件.md') && globText.includes('README.md'), gate3Brief(globbed));
+  // The official glob passes --no-ignore --hidden and excludes only VCS stores: ignored files are listed, .git never is.
+  const ignoredGlob = await call('glob', {pattern: '**/*.log'});
+  const vcsGlob = await call('glob', {pattern: '**/HEAD'});
+  check('glob: ignored files listed, .git kept out', !ignoredGlob.isError && gate3Text(ignoredGlob).includes('debug.log')
+    && !gate3Text(vcsGlob).includes('.git'), {ignored: gate3Brief(ignoredGlob), vcs: gate3Brief(vcsGlob)});
+  const grepped = await call('grep', {pattern: 'GATE3_NEEDLE'});
+  const grepText = gate3Text(grepped);
+  check('grep: matches in tracked files only', !grepped.isError && grepText.includes('文件.md') && !grepText.includes('debug.log')
+    && !grepText.includes('out.txt'), gate3Brief(grepped));
+  const regex = await call('grep', {pattern: 'row 19999[0-9] alpha$', include: '*.txt'});
+  check('grep: Rust regex dialect with anchors and classes', !regex.isError && gate3Text(regex).includes('row 199999 alpha'), gate3Brief(regex));
+  // 10k matches (about 2 MB of rg --json): over the 250 inline matches, under the 20 MB raw cap.
+  const many = await call('grep', {pattern: 'row 00[0-9]{4} alpha', path: 'large.txt'});
+  const manyText = gate3Text(many);
+  results.grepTruncated = {isError: !!many.isError, chars: manyText.length, tail: manyText.slice(-300)};
+  check('grep: 10k matches are cut to the official inline limit', !many.isError && manyText.includes('row 000000 alpha')
+    && !manyText.includes('row 009999 alpha'), results.grepTruncated);
+  // 200k matches: real rg emits about 40 MB, so the official tool refuses past its raw-output cap.
+  const overflow = await call('grep', {pattern: 'alpha', path: 'large.txt'});
+  check('grep: raw output past the official cap fails as on Linux', overflow.isError && gate3Text(overflow).includes('20000000-byte cap'), gate3Brief(overflow));
+  const badRegex = await call('grep', {pattern: '(unclosed'});
+  check('grep: invalid regex is an error', badRegex.isError, gate3Brief(badRegex));
+
+  // dsh-api-workspace-files and dsh-file-reference.
+  const statted = await service('workspaceFiles', 'stat', {path: 'src/中文/文件.md'});
+  const listed = await service('workspaceFiles', 'list', {path: 'src'});
+  const ranged = await service('workspaceFiles', 'read', {path: 'README.md'});
+  results.workspaceFiles = {stat: statted, list: listed, read: JSON.stringify(ranged).slice(0, 300)};
+  check('workspace files: stat, list and read', statted !== null && JSON.stringify(listed).includes('中文') && JSON.stringify(ranged).includes('line two'), results.workspaceFiles);
+  const refs = await service('fileReferences', 'list', {query: '文件'});
+  results.fileReferences = JSON.stringify(refs).slice(0, 300);
+  check('file references: Chinese query finds the file', JSON.stringify(refs).includes('文件.md'), results.fileReferences);
+
+  // workspace-changes after a model turn that edits through the official tools.
+  const turn = await instrument(worker, 'gate3-turn', {sessionId, prompt: turnPrompt, timeoutMs: 180000});
+  results.turn = {turnEnd: turn.turnEnd, toolCalls: turn.toolCalls, toolResults: turn.toolResults, changeSeqs: turn.changeSeqs};
+  check('model turn edits through read, edit and write', turn.turnEnd.kind === 'completed' && turn.replies.at(-1)?.marker
+    && turn.toolResults.length >= 3 && turn.toolResults.every(x => !x.isError), results.turn);
+  check('model edits land on native bytes with CRLF kept', (await gate3Disk('README.md'))?.text === '# 演示\r\nline two edited\r\n'
+    && (await gate3Disk('新文件.txt'))?.text === '模型写入\n');
+  const seq = turn.changeSeqs.at(-1);
+  const summary = seq === undefined ? undefined : await service('workspaceChanges', 'summary', {seq});
+  results.changes = summary && {total: summary.total, added: summary.added, deleted: summary.deleted,
+    files: summary.files.map(x => ({path: x.display ?? x.path, status: x.status, added: x.added, deleted: x.deleted}))};
+  const names = (summary?.files ?? []).map(x => x.display ?? x.path).sort();
+  check('workspace changes: only this turn\'s files, through native read-only git', summary !== undefined
+    && names.length === 2 && names.some(x => x.endsWith('README.md')) && names.some(x => x.endsWith('新文件.txt')), results.changes);
+  const diffIndex = summary.files.findIndex(x => (x.display ?? x.path).endsWith('README.md'));
+  const diff = await service('workspaceChanges', 'diff', {seq, index: diffIndex});
+  results.diff = {kind: diff?.kind};
+  check('workspace changes: README diff readable', diff?.kind === 'text', diff);
+
+  // Subagent: same gateway, no second write path.
+  const child = await instrument(worker, 'gate3-subagent', {sessionId, prompt: childPrompt});
+  results.subagent = child;
+  check('subagent writes through the same native gateway', child.ok && (await gate3Disk('child.txt'))?.text === '子代理写入\n', child);
+
+  // No VFS or Node write path into the mount.
+  const injected = await instrument(worker, 'gate3-inject');
+  results.inject = injected;
+  check('direct VFS and Node writes into the workspace are refused', Object.values(injected).every(x => x === 'REFUSED')
+    && (await gate3Disk('injected.txt')) === null && (await gate3Disk('copy.md')) === null, injected);
+  const tree = (await native('gate3', {call: 'git-tree'})).value;
+  check('native git never wrote .git', tree === installed.gitTree, {before: installed.gitTree, after: tree});
+  return results;
+}
+async function gate3Checks() {
+  const {worker, tunnel} = await boot(undefined);
+  const gate3 = await gate3Run(worker, tunnel, assert, {turnPrompt: '[[gate3:g3-turn]] 按步骤修改文件', childPrompt: '[[gate3:g3-child]] 写入子文件'});
+  worker.terminate();
+  await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false, gate3}});
+}
+// iPad: the real model must call the tools itself; the rest of the suite is the same.
+window.plan500RunGate3Device = async () => {
+  const deviceChecks = [];
+  const verify = (name, passed, detail) => {
+    deviceChecks.push({name, passed, ...(passed || detail === undefined ? {} : {detail})});
+    document.querySelector('#state').textContent = JSON.stringify(deviceChecks, null, 2);
+    if (!passed) throw new Error(name);
+  };
+  let worker, gate3;
+  try {
+    const opened = await boot(undefined);
+    worker = opened.worker;
+    gate3 = await gate3Run(worker, opened.tunnel, verify, {
+      turnPrompt: '请依次调用工具：先用 read 读取 README.md；再用 edit 把其中的 "line two" 改为 "line two edited"；'
+        + '再用 write 创建 新文件.txt，内容为 "模型写入" 加一个换行。完成后只回复 GATE3_OK。',
+      childPrompt: '用 write 工具创建 child.txt，内容为 "子代理写入" 加一个换行。完成后只回复 GATE3_OK。'});
+    // Launched with the missing-symbol injection, the same run is gate 2's evidence that native review needs no Linux.
+    const linux = await native('status');
+    gate3.linux = {phase: linux.phase, availability: linux.linuxAvailability, vmStarts: linux.vmStarts};
+    if (linux.linuxAvailability === 'LINUX_PRIVATE_SYMBOL_MISSING') {
+      verify('missing private symbol: tools, model turn and workspace changes ran without Linux', linux.phase === 'UNAVAILABLE' && linux.vmStarts === 0, gate3.linux);
+    }
+    await native('model-done', {gate3: true, result: JSON.parse(JSON.stringify({passed: true, checks: deviceChecks, gate3}))});
+  } catch (error) {
+    await native('model-done', {gate3: true, result: JSON.parse(JSON.stringify({passed: false, checks: deviceChecks, error: String(error), gate3}))});
+  } finally { worker?.terminate(); }
+};
+// iPad: real endpoint. "stream" uses the user's key; "invalid-key" and "offline" use the fixed invalid key.
+window.plan500RunGate4Device = async mode => {
+  const deviceChecks = [];
+  const verify = (name, passed) => {
+    deviceChecks.push({name, passed});
+    document.querySelector('#state').textContent = JSON.stringify(deviceChecks, null, 2);
+    if (!passed) throw new Error(name);
+  };
+  let worker;
+  const summary = {mode};
+  try {
+    const restored = await native('restore');
+    const opened = await boot(restored.snapshot ?? undefined);
+    worker = opened.worker;
+    const run = async (name, prompt, extra = {}) => {
+      const sessionId = await gate4Session(worker, opened.tunnel, `device-${name}-${Date.now()}`);
+      const value = await instrument(worker, 'model-turn', {sessionId, prompt, timeoutMs: 180000, ...extra});
+      summary[name] = gate4Summary(value);
+      return {...value, agent: gate4Streams(value)};
+    };
+    const plain = '不要调用任何工具。';
+    if (mode === 'stream') {
+      const streamed = await run('stream', '请用中文写约 400 字，介绍网络流式响应是如何分块到达的。' + plain);
+      const last = streamed.agent.at(-1);
+      verify('real stream completes through the official parser', streamed.turnEnd.kind === 'completed'
+        && streamed.replies.at(-1)?.textChars > 0 && !streamed.replies.at(-1).interrupted);
+      verify('real body arrives in several chunks before the end', last.status === 200 && last.chunks > 1 && last.lastChunkMs > last.firstChunkMs);
+      const live = summary.stream.live;
+      verify('official reply frames fill in before the response ends', live.chunks > 1 && live.firstMs < last.lastChunkMs && live.lastMs > live.firstMs);
+      const cancelled = await run('cancel', '请用中文写约 1500 字的长文，介绍 iPad 的历史。' + plain, {cancelAfterFirstChunk: true, cancelDelayMs: 800});
+      verify('mid-stream cancel ends the turn as aborted', cancelled.turnEnd.kind === 'aborted');
+      verify('partial reply is marked interrupted', cancelled.replies.some(x => x.interrupted) || cancelled.attempts > 0);
+      verify('no tool runs after cancel', cancelled.toolCalls.length === 0);
+      const records = await native('model-records');
+      verify('native HTTP request was cancelled mid-stream', records.records.some(x => x.outcome === 'MODEL_CANCELLED' && x.chunks > 0));
+      summary.records = records.records;
+    } else if (mode === 'invalid-key') {
+      const invalid = await run('invalid-key', '回复 GATE4_OK。' + plain);
+      verify('invalid key ends with the official AUTH error', invalid.turnEnd.kind === 'error' && invalid.turnEnd.code === 'AUTH');
+      verify('invalid key is not retried', invalid.retries.length === 0 && invalid.agent.length === 1 && invalid.agent[0].status === 401);
+    } else if (mode === 'offline') {
+      const offline = await run('offline', '回复 GATE4_OK。' + plain);
+      verify('offline ends in an explicit error after the official retries', offline.turnEnd.kind === 'error'
+        && offline.turnEnd.code === 'TRANSPORT' && offline.retries.length === 5);
+      summary.records = (await native('model-records')).records;
+      verify('every offline request fails before any response', offline.agent.length === 6
+        && offline.agent.every(x => ['MODEL_OFFLINE', 'MODEL_DNS', 'MODEL_CONNECT'].includes(x.failure) && x.status === undefined));
+    } else throw new Error('GATE4_MODE_REFUSED');
+    await native('model-done', {gate4: mode, result: JSON.parse(JSON.stringify({passed: true, checks: deviceChecks, gate4: summary}))});
+  } catch (error) {
+    await native('model-done', {gate4: mode, result: JSON.parse(JSON.stringify({passed: false, checks: deviceChecks, error: String(error), gate4: summary}))});
+  } finally { worker?.terminate(); }
+};
+try {
+  const cold = await native('status');
+  if (window.plan500Gate3) await gate3Checks();
+  else if (window.plan500Gate4) await gate4Faults();
+  else if (window.plan500Gate2Missing) await gate2Missing(cold);
+  else {
+    assert('native project available before Linux starts', cold.phase === 'COLD' && !cold.ready);
+    assert('present private symbol keeps Linux available', cold.linuxAvailability === 'available' && cold.vmStarts === 0);
+    const stored = await native('restore');
+    let {worker, tunnel} = await boot(stored.snapshot ?? undefined);
+    const sessionId = 'session-plan500-integrated';
+    const created = await api(tunnel, 'session/create', {sessionId, cwd: '/dsh/workspace/prototype'});
+    assert('official Worker opens session before Linux ready', created.data.result?.ok === true);
+    const install = await instrument(worker, 'bridge-install', {sessionId});
+    assert('official tool registry uses only native workspace and Linux bridge',
+      install.names.length === 3 && install.names.includes('plan500_linux'), install);
+    const read = path => tool(worker, sessionId, 'plan500_read', {path});
+    const write = (path, text, base) => tool(worker, sessionId, 'plan500_write', {path, text, base});
+    const linux = (id, command, timeoutMs = 15000) => tool(worker, sessionId, 'plan500_linux', {command, timeoutMs}, id);
+    if (window.plan500Resume) {
+      const sessions = await api(tunnel, 'session/list', {});
+      assert('session identity and Chinese title survive App process restart',
+        sessions.data.result.value.items.some(x => x.sessionId === sessionId && x.projections?.values?.title === '同一工作区协作'));
+      assert('native file survives App restart', (await read('native.txt')).text === 'Worker原生值');
+      assert('Linux file survives App restart in the same workspace', (await read('linux.txt')).text === 'Linux共享值');
+      assert('Linux edit remains authoritative after restart', (await read('笔记.txt')).text === 'Linux修改');
+      const conflicts = (await native('status')).drafts.filter(x => x.status === 'CONFLICT');
+      let preserved = false;
+      for (const draft of conflicts) if ((await native('draft', {draft: draft.id})).text === '原生冲突草稿') preserved = true;
+      assert('conflicting draft survives App restart', preserved);
+      assert('restart does not start Linux for session or file recovery', (await native('status')).phase === 'COLD');
+    } else {
+      assert('Worker reads authoritative native workspace while Linux cold', (await read('笔记.txt')).text === '初始笔记');
+      const written = await write('native.txt', 'Worker原生值', null);
+      assert('Worker native write has gateway durable version before Linux ready', written.status === 'WRITTEN' && typeof written.version === 'string');
+      assert('Worker native read observes saved native bytes', (await read('native.txt')).text === 'Worker原生值');
+      const renamed = await api(tunnel, 'session/rename', {sessionId, title: '同一工作区协作'});
+      assert('official session rename accepted before Linux ready', renamed.data.result?.ok === true);
+      const plain = await native('project-open', {pluginEnabled: false});
+      assert('project without the plugin opens without preparing Linux', plain.phase === 'COLD' && plain.vmStarts === 0
+        && plain.capabilities.plugin.state === 'NOT_ENABLED');
+      const notEnabled = await linux('gate2-not-enabled', 'printf SHOULD_NOT_RUN > not-enabled.txt');
+      const notEnabledHook = await instrument(worker, 'bridge-hook', {sessionId, operationId: 'gate2-not-enabled-hook',
+        hook: {event: 'PostToolUse', command: 'printf SHOULD_NOT_RUN > not-enabled.txt'}});
+      assert('Linux and hook tasks of a project without the plugin are refused explicitly',
+        notEnabled.status === 'UNAVAILABLE' && notEnabled.reason === 'LINUX_PLUGIN_NOT_ENABLED'
+        && !notEnabledHook.ran && notEnabledHook.refusal === 'LINUX_PLUGIN_NOT_ENABLED' && (await native('status')).vmStarts === 0);
+      const preparing = await native('project-open', {pluginEnabled: true});
+      assert('enabling Linux project starts asynchronous preparation on open', preparing.phase === 'PREPARING'
+        && preparing.capabilities.plugin.state === 'PREPARING');
+      const queuedHook = instrument(worker, 'bridge-hook', {sessionId, operationId: 'queued-hook',
+        hook: {event: 'PostToolUse', command: 'printf HOOK_OK'}});
+      const queued = linux('queued-real-ready', 'test "$(cat native.txt)" = "Worker原生值" && printf Linux共享值 > linux.txt && printf QUEUED_OK');
+      await until(async () => (await native('status')).operations['queued-real-ready'] === 'WAITING_READY');
+      const waiting = await native('status');
+      assert('Linux tool waits for actual ready without acquiring a write lease', !waiting.ready && waiting.lease === null);
+      assert('native work remains available during Linux preparation', (await read('native.txt')).text === 'Worker原生值');
+      const cancelledBeforeReady = linux('cancel-before-ready', 'printf SHOULD_NOT_RUN > cancelled-before.txt');
+      await until(async () => (await native('status')).operations['cancel-before-ready'] === 'WAITING_READY');
+      await native('cancel', {operationId: 'cancel-before-ready'});
+      assert('cancelled queued Linux tool never dispatches', (await cancelledBeforeReady).status === 'CANCELLED_BEFORE_DISPATCH');
+      const completed = await queued;
+      assert('queued Worker tool automatically executes after verified 9P ready', completed.status === 'RELEASED' && completed.result.code === 0 && completed.result.stdout === 'QUEUED_OK' && completed.result.writerQuiescent);
+      const hookRun = await queuedHook;
+      assert('queued hook-triggered task runs on Linux after ready', hookRun.ran && hookRun.exitCode === 0 && hookRun.stdout === 'HOOK_OK', hookRun);
+      const ready = await native('status');
+      assert('Linux started exactly once', ready.vmStarts === 1 && ready.capabilities.plugin.state === 'READY' && linuxItems(ready).every(x => x.available));
+      assert('not-enabled refusal left no file', (await read('not-enabled.txt')).status === 'ABSENT');
+      assert('Linux writes appear immediately to Worker native reads', (await read('linux.txt')).text === 'Linux共享值');
+      assert('cancelled queued operation left no file', (await read('cancelled-before.txt')).status === 'ABSENT');
+      const base = (await read('笔记.txt')).version;
+      const editing = linux('shared-lease-conflict', 'printf Linux修改 > 笔记.txt; sleep 2');
+      await until(async () => (await native('status')).lease === 'shared-lease-conflict');
+      const draft = await write('笔记.txt', '原生冲突草稿', base);
+      assert('native edit during Linux write uses the same lease and preserves draft', draft.status === 'DRAFT_HELD');
+      assert('native reads refuse partially written Linux files', (await read('笔记.txt')).status === 'LEASE_BUSY');
+      const edited = await editing;
+      assert('conflicting draft is retained after Linux writer drains', edited.status === 'RELEASED' && edited.drafts.some(x => x.status === 'CONFLICT'));
+      assert('conflict preserves native draft bytes and Linux project bytes', (await native('draft', {draft: draft.draft})).text === '原生冲突草稿' && (await read('笔记.txt')).text === 'Linux修改');
+      const running = linux('cancel-running-writer', 'while :; do printf running >> running.txt; sleep 0.1; done', 30000);
+      await until(async () => (await native('status')).lease === 'cancel-running-writer');
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const held = await write('after-cancel.txt', '取消后草稿', null);
+      assert('native draft held while cancellable writer is active', held.status === 'DRAFT_HELD');
+      await native('cancel', {operationId: 'cancel-running-writer'});
+      const stopped = await running;
+      assert('cancel waits for guest writer quiescence before releasing lease', stopped.status === 'RELEASED' && stopped.result.writerQuiescent && stopped.result.cancelled && (await native('status')).lease === null);
+      assert('nonconflicting held edit applies after confirmed cancellation', (await read('after-cancel.txt')).text === '取消后草稿');
+      const final = (await read('running.txt')).text;
+      await new Promise(resolve => setTimeout(resolve, 400));
+      assert('cancelled Linux writer stops changing project bytes', (await read('running.txt')).text === final);
+      const saved = await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
+      assert('official session flushed into native durable home checkpoint', saved.durable);
+    }
+    worker.terminate();
+    await native('done', {result: {passed: true, checks, workerIntegrated: true, modelNetworkVerified: false}});
+  }
 } catch (error) {
   await native('done', {result: {passed: false, checks, error: String(error)}});
 }
@@ -194,7 +576,7 @@ window.plan500RunModel = async () => {
     verify('official agent returns a final result', outcome.assistantReturned);
     await native('checkpoint', {snapshot: await instrument(worker, 'home-snapshot')});
     await native('model-done', {result: plan500SafeModelResult(true, {workerIntegrated: true, modelNetworkVerified: true,
-      networkDelivery: 'native HTTPS, buffered SSE body parsed by official adapter'})});
+      networkDelivery: 'native HTTPS, SSE body streamed chunk by chunk to the official adapter'})});
   } catch (error) {
     await native('model-done', {result: plan500SafeModelResult(false, {error: String(error), modelNetworkVerified: false})});
   } finally { worker?.terminate(); }

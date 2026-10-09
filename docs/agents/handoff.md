@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-06，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-09，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -33,7 +33,13 @@
 
 拆票规则（用户定）：开放 Issue 尽量少；有阻塞关系的不合并，同一层级、无相互阻塞的细项写成任务清单。
 
-**下一步：** #39 关口 1、2、4 可并行，推荐先做关口 1。
+#39 进展（脱敏证据见 #39 各条评论）：
+
+- 关口 1、2、3、4、6 已勾选，代码在 [PR46](https://github.com/lvivvde/deepseek-harness-ipad/pull/46)。设计与限制见 [工作区耐久](../design/workspace-durability.md)、[Linux 插件可用性](../design/linux-plugin-availability.md)、[原生官方工具](../design/native-official-tools.md)（含用户确认的 4 项收紧）、[原生只读 Git](../design/native-read-only-git.md)、[模型网关](../design/model-gateway.md)、[用户数据迁移](../design/user-data-migration.md)。
+- 关口 5 在 [PR47](https://github.com/lvivvde/deepseek-harness-ipad/pull/47)，叠在 PR46 上。
+- 遗留限制：系统崩溃和断电未验；关口 1 真机写租约中的 Linux 写者是模拟的，真实 VM 补测记在 #17；快照或日志中段损坏时会丢草稿和租约记录；生成中切后台未在真机运行。
+
+**下一步：** 合并 PR46、PR47 后转 #17。
 
 ## 开放任务
 
@@ -76,6 +82,7 @@
 - `build/test-dependencies/harness/`：固定官方 `@deepseek-ai/dsh@0.2.0-rc.2`、pnpm 11.28.4 的宿主测试依赖和 lock。设置 `HARNESS_TEST_MODULES="$PWD/build/test-dependencies/harness/node_modules"` 后运行 `make test-runtime`，核对无跳过。依赖丢失时用保留的 lock 重装。
 - Lima `ubuntu` 内 `/var/tmp/ipad-bundled-guest-storage-v6` 可跑 Linux 验收，使用新临时盘；`/Users/edwin` 只读挂载，`/private/tmp` 不挂载。Linux/QEMU 只用隔离盘，不读 iPad 原盘。
 - 正式包：`build/maintenance19/r2-7956e8c/`。研究 App 与收据：`build/prototypes/plan500-ipad/`（`device-r1/` 签名与两模式收据，`worker-device-r1/`、`r2/`、`r4/` 协作与模型收据）；macOS 原型收据在 `build/prototypes/plan500-{worker,sharing,lease,darwin}/`。
+- #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）。
 - 历史归档：`build/acceptance-archive/2026-10-05/`（旧日志、xcresult、截图、脱敏结果与 SHA256 清单）；Issue 正文备份与草稿在 `build/issue-drafts/`。
 - `harness-30` 锁屏提醒已暂停，保持取消。
 

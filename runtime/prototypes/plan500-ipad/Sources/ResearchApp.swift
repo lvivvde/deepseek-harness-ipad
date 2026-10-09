@@ -10,7 +10,9 @@ struct Plan500ResearchApp: App {
     @StateObject private var model = ResearchModel()
     var body: some Scene {
         WindowGroup {
-            if ProcessInfo.processInfo.arguments.contains("--worker-probe") ||
+            if ProcessInfo.processInfo.arguments.contains("--durability-probe") {
+                DurabilityProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--worker-probe") ||
                 (!ProcessInfo.processInfo.arguments.contains("--plan500-probe") &&
                  FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("WorkerWeb/integration.html").path)) {
                 WorkerResearchView()
@@ -90,6 +92,8 @@ final class ResearchProbe {
     let reportProgress: (String) -> Void
     let vmLock = NSLock()
     var vmExited = false
+    /// Every QEMU start attempt in this process, counted before anything is launched.
+    var vmStarts = 0
     var vmCode: Int32?
     var checks: [[String: Any]] = []
     var observations: [[String: Any]] = []
@@ -154,6 +158,7 @@ final class ResearchProbe {
     }
 
     func startVM() throws {
+        vmLock.lock(); vmStarts += 1; vmLock.unlock()
         #if os(iOS)
         guard physicalDevice else { throw ProbeFailure.failed("SIMULATOR_HAS_NO_DEVICE_QEMU") }
         let bundle = Bundle.main.bundleURL

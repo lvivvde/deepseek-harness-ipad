@@ -6,6 +6,7 @@ Private Xcode project/logs and runtime inputs stay in ignored build/. No user di
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -16,6 +17,9 @@ import sys
 SOURCE = Path(__file__).resolve().parent
 REPO = SOURCE.parents[2]
 GATEWAY = SOURCE.parent / 'plan500-darwin/gateway/Sources/Plan500Gateway'
+# The durability probe (#39 gate 1) links the real store as its own module, so the gateway prototype's
+# same-named types do not collide with it.
+PACKAGE = REPO / 'ios/HarnessApp'
 FILES = ('Image', 'initramfs.gz', 'system.raw')
 BUNDLE_ID = 'org.lvivvde.harness.plan500.research'
 
@@ -57,7 +61,7 @@ def project(output):
     """Small generated project: research sources only, no dependency on the production target."""
     stage = output / 'project'; stage.mkdir()
     sources = stage / 'Sources'; sources.mkdir()
-    for name in ('ResearchApp.swift', 'WorkerBridge.swift'):
+    for name in ('ResearchApp.swift', 'WorkerBridge.swift', 'DurabilityProbe.swift', 'NativeToolsBridge.swift'):
         shutil.copyfile(SOURCE / 'Sources' / name, sources / name)
     for path in GATEWAY.glob('*.swift'):
         shutil.copyfile(path, sources / path.name)
@@ -94,7 +98,16 @@ def project(output):
     products = object('products', 'PBXGroup', name='Products', children=[app], sourceTree='<group>')
     group = object('group', 'PBXGroup', children=references + [products], sourceTree='<group>')
     sourcesPhase = object('sources', 'PBXSourcesBuildPhase', files=builds, buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
-    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
+    package = object('package', 'XCLocalSwiftPackageReference', relativePath=os.path.relpath(PACKAGE, stage))
+    workspace = object('native-workspace', 'XCSwiftPackageProductDependency', package=package, productName='NativeWorkspace')
+    linked = object('native-workspace-build', 'PBXBuildFile', productRef=workspace)
+    plugin = object('linux-plugin', 'XCSwiftPackageProductDependency', package=package, productName='LinuxPlugin')
+    pluginLinked = object('linux-plugin-build', 'PBXBuildFile', productRef=plugin)
+    model = object('model-gateway', 'XCSwiftPackageProductDependency', package=package, productName='ModelGateway')
+    modelLinked = object('model-gateway-build', 'PBXBuildFile', productRef=model)
+    tools = object('native-tools', 'XCSwiftPackageProductDependency', package=package, productName='NativeTools')
+    toolsLinked = object('native-tools-build', 'PBXBuildFile', productRef=tools)
+    frameworksPhase = object('frameworks', 'PBXFrameworksBuildPhase', files=[linked, pluginLinked, modelLinked, toolsLinked], buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0)
     embed = object('embed', 'PBXShellScriptBuildPhase', name='Embed isolated probe inputs', files=[], inputPaths=[], outputPaths=[],
                    alwaysOutOfDate=1, buildActionMask=2147483647, runOnlyForDeploymentPostprocessing=0,
                    shellPath='/bin/bash', shellScript='bash "$SRCROOT/embed.sh"')
@@ -110,12 +123,13 @@ def project(output):
     configList = object('config-list', 'XCConfigurationList', buildConfigurations=[configuration], defaultConfigurationName='Release', defaultConfigurationIsVisible=0)
     target = object('target', 'PBXNativeTarget', name='Plan500Research', productName='Plan500Research', productReference=app,
                     productType='com.apple.product-type.application', buildConfigurationList=configList,
-                    buildPhases=[sourcesPhase, frameworksPhase, embed], buildRules=[], dependencies=[])
+                    buildPhases=[sourcesPhase, frameworksPhase, embed], buildRules=[], dependencies=[],
+                    packageProductDependencies=[workspace, plugin, model, tools])
     root = object('root', 'PBXProject', attributes={}, buildConfigurationList=configList, compatibilityVersion='Xcode 14.0',
                   developmentRegion='en', knownRegions=['en', 'Base'], mainGroup=group, productRefGroup=products,
-                  projectDirPath='', projectRoot='', targets=[target])
+                  projectDirPath='', projectRoot='', targets=[target], packageReferences=[package])
     xcode = stage / 'Plan500Research.xcodeproj'; xcode.mkdir()
-    (xcode / 'project.pbxproj').write_bytes(plistlib.dumps({'archiveVersion': '1', 'classes': {}, 'objectVersion': '56', 'objects': objects, 'rootObject': root}))
+    (xcode / 'project.pbxproj').write_bytes(plistlib.dumps({'archiveVersion': '1', 'classes': {}, 'objectVersion': '60', 'objects': objects, 'rootObject': root}))
     return xcode
 
 
@@ -135,14 +149,17 @@ def main():
     worker_manifest = None
     if args.worker_web:
         worker_web = args.worker_web.resolve()
-        names = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz')
+        # Gate 3 adds native git and the system-git fixture; the Worker reads them through the native bridge.
+        names = ('integration.html', 'worker.js', 'client.js', 'apply-injections.js', 'vfs-image.tar.gz', 'gate3-fixture.json',
+                 'native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js')
         pack = json.loads((worker_web.parent / 'pack-safe.json').read_text())
         if pack.get('integrated') is not True or digest(worker_web / 'vfs-image.tar.gz') != pack['sha256']:
             raise ValueError('WORKER_IMAGE_REFUSED')
         if (worker_web / 'integration.html').read_bytes() != (SOURCE / 'web/integration.html').read_bytes():
             raise ValueError('WORKER_PROBE_SOURCE_MISMATCH')
         worker_manifest = {'files': {name: digest(worker_web / name) for name in names}, 'pack': pack,
-                           'bridgeSourceSha256': digest(SOURCE / 'web/worker-bridge.js')}
+                           'bridgeSourceSha256': digest(SOURCE / 'web/worker-bridge.js'),
+                           'gate3SourceSha256': digest(SOURCE / 'web/gate3-worker.js')}
 
     output.mkdir(parents=True, exist_ok=False)
     xcode = project(output)
@@ -176,6 +193,10 @@ def main():
                'deviceVerified': False, 'inputs': manifest, 'frameworks': frameworks,
                'sourceSha256': {str(p.relative_to(REPO)): digest(p) for p in sorted(SOURCE.rglob('*')) if p.is_file() and '__pycache__' not in p.parts},
                'gatewaySha256': {p.name: digest(p) for p in sorted(GATEWAY.glob('*.swift'))},
+               'nativeWorkspaceSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/Workspace').glob('*.swift'))},
+               'linuxPluginSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/LinuxPlugin').glob('*.swift'))},
+               'modelGatewaySha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/ModelGateway').glob('*.swift'))},
+               'nativeToolsSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/NativeTools').glob('*.swift'))},
                'appBinarySha256': digest(binary) if completed else None}
     (output / 'build-safe.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps({'completed': completed, 'sdk': args.sdk, 'bundleId': BUNDLE_ID, 'signed': False,

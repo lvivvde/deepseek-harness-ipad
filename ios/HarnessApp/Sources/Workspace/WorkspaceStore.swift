@@ -70,8 +70,12 @@ public enum LeaseResult: Equatable {
 public struct LeaseRelease: Equatable {
     public enum Reason: String, Codable {
         case completed = "COMPLETED", refused = "REFUSED"
-        /// The guest is gone (VM exited or the app restarted): the next boot gets a new epoch.
+        /// The guest's VM exited in this process: the next boot gets a new epoch.
         case guestTerminated = "GUEST_TERMINATED"
+        /// A writer-unknown lease was confirmed stopped: the live guest revoked its fence, or the user
+        /// confirmed a lease left by an earlier App process (whose in-process VM ended with it). The
+        /// epoch is kept, because a guest already bound to it may still run commands.
+        case reconciled = "RECONCILED"
     }
     public let generation: Int
     public let changed: [RelativePath]

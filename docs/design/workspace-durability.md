@@ -81,7 +81,8 @@
 - **授予**：先把磁盘与版本记录对齐，再写 `leaseGrant {fence, epoch}`。
 - **租约期间**：原生读返回 `leaseBusy`，原生写保存为 `DRAFT_HELD`。
 - **释放**：由持有者调用 `releaseLease(fence:reason:)`。扫描出的差异与释放动作写在同一条 `leaseRelease` 记录里。之后按基线重放 `DRAFT_HELD` 草稿：基线仍匹配的写入并标为 `APPLIED`，其余标为 `CONFLICT`。
-- **原因 `GUEST_TERMINATED`**：epoch +1，旧租约此后无法使用。
+- **原因 `GUEST_TERMINATED`**：本进程的 VM 已退出。epoch +1，旧租约此后无法使用。
+- **原因 `RECONCILED`**：释放一个 `WRITER_UNKNOWN` 租约。前提是在线 guest 已撤销该 fence，或者租约来自更早的 App 进程且用户已确认。epoch 不变，因为新 guest 已绑定当前 epoch。规则见 [linux-plugin-scheduling.md](linux-plugin-scheduling.md#写者未知)。
 
 ### 草稿
 

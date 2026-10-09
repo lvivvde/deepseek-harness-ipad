@@ -36,7 +36,7 @@ final class WorkerCoordinator: @unchecked Sendable {
     private(set) var plugin: LinuxPlugin!
     private let condition = NSCondition()
     private let execution = NSLock()
-    private var pluginEnabled = true
+    private var pluginEnabled = false
     private var operations: [String: String] = [:]
     private var cancelled = Set<String>()
     /// #39 gate 4: streams model requests to the official endpoint; the Worker parses, retries and cancels.
@@ -73,18 +73,18 @@ final class WorkerCoordinator: @unchecked Sendable {
         model = Self.modelFaultTarget.map { ModelGateway(target: $0, idleTimeout: 2, key: { key.value }) } ?? ModelGateway { key.value }
 #endif
         let availability = injectMissingPrivateSymbol ? LinuxAvailability.detect { _ in false } : detectedAvailability
-        plugin = LinuxPlugin(availability: availability) { [unowned self] in try bringUpLinux() }
+        plugin = LinuxPlugin(availability: availability) { [unowned self] _ in try bringUpLinux() }
     }
 
     /// True only in the macOS host run against the local fault server.
     var modelFaultInjection: Bool { model.target != ModelGateway.officialURL }
 
     func status() -> [String: Any] {
-        let phase = plugin.phase
+        let phase = plugin.phase(of: probe.identity)
+        let declaration = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(plugin.declaration(project: probe.identity)))) ?? NSNull()
         condition.lock(); defer { condition.unlock() }
         let state = gateway.snapshot().0
-        let declaration = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(plugin.declaration(pluginEnabled: pluginEnabled)))) ?? NSNull()
-        return ["phase": Self.name(phase), "operations": operations, "identity": probe.identity,
+        return ["phase": name(phase), "operations": operations, "identity": probe.identity,
                 "ready": readyProof != nil, "lease": state.lease?.op as Any? ?? NSNull(),
                 "drafts": state.drafts.map { ["id": $0.id, "status": $0.status, "path": $0.path.json] },
                 "pluginEnabled": pluginEnabled, "capabilities": declaration, "vmStarts": vmStartCount,
@@ -93,9 +93,10 @@ final class WorkerCoordinator: @unchecked Sendable {
                 "injectedMissingPrivateSymbol": injectedMissingPrivateSymbol, "injectedPrepareFailure": injectedPrepareFailure]
     }
 
-    static func name(_ phase: LinuxPlugin.Phase) -> String {
+    /// Research label: a project whose plugin is not bound to a guest is `COLD` while Linux is available.
+    func name(_ phase: LinuxPlugin.Phase) -> String {
         switch phase {
-        case .cold: return "COLD"
+        case .disabled: return plugin.availability == .available ? "COLD" : "UNAVAILABLE"
         case .preparing: return "PREPARING"
         case .ready: return "READY"
         case .failed: return "FAILED"
@@ -112,7 +113,10 @@ final class WorkerCoordinator: @unchecked Sendable {
 
     var vmStartCount: Int { probe.vmLock.lock(); defer { probe.vmLock.unlock() }; return probe.vmStarts }
 
-    func prepare() { plugin.prepare() }
+    func prepare() {
+        condition.lock(); pluginEnabled = true; condition.unlock()
+        _ = plugin.open(project: probe.identity, pluginEnabled: true)
+    }
 
     /// The plugin's only launcher: start QEMU once, wait for the verified 9P ready proof, bind the gateway.
     private func bringUpLinux() throws {
@@ -156,10 +160,10 @@ final class WorkerCoordinator: @unchecked Sendable {
               !network || trigger == .git else { throw WorkerBridgeError.refused("COMMAND_REFUSED") }
         condition.lock()
         guard operations[id] == nil else { condition.unlock(); throw WorkerBridgeError.refused("DUPLICATE_OPERATION") }
-        operations[id] = "WAITING_READY"; let enabled = pluginEnabled; condition.unlock()
+        operations[id] = "WAITING_READY"; condition.unlock()
         // Lock order: plugin, then coordinator. Never call the plugin while holding `condition`.
         let task: LinuxPlugin.Task = trigger == .hook ? .hook(command) : trigger == .git ? .git(command) : .shell(command)
-        let admission = plugin.admit(task, pluginEnabled: enabled) { [self] in
+        let admission = plugin.admit(task, project: probe.identity) { [self] in
             condition.lock(); defer { condition.unlock() }; return cancelled.contains(id)
         }
         switch admission {
@@ -316,7 +320,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             // Research stand-in for opening a project with or without the Linux plugin enabled.
             guard let enabled = body["pluginEnabled"] as? Bool else { throw WorkerBridgeError.refused("PROJECT_REFUSED") }
             condition.lock(); pluginEnabled = enabled; condition.unlock()
-            plugin.open(pluginEnabled: enabled)
+            _ = plugin.open(project: probe.identity, pluginEnabled: enabled)
             return status()
         case "cancel":
             guard let id = body["operationId"] as? String else { throw WorkerBridgeError.refused("ID_REFUSED") }

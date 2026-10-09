@@ -19,7 +19,7 @@
 - 原生侧的复核由 `Gate5Review` 负责，只用原生只读子集：
   - 先复制一份索引到自己的临时目录；
   - 再执行 `add --all --ignore-errors`、`write-tree`、`rev-parse -q --verify HEAD`、`diff-tree -r -M -z --numstat`。
-  
+
   每次回答都带上 `.git` 复核前后的摘要。摘要变了即视为失败。
 - 显式结果，不读半写状态：
   - Linux 命令持有租约时，原生复核返回 `WORKSPACE_LEASE_BUSY`；

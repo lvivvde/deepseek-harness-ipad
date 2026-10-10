@@ -208,3 +208,26 @@ test('unreadable checkpoint and failed quarantine preserve evidence and block st
     } finally { host.close(); rmSync(root, {recursive: true, force: true}); }
   }
 });
+
+test('complete first saves survive a crash before replacing the empty initialization marker', async () => {
+  for (const fresh of [false, true]) for (const skip of [0, 1, 2])
+    for (const stage of ['beforeTemp', 'halfWritten', 'beforeSync', 'beforeRename', 'afterRename']) {
+    const root = mkdtempSync(join(tmpdir(), 'home-first-crash-')); let host = native(root);
+    try {
+      if (fresh) {
+        writeFileSync(join(root, 'home-current.json'), JSON.stringify({formatVersion: 9}));
+        assert.equal((await host.call({operation: 'restore'})).error, 'RECOVERY_BLOCKED');
+        assert.equal((await host.call({operation: 'session-fresh'})).fresh, true);
+      }
+      const restored = await host.call({operation: 'restore'});
+      if (fresh) assert.match(restored.diagnosis, /FRESH_START_PRESERVED.*CHECKPOINT_VERSION/);
+      await host.call({operation: 'probe-fault', point: 'checkpoint.' + stage, crash: true, skip});
+      await assert.rejects(save(host, restored.worker, 1, home('complete')), /PROBE_EXITED/);
+      host = native(root);
+      const reopened = await host.call({operation: 'restore'});
+      if (skip === 0 && stage !== 'afterRename') assert.equal(reopened.snapshot, null);
+      else assert.equal(Buffer.from(reopened.snapshot.files[0].base64, 'base64').toString(), 'complete', `${fresh}:${skip}:${stage}`);
+      if (fresh) assert.match(reopened.diagnosis, /FRESH_START_PRESERVED.*CHECKPOINT_VERSION/);
+    } finally { host.close(); rmSync(root, {recursive: true, force: true}); }
+  }
+});

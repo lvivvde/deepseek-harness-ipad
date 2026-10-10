@@ -37,6 +37,9 @@ final class Gate1ProbeTests: XCTestCase {
                 if command.hasPrefix("echo run >> runs.txt") {
                     let runs = share + "/runs.txt"
                     let old = FileManager.default.contents(atPath: runs) ?? Data()
+                    // Like the shell's `>>`: the file exists, empty, a moment before the line lands.
+                    FileManager.default.createFile(atPath: runs, contents: old)
+                    usleep(50_000)
                     FileManager.default.createFile(atPath: runs, contents: old + Data("run\n".utf8))
                     held.wait()
                 }
@@ -78,6 +81,7 @@ final class Gate1ProbeTests: XCTestCase {
         XCTAssertEqual(hold["workspace.hasDraft"] as? Bool, false, "the native write waits as a draft")
         XCTAssertEqual(hold["writerUnknown.hold"] as? Bool, false)
         XCTAssertEqual(hold["holding"] as? Bool, true)
+        XCTAssertEqual(hold["passed"] as? Bool, true)
 
         // The next launch: a new host and guest over the same data, the old writer never heard from again.
         let second = HoldingMachine()
@@ -90,6 +94,8 @@ final class Gate1ProbeTests: XCTestCase {
         XCTAssertEqual(check["drafts"] as? [String: String], hold["drafts"] as? [String: String], "byte-identical drafts")
         XCTAssertEqual(check["draft.matches"] as? Bool, true)
         XCTAssertEqual(check["workspace.hasDraft"] as? Bool, false)
+        XCTAssertEqual(check["drafts.unchanged"] as? Bool, true)
+        XCTAssertEqual(check["passed"] as? Bool, true)
         XCTAssertTrue(second.commands.isEmpty, "nothing reaches the new guest while the writer is unknown")
 
         let recorded = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/probe/gate1-check.json")))

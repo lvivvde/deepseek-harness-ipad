@@ -114,8 +114,8 @@ final class CandidateModel: ObservableObject {
         #if os(macOS)
         return try QemuMachine(.init(inputs: inputs.path, token: token, logs: logs.path))
         #else
-        let library = Bundle.main.privateFrameworksURL!
-            .appendingPathComponent("qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu")
+        guard let frameworks = Bundle.main.privateFrameworksURL else { throw CandidateError("VM_EXECUTOR_MISSING") }
+        let library = frameworks.appendingPathComponent("qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu")
         return try EmbeddedMachine(.init(inputs: inputs.path, firmware: resources.appendingPathComponent("qemu").path,
                                          token: token, logs: logs.path),
                                    engine: EmbeddedMachine.library(at: library.path))

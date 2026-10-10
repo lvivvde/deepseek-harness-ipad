@@ -74,8 +74,12 @@ final class EmbeddedMachineTests: XCTestCase {
         XCTAssertTrue(serial.contains("boot marker"), "serial output reaches the private log")
     }
 
-    func testAnEngineThatEndsByItselfIsReportedOnce() throws {
-        let machine = try EmbeddedMachine(configuration()) { _ in -1 }
+    func testAnEngineThatNeverRanIsReportedOnceAndLeavesNoDescriptors() throws {
+        let given = Locked<[Int32]>([])
+        let machine = try EmbeddedMachine(configuration()) { arguments in
+            given.set([Self.descriptor(arguments, "serial"), Self.descriptor(arguments, "qmp")].compactMap { $0 })
+            return -1
+        }
         let exited = expectation(description: "exit")
         let statuses = Locked<[Int32?]>([])
         machine.onExit = { status in statuses.update { $0.append(status) }; exited.fulfill() }
@@ -84,6 +88,8 @@ final class EmbeddedMachineTests: XCTestCase {
         machine.stop()
         XCTAssertTrue(machine.exited)
         XCTAssertEqual(statuses.value, [-1])
+        XCTAssertEqual(given.value.count, 2)
+        XCTAssertEqual(given.value.map { fcntl($0, F_GETFD) }, [-1, -1], "QEMU's ends are closed for it")
     }
 
     func testStopBeforeBootStartsNothing() throws {

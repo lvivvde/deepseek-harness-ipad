@@ -7,7 +7,8 @@ import Foundation
 ///   write lease; a native write during it must become a draft. The App is then killed from outside.
 /// - `check` (the next launch): the lease must come back as an unknown writer and stay held, the
 ///   command must not run again, and the draft must read back unchanged.
-/// Each phase writes `<root>/probe/gate1-<phase>.json` with fixed fields only.
+/// Each phase writes `<root>/probe/gate1-<phase>.json` with fixed fields only, and `passed` when every
+/// condition of that phase held; `check` also compares the drafts with the ones `hold` recorded.
 public enum Gate1Probe {
     public enum Phase: String { case hold, check }
 
@@ -60,7 +61,8 @@ public enum Gate1Probe {
         // Native reads keep the store's view until the lease ends; the writer shows on the share itself.
         let project = try registered(host, id)
         let runs = host.registry.workspace(project) + "/runs.txt"
-        guard wait(timing.writer, timing.poll, { FileManager.default.fileExists(atPath: runs) }) else {
+        // `>>` creates the file before it writes the line; wait for the line itself.
+        guard wait(timing.writer, timing.poll, { !(FileManager.default.contents(atPath: runs) ?? Data()).isEmpty }) else {
             record["failure"] = "WRITER_NOT_SEEN"; return record
         }
         record["runs.hold"] = FileManager.default.contents(atPath: runs).map { String(decoding: $0, as: UTF8.self) }
@@ -70,11 +72,14 @@ public enum Gate1Probe {
                                             "expected": ["kind": "createIfAbsent"]]])
         record["write"] = (written["value"] as? [String: Any])?["operation"] as? String
             ?? ((written["failure"] as? [String: Any])?["code"] as? String) ?? "NONE"
-        record["drafts"] = drafts(host, project)
-        record["draft.matches"] = held(host, project)
-        record["workspace.hasDraft"] = FileManager.default.fileExists(atPath: host.registry.workspace(project) + "/draft.txt")
+        recordDrafts(host, project, &record)
         record["writerUnknown.hold"] = entry(host, id)?["writerUnknown"] as? Bool
-        record["holding"] = true
+        let passed = record["runs.hold"] as? String == "run\n" && record["write"] as? String == "WORKSPACE_DRAFT_HELD"
+            && record["draft.matches"] as? Bool == true && record["workspace.hasDraft"] as? Bool == false
+            && record["writerUnknown.hold"] as? Bool == false
+        // Only a passed hold leaves a lease worth killing the App over; `check` refuses anything else.
+        record["holding"] = passed
+        record["passed"] = passed
         return record
     }
 
@@ -91,11 +96,14 @@ public enum Gate1Probe {
                                  "cwd": mount, "timeoutMs": 30_000, "trigger": "shell"])
         record["command.during"] = [again["status"] as? String ?? "NONE", again["reason"] as? String ?? ""].joined(separator: ":")
         let project = try registered(host, id)
-        let workspace = host.registry.workspace(project)
-        record["runs.check"] = FileManager.default.contents(atPath: workspace + "/runs.txt").map { String(decoding: $0, as: UTF8.self) }
-        record["drafts"] = drafts(host, project)
-        record["draft.matches"] = held(host, project)
-        record["workspace.hasDraft"] = FileManager.default.fileExists(atPath: workspace + "/draft.txt")
+        record["runs.check"] = FileManager.default.contents(atPath: host.registry.workspace(project) + "/runs.txt")
+            .map { String(decoding: $0, as: UTF8.self) }
+        recordDrafts(host, project, &record)
+        record["drafts.unchanged"] = record["drafts"] as? [String: String] == hold["drafts"] as? [String: String]
+        record["passed"] = record["writerUnknown.open"] as? Bool == true && record["writerUnknown.settled"] as? Bool == true
+            && record["command.during"] as? String == "REFUSED:WRITER_UNKNOWN" && record["runs.check"] as? String == "run\n"
+            && record["drafts.unchanged"] as? Bool == true && record["draft.matches"] as? Bool == true
+            && record["workspace.hasDraft"] as? Bool == false
         return record
     }
 
@@ -119,19 +127,17 @@ public enum Gate1Probe {
         (host.handle(["operation": "projects"])["projects"] as? [[String: Any]])?.first { $0["id"] as? String == id }
     }
 
-    /// The store's held drafts on disk, by name: their SHA-256.
-    private static func drafts(_ host: CandidateHost, _ project: CandidateProject) -> [String: String] {
+    /// Records the store's held drafts on disk (name: SHA-256), whether exactly one carries the probe's
+    /// bytes, and whether the draft leaked into the workspace.
+    private static func recordDrafts(_ host: CandidateHost, _ project: CandidateProject, _ record: inout [String: Any]) {
         let directory = host.registry.state(project) + "/drafts"
-        var result: [String: String] = [:]
+        var drafts: [String: String] = [:]
         for name in (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [] {
-            if let data = FileManager.default.contents(atPath: directory + "/" + name) { result[name] = digest(data) }
+            if let data = FileManager.default.contents(atPath: directory + "/" + name) { drafts[name] = digest(data) }
         }
-        return result
-    }
-
-    /// True when exactly one held draft carries the probe's bytes.
-    private static func held(_ host: CandidateHost, _ project: CandidateProject) -> Bool {
-        drafts(host, project).values.filter { $0 == digest(draft) }.count == 1
+        record["drafts"] = drafts
+        record["draft.matches"] = drafts.values.filter { $0 == digest(draft) }.count == 1
+        record["workspace.hasDraft"] = FileManager.default.fileExists(atPath: host.registry.workspace(project) + "/draft.txt")
     }
 
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }

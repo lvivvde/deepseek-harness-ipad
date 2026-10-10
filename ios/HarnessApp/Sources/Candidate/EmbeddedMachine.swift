@@ -7,7 +7,8 @@ import HarnessHost
 /// on a path or port besides the agent's forward. `stop` asks QMP to quit, which ends QEMU's main loop;
 /// a library-loaded QEMU cannot be restarted, so the machine never boots twice.
 public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
-    /// Runs QEMU with these arguments (`argv[0]` first) and returns its status once it has ended.
+    /// Runs QEMU with these arguments (`argv[0]` first) and returns its status once it has ended. A
+    /// negative status means QEMU never ran and never took the socket descriptors it was given.
     public typealias Engine = ([String]) -> Int32
 
     public struct Configuration {
@@ -64,6 +65,8 @@ public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
         let thread = Thread { [self] in
             let status = engine(arguments)
             lock.lock(); ended = true; control = -1; lock.unlock()
+            // QEMU owns its ends once it runs; one that never ran leaves them here.
+            if status < 0 { close(serial.1); close(qmp.1) }
             // QEMU no longer writes (or never started): end the drains, then close this side of both pairs.
             shutdown(serial.0, SHUT_RDWR); shutdown(qmp.0, SHUT_RDWR)
             drains.wait()
@@ -111,34 +114,33 @@ public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
 
     // MARK: The QEMU library
 
-    private static let once = NSLock()
+    private static let loading = NSLock()
     private static var loaded = false
 
-    private typealias Initialize = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
-                                                   UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
-    private typealias Step = @convention(c) () -> Void
+    // QEMU 10's entry points: `void qemu_init(int, char **)`, `int qemu_main_loop(void)`, `void qemu_cleanup(int)`.
+    private typealias Initialize = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Void
+    private typealias MainLoop = @convention(c) () -> Int32
+    private typealias Cleanup = @convention(c) (Int32) -> Void
 
-    /// The engine for the bundled `qemu-aarch64-softmmu` framework: `qemu_init`, `qemu_main_loop`,
-    /// `qemu_cleanup`. Its global state cannot be reset, so only the first call in a process runs QEMU;
-    /// later calls return -3. -1: the library did not load; -2: a symbol is missing.
+    /// The engine for the bundled `qemu-aarch64-softmmu` framework. Its global state cannot be reset, so
+    /// only the first call in a process runs QEMU; later calls return -3. -1: the library did not load;
+    /// -2: a symbol is missing. `qemu_init` ends the whole process on arguments it rejects, as the QEMU
+    /// command line does, so the arguments come only from `GuestArguments`.
     public static func library(at path: String) -> Engine {
         { arguments in
-            once.lock()
+            loading.lock()
             let first = !loaded
             loaded = true
-            once.unlock()
+            loading.unlock()
             guard first else { return -3 }
             guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { return -1 }
             guard let initialize = dlsym(handle, "qemu_init"), let mainLoop = dlsym(handle, "qemu_main_loop"),
                   let cleanup = dlsym(handle, "qemu_cleanup") else { dlclose(handle); return -2 }
             var argv = arguments.map { strdup($0) } + [nil]
-            var envp: [UnsafeMutablePointer<CChar>?] = [nil]
             defer { argv.forEach { free($0) } }
-            let status = unsafeBitCast(initialize, to: Initialize.self)(Int32(arguments.count), &argv, &envp)
-            if status == 0 {
-                unsafeBitCast(mainLoop, to: Step.self)()
-                unsafeBitCast(cleanup, to: Step.self)()
-            }
+            unsafeBitCast(initialize, to: Initialize.self)(Int32(arguments.count), &argv)
+            let status = unsafeBitCast(mainLoop, to: MainLoop.self)()
+            unsafeBitCast(cleanup, to: Cleanup.self)(status)
             // The library stays loaded: cleanup does not make its global state restartable.
             return status
         }

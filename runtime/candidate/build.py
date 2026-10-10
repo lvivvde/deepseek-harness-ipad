@@ -4,8 +4,8 @@
 The Xcode project is generated under ignored build/ and links the formal package; the formal App's
 project is never touched. The bundle carries the prepared web root (`make candidate-web`) and the
 verified Linux guest inputs. No user disk input. The iPad bundle also embeds the verified in-process
-QEMU framework closure; it is signed only with a private `--signing-file` (team and profile only).
-Usage: python3 runtime/candidate/build.py [--sdk macosx|iphoneos|iphonesimulator] [--web DIR]
+QEMU framework closure; it is signed only with a private `--signing-file` (team, signing style and profile).
+Usage: python3 runtime/candidate/build.py [--sdk macosx|iphoneos] [--web DIR]
        [--inputs DIR] [--executor DIR] [--signing-file JSON] [--output DIR]
 """
 import argparse
@@ -117,7 +117,6 @@ chmod 600 "$dest/LinuxInputs/token-private"
 # iPad only: the QEMU closure, stripped and never carrying an earlier signature, re-signed with this
 # build's identity when signing is allowed; `qemu` is QEMU's (empty) data directory.
 EMBED_EXECUTOR = '''
-[[ "$PLATFORM_NAME" == "iphoneos" ]] || { echo "warning: the simulator cannot run the device QEMU; not embedded."; exit 0; }
 : "${CANDIDATE_EXECUTOR:?verified executor required}"
 frameworks="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
 rm -rf "$dest/qemu"
@@ -191,7 +190,7 @@ def project(output, sdk):
     settings.update({'MACOSX_DEPLOYMENT_TARGET': '13.0', 'COMBINE_HIDPI_IMAGES': 'YES',
                      'LD_RUNPATH_SEARCH_PATHS': ['$(inherited)', '@executable_path/../Frameworks']} if mac else {
         'IPHONEOS_DEPLOYMENT_TARGET': '16.0', 'TARGETED_DEVICE_FAMILY': '2', 'CODE_SIGN_STYLE': 'Automatic',
-        'SUPPORTED_PLATFORMS': 'iphoneos iphonesimulator',
+        'SUPPORTED_PLATFORMS': 'iphoneos',
         'LD_RUNPATH_SEARCH_PATHS': ['$(inherited)', '@executable_path/Frameworks']})
     configuration = object('release', 'XCBuildConfiguration', name='Release', buildSettings=settings)
     config_list = object('config-list', 'XCConfigurationList', buildConfigurations=[configuration], defaultConfigurationName='Release', defaultConfigurationIsVisible=0)
@@ -210,7 +209,7 @@ def project(output, sdk):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sdk', choices=['macosx', 'iphoneos', 'iphonesimulator'], default='macosx')
+    parser.add_argument('--sdk', choices=['macosx', 'iphoneos'], default='macosx')
     parser.add_argument('--web', type=Path, default=REPO / 'build/candidate/CandidateWeb')
     parser.add_argument('--inputs', type=Path, default=REPO / 'build/prototypes/plan500-darwin/inputs')
     parser.add_argument('--executor', type=Path, default=EXECUTOR, help='iPad: prepared QEMU framework closure')
@@ -218,7 +217,7 @@ def main():
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     mac, sdk = args.sdk == 'macosx', args.sdk
-    default = 'app' if mac else 'ipad' if sdk == 'iphoneos' else 'simulator'
+    default = 'app' if mac else 'ipad'
     web, inputs = args.web.resolve(), args.inputs.resolve()
     output = (args.output or REPO / 'build/candidate' / default).resolve()
     check_output(output)

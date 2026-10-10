@@ -66,7 +66,7 @@
   - 退出后没有残留 QEMU。
   - 运行数据在 `build/candidate/run`（启动时设 `HARNESS_CANDIDATE_ROOT`）。
 - 未验：模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key。
-- iPad 构建与真机验收在分支 `feat/issue17-candidate-ipad`，PR #51 已开（合并另获同意），关口 1 脱敏结果已发到 #17：
+- iPad 构建与真机验收已由 PR #51 合入 main（2026-10-11），关口 1 脱敏结果已发到 #17：
   - `build.py --sdk iphoneos` 核对并嵌入 QEMU framework 闭包（22 个，按 `frameworks.json` 核 SHA256）；签名只用私有 `--signing-file`。`make candidate-ipad` 构建未签名版。
   - `EmbeddedMachine` 在 App 进程内运行 QEMU，串口与 QMP 用 socketpair，`stop` 走 QMP `quit`；进程内只启动一次。
   - 真机：签名安装到用户 iPad，项目 READY，官方页面正常（用户确认）。`.app` 约 1.1 GB。
@@ -76,11 +76,10 @@
 
 **下一步：**
 
-1. PR #51 待用户同意后合并。
-2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
-3. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
-4. #17 要求的测量和迁移演练。
-5. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
+1. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
+2. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
+3. #17 要求的测量和迁移演练。
+4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 
 ## 开放任务
 

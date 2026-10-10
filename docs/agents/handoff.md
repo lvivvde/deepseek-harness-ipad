@@ -79,11 +79,19 @@
   - 官方网页版没有发起仓库写操作的 Git 调用方，只改文档；`git.write` 保留 `SHELL_ONLY`。
   - 顺带修正：发出前就被拒的 RPC 请求（超过 128 KiB 或路由非法）以前记为写者未知，会锁住项目；现在记为拒绝并释放租约。
   - 已验证：`make test-app`、`make check`、`make test-candidate`（桥接 13 项）通过。这一批未上真机，只有单元测试覆盖。
+- 交互式终端在分支 `feat/issue17-candidate-terminal`（2026-10-11，租约规则由用户确认：空闲不占写租约，运行时模型 shell 命令并入）：
+  - guest 代理新增 `/terminal/*`：pty 上的 `/bin/bash -i`，独立挂载命名空间，默认只读；运行键取租约后改为可写，回到空闲提示符且并入的命令结束后改回只读并释放。
+  - `ProjectGateway` 终端 API 和并入路径（结果 `.joined`）；`CandidateHost` 的 `terminal-*` 原生调用，新 Worker 安装时 `terminals-reset` 关闭旧终端；声明里 `terminal` 随 `shell`，可用时附 `WRITE_LEASE_WHILE_BUSY`。
+  - 桥接 `spawnTerminal` 返回官方终端控制器所需的句柄（输出流用 Worker 自己的 `PassThrough`）。
+  - 两轴审查后修正：重复关闭时 guest 按宿主发来的 fence 报告已释放，宿主对关闭后未确认的租约记写者未知，不再留下活动租约；shell 未退出时 guest 关闭失败、不释放；`/terminal/unlease` 返回后先核对租约仍是同一个；宿主只开 `/bin/bash -i`（`/bin/sh` 报告不了空闲提示符，租约会一直占着）。`CONTEXT.md` 新增术语“并入”。
+  - 保留未改：`inspectForeground`/`signalForeground` 和 guest 的 `inputWaiting` 目前只有被拒的常驻 bash 会用，作为官方终端句柄接口的完整实现保留；hook 也会并入终端租约，文档已写明。
+  - 缺口：minimal 预设的常驻 bash 被 guest 拒绝（`ARGV_REFUSED`）；iPad 上官方终端面板未验。
+  - 已验证（macOS）：真实 QEMU guest 的 `run.py` 探针（含终端 18 项）通过；`make test-app`（网关 25、候选宿主 15）、`make check`、`make test-candidate`（桥接 15、构建 15）、`make test-plan500-ipad` 通过。
 
 **下一步：**
 
-1. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
-2. 交互式终端：guest 协议要加 PTY 流，单独一个 PR。
+1. iPad 上验交互式终端（不需要 Key）：在启用插件的项目中打开终端，运行 `echo hi > f`，文件面板应看到 `f`。
+2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 

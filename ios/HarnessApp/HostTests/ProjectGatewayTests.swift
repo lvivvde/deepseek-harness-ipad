@@ -323,4 +323,246 @@ final class ProjectGatewayTests: XCTestCase {
         let (gateway, _) = try readyGateway(FakeGuest())
         XCTAssertEqual(gateway.releaseUnknownWriter(), .noUnknownWriter)
     }
+
+    // MARK: terminal
+
+    /// A guest terminal: writes are accepted, reads report `releasable` as the test sets it.
+    func terminalGuest(_ guest: FakeGuest, releasable: @escaping () -> Bool = { true }) {
+        guest.handlers["/terminal/open"] = { _ in ["id": "t1", "pid": 42, "shellActivity": true] }
+        guest.handlers["/terminal/write"] = { body in ["written": 1, "leased": body?["lease"] != nil] }
+        guest.handlers["/terminal/read"] = { body in
+            let ready = releasable()
+            return ["data": Data("$ ".utf8).base64EncodedString(), "offset": body?["offset"] ?? 0, "next": 2, "dropped": 0,
+                    "exited": NSNull(), "activity": ["state": ready ? "idle" : "busy", "revision": 1], "leased": true, "releasable": ready]
+        }
+        guest.handlers["/terminal/unlease"] = { _ in ["writerQuiescent": true] }
+    }
+
+    func testOnlyALineRunAtThePromptTakesTheLeaseAndTheIdlePromptCommitsItsWrites() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24), 42)
+        XCTAssertEqual(guest.bodies("/terminal/open").first?["shellActivity"] as? Bool, true)
+        XCTAssertThrowsError(try gateway.openTerminal("t2", argv: ["/bin/sh", "-i"], cwd: "/workspace", cols: 80, rows: 24),
+                             "a shell that cannot report its idle prompt would keep the lease") {
+            XCTAssertEqual($0 as? TerminalError, TerminalError("ARGV_REFUSED"))
+        }
+
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("printf x > out.txt".utf8)), .written(leased: false))
+        XCTAssertNil(gateway.lease, "typing at the prompt holds no lease")
+        XCTAssertNil(guest.bodies("/terminal/write").last?["lease"])
+        guard case .read(_, let base) = try gateway.nativeRead(RelativePath("notes.md")) else { return XCTFail("read") }
+
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("\r".utf8)), .written(leased: true))
+        XCTAssertEqual(gateway.lease?.operation, "terminal:t1:1")
+        let sent = try XCTUnwrap(guest.bodies("/terminal/write").last?["lease"] as? [String: Int])
+        XCTAssertEqual(sent["fence"], 1)
+        XCTAssertEqual(sent["epoch"], guest.bodies("/bind").first?["epoch"] as? Int)
+        try "x".write(toFile: workspace + "/out.txt", atomically: false, encoding: .utf8)
+        guard case .draftHeld = try gateway.nativeWrite(RelativePath("notes.md"), Data("native".utf8), base: base) else {
+            return XCTFail("native writes wait as drafts while the terminal command runs")
+        }
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("more".utf8)), .written(leased: true))
+        XCTAssertEqual((guest.bodies("/terminal/write").last?["lease"] as? [String: Int])?["fence"], 1, "input to a leased terminal keeps its fence")
+
+        let read = try gateway.readTerminal("t1", offset: 0, waitMs: 1000)
+        XCTAssertEqual(read.data, Data("$ ".utf8))
+        XCTAssertFalse(read.leased)
+        XCTAssertEqual(read.release?.changed, [RelativePath("out.txt")])
+        XCTAssertEqual(read.release?.drafts.map(\.status), [.applied])
+        XCTAssertEqual(guest.bodies("/terminal/unlease").first?["fence"] as? Int, 1)
+        XCTAssertNil(gateway.lease)
+        XCTAssertEqual(file("notes.md"), "native")
+
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
+        XCTAssertEqual(gateway.lease?.operation, "terminal:t1:2", "each leased run has its own ledger entry")
+        let reopened = try WorkspaceStore(workspace: workspace, state: state)
+        XCTAssertEqual(reopened.recovery.unknownToolCalls, ["terminal:t1:2"], "a run still holding the lease when the App stops is unknown")
+    }
+
+    func testARunLineIsRefusedAtOnceWhileAnotherWriterHoldsTheLease() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
+        let result = inBackground { gateway.execute("op-1", task: .shell("make"), argv: ["/bin/sh", "-c", "make"], timeoutMs: 5000) }
+        XCTAssertEqual(guest.started.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("make\r".utf8)), .refused("LEASE_BUSY"))
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("\u{3}".utf8)), .written(leased: false), "other keys still reach the prompt")
+        XCTAssertEqual(guest.bodies("/terminal/write").count, 1)
+        guest.finish.signal()
+        guard case .completed? = result() else { return XCTFail("the model command keeps its own lease") }
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("make\r".utf8)), .written(leased: true))
+    }
+
+    func testAModelCommandJoinsTheTerminalsLeaseAndTheTerminalReleasesAfterIt() throws {
+        let guest = FakeGuest()
+        var idle = false
+        terminalGuest(guest, releasable: { idle })
+        guest.answer["joined"] = true
+        let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("npm run dev\r".utf8)), .written(leased: true))
+
+        let result = inBackground { gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh", "-c", "x"], timeoutMs: 5000) }
+        XCTAssertEqual(guest.started.wait(timeout: .now() + 5), .success)
+        let request = try XCTUnwrap(guest.bodies("/execute").first)
+        XCTAssertEqual(request["join"] as? String, "t1")
+        XCTAssertEqual((request["lease"] as? [String: Int])?["fence"], 1)
+        idle = true
+        XCTAssertNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+        XCTAssertTrue(guest.bodies("/terminal/unlease").isEmpty, "never released while a joined command runs")
+        XCTAssertEqual(gateway.lease?.fence, 1)
+
+        guest.finish.signal()
+        guard case .joined(let command)? = result() else { return XCTFail("joined") }
+        XCTAssertEqual(command.exitCode, 0)
+        XCTAssertEqual(gateway.lease?.fence, 1, "the lease stays with the terminal")
+        XCTAssertNotNil(try gateway.readTerminal("t1", offset: 2, waitMs: 0).release)
+        XCTAssertNil(gateway.lease)
+        let reopened = try WorkspaceStore(workspace: workspace, state: state)
+        XCTAssertTrue(reopened.recovery.unknownToolCalls.isEmpty, "the run and the joined command both finished in the ledger")
+    }
+
+    func testAJoinedCommandWhoseCancelIsLostLeavesTheTerminalsWriterUnknown() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/cancel"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
+        let (gateway, _) = try readyGateway(guest, cancelWindow: 0.2)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("npm run dev\r".utf8)), .written(leased: true))
+        let result = inBackground { gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 5000) }
+        XCTAssertEqual(guest.started.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(gateway.cancel("op-1"), .writerUnknown)
+        XCTAssertEqual(gateway.lease?.state, .writerUnknown)
+        _ = try gateway.readTerminal("t1", offset: 0, waitMs: 0)
+        XCTAssertTrue(guest.bodies("/terminal/unlease").isEmpty, "an unknown writer is never released at the prompt")
+        guest.finish.signal()
+        _ = result()
+    }
+
+    func testABusyOrWriterOpenPromptKeepsTheLease() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/terminal/unlease"] = { _ in ["writerQuiescent": false, "reason": "WRITERS_OPEN"] }
+        let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("exec 3>held\r".utf8)), .written(leased: true))
+        let read = try gateway.readTerminal("t1", offset: 0, waitMs: 0)
+        XCTAssertNil(read.release)
+        XCTAssertTrue(read.leased)
+        XCTAssertEqual(gateway.lease?.state, .active)
+        guest.handlers["/terminal/unlease"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
+        XCTAssertNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+        XCTAssertEqual(gateway.lease?.state, .active, "an unanswered release is asked again on the next read")
+        guest.handlers["/terminal/unlease"] = { _ in ["writerQuiescent": true] }
+        XCTAssertNotNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+    }
+
+    func testAGuestRefusalOfALeasedLineReleasesItUnchanged() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/terminal/write"] = { _ in throw GuestRPCError.refused("TERMINAL_EXITED") }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .refused("TERMINAL_EXITED"))
+        XCTAssertNil(gateway.lease)
+        let reopened = try WorkspaceStore(workspace: workspace, state: state)
+        XCTAssertTrue(reopened.recovery.unknownToolCalls.isEmpty)
+    }
+
+    func testALostAnswerToALeasedLineLeavesTheWriterUnknownUntilTheTerminalIsRevoked() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/terminal/write"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
+        guest.handlers["/revoke"] = { _ in ["revoked": true, "lastFence": 1] }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .writerUnknown)
+        XCTAssertEqual(gateway.lease?.state, .writerUnknown)
+        XCTAssertEqual(gateway.execute("op-1", task: .shell("ls"), argv: ["/bin/ls"], timeoutMs: 1000), .refused("WRITER_UNKNOWN"),
+                       "nothing joins a lease whose writer is unknown")
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .refused("WRITER_UNKNOWN"))
+        _ = try gateway.readTerminal("t1", offset: 0, waitMs: 0)
+        XCTAssertTrue(guest.bodies("/terminal/unlease").isEmpty)
+        guard case .released = gateway.releaseUnknownWriter() else { return XCTFail("the guest revokes it by ending the terminal") }
+        XCTAssertEqual(guest.bodies("/revoke").first?["fence"] as? Int, 1)
+        XCTAssertNil(gateway.lease)
+    }
+
+    func testClosingALeasedTerminalReleasesItsLease() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/terminal/close"] = { _ in ["closed": true, "releasedFence": 1] }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("sleep 30\r".utf8)), .written(leased: true))
+        try "x".write(toFile: workspace + "/out.txt", atomically: false, encoding: .utf8)
+        XCTAssertEqual(try gateway.closeTerminal("t1")?.changed, [RelativePath("out.txt")])
+        XCTAssertNil(gateway.lease)
+
+        guest.handlers["/terminal/close"] = { _ in ["closed": false, "releasedFence": NSNull()] }
+        XCTAssertEqual(gateway.writeTerminal("t2", Data("sleep 30\r".utf8)), .written(leased: true))
+        XCTAssertThrowsError(try gateway.closeTerminal("t2")) { XCTAssertEqual($0 as? TerminalError, TerminalError("TERMINAL_BUSY")) }
+        XCTAssertEqual(gateway.lease?.operation, "terminal:t2:1")
+    }
+
+    func testAClosedTerminalWhoseLeaseIsUnconfirmedLeavesTheWriterUnknown() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        // The first close's answer was lost; the repeat finds no terminal and reports the fence it was sent.
+        guest.handlers["/terminal/close"] = { body in ["closed": true, "releasedFence": body?["fence"] ?? NSNull()] }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("sleep 30\r".utf8)), .written(leased: true))
+        XCTAssertNotNil(try gateway.closeTerminal("t1"))
+        XCTAssertEqual(guest.bodies("/terminal/close").last?["fence"] as? Int, 1)
+        XCTAssertNil(gateway.lease)
+
+        guest.handlers["/terminal/close"] = { _ in ["closed": true, "releasedFence": NSNull()] }
+        XCTAssertEqual(gateway.writeTerminal("t2", Data("sleep 30\r".utf8)), .written(leased: true))
+        XCTAssertNil(try gateway.closeTerminal("t2"))
+        XCTAssertEqual(gateway.lease?.state, .writerUnknown, "a lease nothing confirmed ended never stays active")
+    }
+
+    func testACommandWaitsForAReleaseInFlightThenTakesItsOwnLease() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let unleasing = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        guest.handlers["/terminal/unlease"] = { _ in unleasing.signal(); proceed.wait(); return ["writerQuiescent": true] }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
+        let read = inBackground { try? gateway.readTerminal("t1", offset: 0, waitMs: 0) }
+        XCTAssertEqual(unleasing.wait(timeout: .now() + 5), .success)
+        guest.finish.signal()
+        let result = inBackground { gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 5000) }
+        usleep(200_000)
+        XCTAssertTrue(guest.bodies("/execute").isEmpty, "the command does not join a terminal that is being released")
+        proceed.signal()
+        XCTAssertNotNil(read()??.release)
+        guard case .completed? = result() else { return XCTFail("completed under its own lease") }
+        let request = try XCTUnwrap(guest.bodies("/execute").first)
+        XCTAssertNil(request["join"])
+        XCTAssertEqual((request["lease"] as? [String: Int])?["fence"], 2)
+    }
+
+    func testVMExitEndsTheTerminalsLease() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
+        gateway.guestExited(status: 9)
+        XCTAssertNil(gateway.lease)
+        XCTAssertEqual(try WorkspaceStore(workspace: workspace, state: state).recovery.unknownToolCalls, ["terminal:t1:1"])
+    }
+
+    func testATerminalOpensOnlyInsideTheWorkspaceOfAnEnabledProject() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, plugin) = try readyGateway(guest)
+        XCTAssertThrowsError(try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/tmp", cols: 80, rows: 24)) {
+            XCTAssertEqual($0 as? TerminalError, TerminalError("CWD_REFUSED"))
+        }
+        _ = plugin.open(project: "A", pluginEnabled: false)
+        XCTAssertThrowsError(try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)) {
+            XCTAssertEqual($0 as? TerminalError, TerminalError(LinuxPlugin.notEnabledCode))
+        }
+        XCTAssertTrue(guest.bodies("/terminal/open").isEmpty)
+    }
 }

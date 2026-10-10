@@ -20,6 +20,8 @@ function replaceOnce(text, before, after, what) {
 
 // The official Worker plus the candidate hooks; each anchor must occur exactly once.
 export function patchWorker(worker, bridge) {
+  // The bridge's terminal output is the bundle's own stream PassThrough, as the official handle's is.
+  if (worker.split('const { Duplex, PassThrough, Readable,').length !== 2) throw new Error('Upstream anchor changed: stream PassThrough');
   // Restore the home and turn on native project routes before the tree boots and attaches sessions.
   worker = replaceOnce(worker, 'setActiveVfs(mounted);', 'await self.candidateRestore?.(mounted);\nsetActiveVfs(mounted);', 'restore');
   // Install once the tree is active, before the tunnel serves the page; a failure fails the start.

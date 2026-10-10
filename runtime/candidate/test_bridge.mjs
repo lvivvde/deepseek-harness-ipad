@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {candidateIndex, patchWorker} from './prepare.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const bridge = readFileSync(path.join(here, 'candidate-bridge.js'), 'utf8');
+const bridge = readFileSync(path.join(here, 'candidate-bridge.js'), 'utf8') + '\n' + readFileSync(path.join(here, 'session-recovery.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // A Worker VFS with the members the bridge calls.
@@ -62,13 +62,14 @@ function services(map = entries => new Map(entries)) {
 }
 
 // Loads the bridge in a fresh realm; `answer(body)` plays the Swift host.
-function load(answer, {fetch = async () => 'network'} = {}) {
+function load(answer, {fetch = async () => 'network', manualTimers = false} = {}) {
   const sent = [];
   // Intervals never fire on their own; a test runs one with `intervals.get(id)()`.
   const intervals = new Map();
-  let intervalId = 0;
+  let intervalId = 0, timerId = 0;
+  const timers = new Map();
   const context = {Buffer, URL, TextDecoder, TextEncoder, Headers, Response, ReadableStream, DOMException, atob, btoa,
-    setTimeout: fn => { fn(); return 0; }, clearTimeout: () => {}, process, fetch, PassThrough,
+    setTimeout: fn => { if (manualTimers) { timers.set(++timerId, fn); return timerId; } fn(); return 0; }, clearTimeout: id => timers.delete(id), process, fetch, PassThrough,
     setInterval: fn => { intervals.set(++intervalId, fn); return intervalId; }, clearInterval: id => { intervals.delete(id); },
     promises: {readFile: async () => 'vfs'}};
   context.self = context;
@@ -81,13 +82,15 @@ function load(answer, {fetch = async () => 'network'} = {}) {
   vm.createContext(context);
   vm.runInContext(bridge, context);
   // Plain copies: the bridge's objects come from another realm.
-  return {self: context, intervals, native: () => JSON.parse(JSON.stringify(sent.filter(x => x.t === 'candidate-native').map(x => x.body))),
+  return {self: context, intervals, timers, native: () => JSON.parse(JSON.stringify(sent.filter(x => x.t === 'candidate-native').map(x => x.body))),
     map: entries => vm.runInContext('entries => new Map(entries)', context)(entries)};
 }
 
 const host = (projects = []) => body => {
   switch (body.operation) {
-    case 'restore': return {snapshot: null};
+    case 'restore': return {snapshot: null, worker: 'w'};
+    case 'checkpoint-begin': return {capture: 'c', worker: 'w'};
+    case 'checkpoint': return {durable: true, capture: body.capture, worker: body.worker, revision: body.revision};
     case 'projects': return {projects};
     default: return {};
   }
@@ -96,7 +99,7 @@ const host = (projects = []) => body => {
 test('restore seeds only the Worker home and turns on native project routes', async () => {
   const snapshot = {formatVersion: 1, directories: [{path: '/dsh/home/.config', mode: 0o40755, mtimeMs: 1}],
     files: [{path: '/dsh/home/.config/a', mode: 0o100644, mtimeMs: 1, base64: btoa('x')}]};
-  const {self, native} = load(body => body.operation === 'restore' ? {snapshot}
+  const {self, native} = load(body => body.operation === 'restore' ? {snapshot, worker: 'w'}
     : {value: btoa('native bytes')});
   const vfs = memoryVfs();
   const base = async () => 'vfs';
@@ -114,7 +117,7 @@ test('restore seeds only the Worker home and turns on native project routes', as
 test('restore refuses a snapshot that leaves the home or carries the credentials', async () => {
   for (const leak of ['/dsh/workspace/p/a', '/dsh/home/../config/x', '/dsh/home/.credentials.yaml']) {
     const snapshot = {formatVersion: 1, directories: [], files: [{path: leak, mode: 0o100644, mtimeMs: 1, base64: ''}]};
-    const {self} = load(() => ({snapshot}));
+    const {self} = load(() => ({snapshot, worker: 'w'}));
     const vfs = memoryVfs();
     await assert.rejects(self.candidateRestore(vfs), /HOME_PATH_REFUSED/);
     assert.equal(vfs.files.size, 0);
@@ -394,4 +397,82 @@ test('every Worker anchor occurs exactly once in the fixed official Worker', {sk
     'copyFile: () => promises.copyFile']) assert.equal(patched.split(hook).length, 2, hook);
   assert.ok(patched.indexOf('candidateRestore') < patched.indexOf('setActiveVfs(mounted);'));
   assert.throws(() => patchWorker('nothing', ''), /Upstream anchor changed/);
+});
+
+
+test('official flush rejects a memory-only native acknowledgement', async () => {
+  const {self, map} = load(body => body.operation === 'restore' ? {snapshot: null, worker: 'w'}
+    : body.operation === 'checkpoint-begin' ? {capture: 'c', worker: 'w'}
+      : body.operation === 'checkpoint' ? {} : host()(body));
+  const {ctx, loader, calls} = services(map);
+  const vfs = memoryVfs();
+  await self.candidateRestore(vfs);
+  await self.candidateInstall(ctx, loader, vfs);
+  assert.equal(typeof calls.events['session/flush'], 'function');
+  await assert.rejects(calls.events['session/flush'](), /DURABLE_ACK_REFUSED/);
+});
+
+
+test('restore validates every entry before seeding any bytes or directories', async () => {
+  const good = {path: '/dsh/home/good', mode: 0o100644, mtimeMs: 1, base64: 'eA=='};
+  for (const bad of [{...good, path: '/dsh/home/bad', base64: 'eA'}, {...good},
+    {...good, path: '/dsh/home/good/child'}, {...good, path: '/dsh/home/bad', mode: 0o120777},
+    {...good, path: '/dsh/home/bad', mtimeMs: -1}, {...good, path: '/dsh/home//bad'}]) {
+    const snapshot = {formatVersion: 1, directories: [{path: '/dsh/home/config', mode: 0o40755, mtimeMs: 1}], files: [good, bad]};
+    const {self} = load(() => ({snapshot, worker: 'w'})); const vfs = memoryVfs();
+    await assert.rejects(self.candidateRestore(vfs), /HOME_(SNAPSHOT|PATH)_REFUSED/);
+    assert.equal(vfs.files.size, 0);
+    assert.equal(vfs.directories.has('/dsh/home/config'), false);
+  }
+});
+
+test('a late durable acknowledgement cannot clear an event that arrived during saving', async () => {
+  const pending = [];
+  const {self, map, native} = load(body => body.operation === 'checkpoint'
+    ? new Promise(resolve => pending.push({body, resolve})) : host()(body), {manualTimers: true});
+  const {ctx, loader, calls} = services(map); const vfs = memoryVfs();
+  await self.candidateRestore(vfs); await self.candidateInstall(ctx, loader, vfs);
+  const saving = self.candidateSave();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(pending.length, 1);
+  calls.events['session/event']();
+  const first = pending[0]; first.resolve({durable: true, worker: first.body.worker, capture: first.body.capture, revision: first.body.revision});
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(pending.length, 2, 'later event requires a new capture');
+  const second = pending[1]; assert.ok(second.body.revision > first.body.revision);
+  second.resolve({durable: true, worker: second.body.worker, capture: second.body.capture, revision: second.body.revision});
+  await saving;
+  assert.equal(native().filter(x => x.operation === 'checkpoint').length, 2);
+});
+
+test('failed save stays retryable through both the periodic and manual save paths', async () => {
+  let attempts = 0;
+  const {self, map, intervals, native} = load(body => {
+    if (body.operation === 'checkpoint' && attempts++ === 0) return {error: 'CHECKPOINT_FAILED'};
+    return host()(body);
+  }, {manualTimers: true});
+  const {ctx, loader} = services(map); const vfs = memoryVfs();
+  await self.candidateRestore(vfs); await self.candidateInstall(ctx, loader, vfs);
+  await assert.rejects(self.candidateSave(), /CHECKPOINT_FAILED/);
+  assert.equal(native().filter(x => x.operation === 'session-changed').at(-1).failure, 'CHECKPOINT_FAILED');
+  for (const callback of intervals.values()) callback();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(attempts, 2);
+  await self.candidateSave();
+  assert.equal(attempts, 3);
+});
+
+test('a failed manual flush retries periodically even when no new events arrive', async () => {
+  let attempts = 0;
+  const {self, map, intervals} = load(body => {
+    if (body.operation === 'checkpoint' && ++attempts === 2) return {error: 'CHECKPOINT_FAILED'};
+    return host()(body);
+  }, {manualTimers: true});
+  const {ctx, loader} = services(map); const vfs = memoryVfs();
+  await self.candidateRestore(vfs); await self.candidateInstall(ctx, loader, vfs);
+  await self.candidateSave();
+  await assert.rejects(self.candidateSave(), /CHECKPOINT_FAILED/);
+  for (const callback of intervals.values()) callback();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(attempts, 3, 'failure retries without a later event');
 });

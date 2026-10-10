@@ -17,6 +17,7 @@ public final class CandidateHost: @unchecked Sendable {
     static let workerCredentials = "/dsh/home/.credentials.yaml"
 
     public let registry: ProjectRegistry
+    private let recovery: SessionRecovery
     private let machine: GuestMachine
     private let gitScripts: [(name: String, source: String)]
     private let model: ModelGateway?
@@ -41,7 +42,8 @@ public final class CandidateHost: @unchecked Sendable {
 
     public init(registry: ProjectRegistry, machine: GuestMachine, availability: LinuxAvailability = .detect(),
                 gitScripts: [(name: String, source: String)], model: ModelGateway? = nil,
-                readyTimeout: TimeInterval = 600, pollInterval: TimeInterval = 0.25) {
+                readyTimeout: TimeInterval = 600, pollInterval: TimeInterval = 0.25, recoveryFault: FaultHook? = nil) {
+        recovery = SessionRecovery(root: registry.root, fault: recoveryFault)
         self.registry = registry; self.machine = machine; self.gitScripts = gitScripts; self.model = model
         self.readyTimeout = readyTimeout; self.pollInterval = pollInterval
         let record = registry.root + "/" + Self.diagnosticRecord
@@ -97,10 +99,11 @@ public final class CandidateHost: @unchecked Sendable {
             case "model-cancel":
                 if let id = body["streamId"] as? String { model?.cancel(id) }
                 return ["cancelled": true]
-            case "checkpoint": return try checkpoint(body["snapshot"])
-            case "restore":
-                guard let data = FileManager.default.contents(atPath: registry.root + "/" + Self.homeCheckpoint) else { return ["snapshot": NSNull()] }
-                return ["snapshot": try JSONSerialization.jsonObject(with: data)]
+            case "checkpoint": return try recovery.save(body)
+            case "checkpoint-begin": return try recovery.begin(body, sample: captureBaselines)
+            case "session-changed": return try recovery.changed(body)
+            case "session-fresh": return try recovery.fresh()
+            case "restore": return try recovery.restore()
             default: throw CandidateError("OPERATION_REFUSED")
             }
         } catch let error as CandidateError {
@@ -138,6 +141,11 @@ public final class CandidateHost: @unchecked Sendable {
         let isOpen = gateway != nil
         var value: [String: Any] = ["id": project.id, "name": project.name, "pluginEnabled": project.pluginEnabled,
                                     "mount": project.mount, "open": isOpen, "writerUnknown": gateway?.lease?.state == .writerUnknown]
+        if let gateway {
+            let facts = gateway.withStore { ($0.generation, $0.recoveryComparable, $0.unknownToolCalls.count, $0.draftList.count) }
+            value["recovery"] = ["comparison": recovery.comparison(project.id, generation: facts.0, available: facts.1),
+                                 "unknownCalls": facts.2, "drafts": facts.3]
+        }
         let phase = plugin.phase(of: project.id)
         value["phase"] = Self.name(phase)
         switch phase {
@@ -178,7 +186,7 @@ public final class CandidateHost: @unchecked Sendable {
         case .unavailable(let reason): availability = reason.rawValue
         }
         return ["linux": availability, "boundProject": plugin.boundProject as Any? ?? NSNull(),
-                "projects": projects(), "diagnostic": record.map(Self.json) ?? NSNull()]
+                "session": recovery.status(), "projects": projects(), "diagnostic": record.map(Self.json) ?? NSNull()]
     }
 
     static func name(_ phase: LinuxPlugin.Phase) -> String {
@@ -448,25 +456,12 @@ public final class CandidateHost: @unchecked Sendable {
         } catch { return Self.failure(error) }
     }
 
-    // MARK: Worker home
-
-    /// The Worker's home survives a restart; project files never enter it.
-    private func checkpoint(_ value: Any?) throws -> [String: Any] {
-        guard let snapshot = value as? [String: Any], snapshot["formatVersion"] as? Int == 1,
-              let files = snapshot["files"] as? [[String: Any]], let directories = snapshot["directories"] as? [[String: Any]] else {
-            throw CandidateError("SNAPSHOT_REFUSED")
+    // Project locks are acquired individually; no cross-project transaction or eager project open.
+    private func captureBaselines() -> [String: SessionRecovery.Baseline] {
+        lock.lock(); let entries = open; lock.unlock()
+        return entries.mapValues { entry in
+            entry.gateway.withStore { SessionRecovery.Baseline(generation: $0.generation, available: $0.recoveryComparable) }
         }
-        for item in files + directories {
-            guard let path = item["path"] as? String, path == "/dsh/home" || path.hasPrefix("/dsh/home/"),
-                  !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else {
-                throw CandidateError("HOME_ONLY_CHECKPOINT")
-            }
-            // The model key stays native; the Worker's own credentials file holds only a placeholder.
-            if path.hasPrefix(Self.workerCredentials) { throw CandidateError("CREDENTIALS_NOT_CHECKPOINTED") }
-        }
-        let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys])
-        do { try ProjectRegistry.durableWrite(data, to: registry.root + "/" + Self.homeCheckpoint) } catch { throw CandidateError("CHECKPOINT_FAILED") }
-        return ["durable": true]
     }
 
     static func json<T: Encodable>(_ value: T) -> Any {

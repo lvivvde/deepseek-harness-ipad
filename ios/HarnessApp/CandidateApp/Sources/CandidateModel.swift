@@ -21,6 +21,8 @@ struct ProjectRow: Identifiable, Equatable {
     let pluginEnabled, open, writerUnknown: Bool
     let reason: String?
     let pluginState: String?
+    let recoveryComparison: String?
+    let unknownCalls, drafts: Int
     let capabilities: [Capability]
 
     init?(_ entry: [String: Any]) {
@@ -29,6 +31,10 @@ struct ProjectRow: Identifiable, Equatable {
         else { return nil }
         self.id = id; self.name = name; self.mount = mount; self.phase = phase; pluginEnabled = enabled; self.open = open
         writerUnknown = entry["writerUnknown"] as? Bool ?? false
+        let recovery = entry["recovery"] as? [String: Any]
+        recoveryComparison = recovery?["comparison"] as? String
+        unknownCalls = recovery?["unknownCalls"] as? Int ?? 0
+        drafts = recovery?["drafts"] as? Int ?? 0
         reason = entry["reason"] as? String
         let declaration = entry["capabilities"] as? [String: Any]
         pluginState = (declaration?["plugin"] as? [String: Any])?["state"] as? String
@@ -52,6 +58,10 @@ final class CandidateModel: ObservableObject {
     @Published private(set) var failure: String?
     @Published private(set) var webStarted = false
     @Published private(set) var lastEvent: String?
+    @Published private(set) var sessionPhase = "NOT_STARTED"
+    @Published private(set) var sessionDiagnosis: String?
+    @Published private(set) var sessionFailure: String?
+    @Published private(set) var sessionSavedAt: Date?
 
     let web: CandidateWebHost?
     private let host: CandidateHost?
@@ -153,11 +163,27 @@ final class CandidateModel: ObservableObject {
         }
     }
 
+    func saveSession() { web?.saveSession() }
+
+    // Called only by the UI's explicit fresh-start confirmation.
+    func freshSession() {
+        call(["operation": "session-fresh"]) { [weak self] reply in
+            guard reply["fresh"] as? Bool == true else { return }
+            self?.web?.view.reload()
+            self?.refresh()
+        }
+    }
+
     func refresh() {
         call(["operation": "status"]) { [weak self] reply in
             guard let self else { return }
             let rows = (reply["projects"] as? [[String: Any]] ?? []).compactMap(ProjectRow.init)
             if rows != projects { projects = rows }
+            let session = reply["session"] as? [String: Any]
+            sessionPhase = session?["phase"] as? String ?? "NOT_STARTED"
+            sessionDiagnosis = session?["diagnosis"] as? String
+            sessionFailure = session?["failure"] as? String
+            sessionSavedAt = (session?["savedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
             linux = reply["linux"] as? String ?? "…"
             boundProject = reply["boundProject"] as? String
             let record = reply["diagnostic"] as? [String: Any]

@@ -24,3 +24,8 @@ worker.addEventListener('error', event => handlers.log.postMessage({event: 'work
 // Swift calls this when the user opens another project natively; the Worker registers it as a workspace.
 window.candidateProjectOpened = project => worker.postMessage({t: 'candidate-project', project});
 connectWorkerHost(worker).catch(error => handlers.log.postMessage({event: 'connect-failed', message: String(error?.message ?? error)}));
+
+// Manual retry and lifecycle attempts share the same serial save path as official session flush.
+window.candidateSave = () => worker.postMessage({t: 'candidate-save'});
+window.addEventListener('pagehide', window.candidateSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') window.candidateSave(); });

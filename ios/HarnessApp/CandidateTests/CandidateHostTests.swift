@@ -3,6 +3,7 @@ import XCTest
 import HarnessCandidate
 import HarnessHost
 import LinuxPlugin
+import NativeWorkspace
 
 /// The candidate's single native authority, seen through the operations the Worker bridge sends.
 /// Linux runs on a fake machine whose guest reads the 9P share it was booted with.
@@ -220,7 +221,7 @@ final class CandidateHostTests: XCTestCase {
 
     func testATerminalLeasesOnlyWhileALineRunsAndClosesForGood() throws {
         let host = try host()
-        let project = id(open(host, "p", plugin: true))
+        _ = open(host, "p", plugin: true)
         XCTAssertEqual(execute(host, "op-0", cwd: "/dsh/workspace/p")["status"] as? String, "COMPLETED")
         let opened = terminal(host, "open", "t-1", ["cwd": "/dsh/workspace/p/src", "argv": ["/bin/bash", "-i"], "cols": 80, "rows": 24,
                                                     "env": ["DSH_SESSION_ID": "s"], "terminalType": "xterm-256color"])
@@ -309,25 +310,103 @@ final class CandidateHostTests: XCTestCase {
         XCTAssertFalse(machine.executed.contains { $0["id"] as? String == "op-1" })
     }
 
+    func testCaptureBaselinePrecedesChangesAndClosedProjectsStayUnopened() throws {
+        let host = try host()
+        let project = id(open(host, "p", plugin: false))
+        let closed = (host.handle(["operation": "project-create", "name": "closed", "pluginEnabled": true])["project"] as? [String: Any])?["id"] as? String ?? ""
+        let restored = host.handle(["operation": "restore"])
+        let worker = try XCTUnwrap(restored["worker"] as? String)
+        let capture = host.handle(["operation": "checkpoint-begin", "worker": worker, "revision": 1])
+        _ = host.handle(["operation": "fs", "method": "write", "args": ["path": "/dsh/workspace/p/a", "data": "eA=="]])
+        let snapshot: [String: Any] = ["formatVersion": 1, "directories": [], "files": []]
+        XCTAssertEqual(host.handle(["operation": "checkpoint", "worker": worker, "revision": 1,
+                                    "capture": capture["capture"]!, "snapshot": snapshot])["durable"] as? Bool, true)
+        _ = host.handle(["operation": "restore"])
+        let facts = projectEntry(host, project)?["recovery"] as? [String: Any]
+        XCTAssertEqual(facts?["comparison"] as? String, "CHANGED")
+        XCTAssertEqual(projectEntry(host, closed)?["open"] as? Bool, false)
+        XCTAssertEqual(machine.boots, 0)
+        let later = id(open(host, "later", plugin: false))
+        XCTAssertEqual((projectEntry(host, later)?["recovery"] as? [String: Any])?["comparison"] as? String, "UNAVAILABLE")
+    }
+
+    func testHomeSavingAndFreshStartPreserveUnknownLeaseCallsAndDraftBytes() throws {
+        let host = try host()
+        let project = id(open(host, "p", plugin: true))
+        XCTAssertEqual(execute(host, "op-unknown", cwd: "/dsh/workspace/p", "detach sleep 9")["status"] as? String, "WRITER_UNKNOWN")
+        _ = host.handle(["operation": "fs", "method": "write", "args": ["path": "/dsh/workspace/p/a", "data": "AP+A"]])
+        let registry = try ProjectRegistry(root: root)
+        let p = try XCTUnwrap(registry.project(project))
+        let draftRoot = registry.state(p) + "/drafts"
+        let draftNames = try FileManager.default.contentsOfDirectory(atPath: draftRoot)
+        let draftBytes = try draftNames.map { try Data(contentsOf: URL(fileURLWithPath: draftRoot + "/" + $0)) }
+        XCTAssertFalse(draftBytes.isEmpty)
+        let facts = projectEntry(host, project)?["recovery"] as? [String: Any]
+        XCTAssertEqual(facts?["unknownCalls"] as? Int, 1)
+        XCTAssertEqual(facts?["drafts"] as? Int, 1)
+        let snapshot: [String: Any] = ["formatVersion": 1, "directories": [], "files": []]
+        XCTAssertEqual(checkpoint(host, snapshot)["durable"] as? Bool, true)
+        try Data("broken".utf8).write(to: URL(fileURLWithPath: root + "/home-current.json"))
+        try Data("broken".utf8).write(to: URL(fileURLWithPath: root + "/home-previous.json"))
+        XCTAssertEqual(host.handle(["operation": "restore"])["error"] as? String, "RECOVERY_BLOCKED")
+        XCTAssertEqual(host.handle(["operation": "session-fresh"])["fresh"] as? Bool, true)
+        XCTAssertTrue(host.handle(["operation": "restore"])["snapshot"] is NSNull)
+        XCTAssertEqual(projectEntry(host, project)?["writerUnknown"] as? Bool, true)
+        let after = projectEntry(host, project)?["recovery"] as? [String: Any]
+        XCTAssertEqual(after?["unknownCalls"] as? Int, 1)
+        XCTAssertEqual(after?["drafts"] as? Int, 1)
+        XCTAssertEqual(try draftNames.map { try Data(contentsOf: URL(fileURLWithPath: draftRoot + "/" + $0)) }, draftBytes)
+        XCTAssertEqual(machine.executed.filter { $0["id"] as? String == "op-unknown" }.count, 1)
+    }
+
+    func checkpoint(_ host: CandidateHost, _ snapshot: [String: Any]) -> [String: Any] {
+        let restored = host.handle(["operation": "restore"])
+        let worker = restored["worker"] as? String ?? ""
+        let began = host.handle(["operation": "checkpoint-begin", "worker": worker, "revision": 1])
+        return host.handle(["operation": "checkpoint", "worker": worker, "revision": 1,
+                            "capture": began["capture"] as? String ?? "", "snapshot": snapshot])
+    }
+
+    func testCorruptCurrentFallsBackWithoutLosingItsEvidence() throws {
+        let host = try host()
+        let snapshot: [String: Any] = ["formatVersion": 1, "directories": [], "files": []]
+        _ = host.handle(["operation": "restore"])
+        _ = checkpoint(host, snapshot)
+        _ = checkpoint(host, snapshot)
+        try Data("broken".utf8).write(to: URL(fileURLWithPath: root + "/home-current.json"))
+        let restored = try self.host().handle(["operation": "restore"])
+        XCTAssertNotNil(restored["snapshot"] as? [String: Any])
+        XCTAssertEqual(restored["diagnosis"] as? String, "CHECKPOINT_FALLBACK")
+        XCTAssertTrue((try FileManager.default.contentsOfDirectory(atPath: root + "/home-quarantine")).count > 0)
+    }
+
+    func testCheckpointRejectsMissingProductionBytesBeforeWriting() throws {
+        let host = try host()
+        let bad: [String: Any] = ["formatVersion": 1, "directories": [],
+                                  "files": [["path": "/dsh/home/a", "mode": 33188, "mtimeMs": 1, "data": "eA=="]]]
+        XCTAssertEqual(host.handle(["operation": "checkpoint", "snapshot": bad])["error"] as? String, "SNAPSHOT_REFUSED")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/home-current.json"))
+    }
+
     func testTheCheckpointHoldsOnlyTheWorkerHome() throws {
         let host = try host()
         XCTAssertTrue(host.handle(["operation": "restore"])["snapshot"] is NSNull)
         let leaking: [String: Any] = ["formatVersion": 1, "files": [["path": "/dsh/workspace/p/a.txt", "data": ""]], "directories": []]
         XCTAssertEqual(host.handle(["operation": "checkpoint", "snapshot": leaking])["error"] as? String, "HOME_ONLY_CHECKPOINT")
-        let home: [String: Any] = ["formatVersion": 1, "files": [["path": "/dsh/home/.config/a", "data": "eA=="]],
-                                   "directories": [["path": "/dsh/home/.config"]]]
-        XCTAssertEqual(host.handle(["operation": "checkpoint", "snapshot": home])["durable"] as? Bool, true)
+        let home: [String: Any] = ["formatVersion": 1, "files": [["path": "/dsh/home/.config/a", "base64": "eA==", "mode": 33188, "mtimeMs": 1]],
+                                   "directories": [["path": "/dsh/home/.config", "mode": 16877, "mtimeMs": 1]]]
+        XCTAssertEqual(checkpoint(host, home)["durable"] as? Bool, true)
         let restored = try self.host().handle(["operation": "restore"])["snapshot"] as? [String: Any]
         XCTAssertEqual((restored?["files"] as? [[String: Any]])?.first?["path"] as? String, "/dsh/home/.config/a")
-        let attributes = try FileManager.default.attributesOfItem(atPath: root + "/worker-home.json")
+        let attributes = try FileManager.default.attributesOfItem(atPath: root + "/home-current.json")
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 
     func testTheCheckpointNeverHoldsTheWorkerCredentials() throws {
         let host = try host()
         for path in ["/dsh/home/.credentials.yaml", "/dsh/home/.credentials.yaml.tmp"] {
-            let snapshot: [String: Any] = ["formatVersion": 1, "files": [["path": path, "data": "eA=="]], "directories": []]
-            XCTAssertEqual(host.handle(["operation": "checkpoint", "snapshot": snapshot])["error"] as? String, "CREDENTIALS_NOT_CHECKPOINTED")
+            let snapshot: [String: Any] = ["formatVersion": 1, "files": [["path": path, "base64": "eA==", "mode": 33188, "mtimeMs": 1]], "directories": []]
+            XCTAssertEqual(checkpoint(host, snapshot)["error"] as? String, "CREDENTIALS_NOT_CHECKPOINTED")
         }
         XCTAssertTrue(host.handle(["operation": "restore"])["snapshot"] is NSNull)
     }

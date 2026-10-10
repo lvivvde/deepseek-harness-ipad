@@ -25,6 +25,7 @@ check:
 	@python3 -c "import ast; from pathlib import Path; [ast.parse(p.read_text()) for p in Path('runtime/prototypes/plan500-ipad').glob('*.py')]"
 	@python3 -c "import ast; from pathlib import Path; [ast.parse(p.read_text()) for p in Path('runtime/candidate').glob('*.py')]"
 	@node --check runtime/candidate/candidate-bridge.js
+	@node --check runtime/candidate/session-recovery.js
 	@node --check runtime/candidate/connector.js
 	@bash -n runtime/guest/init runtime/guest/harness-init runtime/guest/default.script
 	@git diff --check
@@ -46,6 +47,8 @@ test-plan500-ipad:
 	@swift test --package-path runtime/prototypes/plan500-darwin/gateway
 
 test-candidate:
+	@swift build --package-path ios/HarnessApp --product home-recovery-probe
+	@node --test runtime/candidate/test_recovery.mjs
 	@node --test runtime/candidate/test_bridge.mjs
 	@python3 -m unittest discover -s runtime/candidate -p test_build.py
 

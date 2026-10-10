@@ -176,11 +176,15 @@ iPad 实测（2026-10-10，签名安装到用户的 iPad；设备验收部分完
 
 iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No Accounts"。需要先在 Xcode 界面中对生成的工程运行一次，生成描述文件，之后命令行带 `-allowProvisioningUpdates` 即可复用。免费团队的 App 名额有限；需要腾名额时，只卸载用户授权过的本项目占位 App（Harness 占位版、DeviceAcceptance 运行器）或本项目旧的候选 IPA，不动 LinuxPrototype 和正式 Harness 的数据。
 
+**hook 与项目文件监听：**
+
+- 项目内的 hook（官方 `runHook` 带 stdin 调用 shell 的 `execute`）作为独立的 Linux 任务运行，触发方式 `hook`。环境变量先导出，项目挂载路径换成 guest 的 `/workspace`，payload 经 `printf` 回放到命令的 stdin。没有跑完的 hook 一律按阻止处理：退出码 2，stderr 为 `DSH_HOOK_NOT_RUN <原因>`，原因包括 `REFUSED` 的具体原因（如 `WRITER_UNKNOWN`）、`HOOK_TIMEOUT`、`HOOK_CANCELLED` 和 `CANCELLED_BEFORE_DISPATCH`。官方网页版目前不加载 hook 插件，所以这条路径只由桥接测试（使用官方 `runHook`）覆盖，真机上没有调用方。
+- 项目内的 `watch` 每 2 秒经网关比对原生存储：文件比对类型、版本和大小，目录比对直接子项。每条 Linux 命令或 hook 结束后立即再比对一次。有变化就通知订阅方；取消订阅后不再轮询。
+
 **候选 App 已知缺口：**
 
 - 交互式终端：需要 PTY 流，而 guest 协议只返回执行完的命令结果。
-- 官方 Worker 自己发起的 hook 执行和 Git 写操作还没有接到 Linux。在 shell 工具里运行的 git 命令照常走 Linux。
-- 项目文件监听：原生工作区还没有变更通知，`watch` 不会触发。
+- 官方 Worker 发起的 Git 写操作：官方网页版没有这样的调用方。官方 git 工具解析到原生只读 Git，超出子集以退出码 128 拒绝；会修改仓库的 git 命令在 shell 工具里运行，走 Linux。
 - 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证（macOS 和 iPad 都未验）。
 - App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。
 

@@ -90,8 +90,8 @@ final class CandidateHostTests: XCTestCase {
 
     func id(_ opened: [String: Any]) -> String { (opened["project"] as? [String: Any])?["id"] as? String ?? "" }
 
-    func execute(_ host: CandidateHost, _ id: String, cwd: String, _ command: String = "pwd") -> [String: Any] {
-        host.handle(["operation": "execute", "operationId": id, "command": command, "cwd": cwd, "timeoutMs": 5000, "trigger": "shell"])
+    func execute(_ host: CandidateHost, _ id: String, cwd: String, _ command: String = "pwd", trigger: String = "shell") -> [String: Any] {
+        host.handle(["operation": "execute", "operationId": id, "command": command, "cwd": cwd, "timeoutMs": 5000, "trigger": trigger])
     }
 
     func testANativeProjectReadsAndWritesTheRealWorkspace() throws {
@@ -173,12 +173,13 @@ final class CandidateHostTests: XCTestCase {
         let host = try host()
         let project = id(open(host, "p", plugin: true))
         XCTAssertEqual(execute(host, "op-1", cwd: "/dsh/workspace/p")["status"] as? String, "COMPLETED")
+        XCTAssertEqual(execute(host, "op-2", cwd: "/dsh/workspace/p", trigger: "hook")["status"] as? String, "COMPLETED")
         let declaration = try XCTUnwrap(projectEntry(host, project)?["capabilities"] as? [String: Any])
         let items = Dictionary(uniqueKeysWithValues: (declaration["items"] as? [[String: Any]] ?? []).map { ($0["name"] as? String ?? "", $0) })
-        XCTAssertEqual(items["shell"]?["available"] as? Bool, true)
-        XCTAssertNil(items["shell"]?["reason"] as? String)
-        XCTAssertEqual(items["hook.command"]?["available"] as? Bool, false)
-        XCTAssertEqual(items["hook.command"]?["reason"] as? String, "CANDIDATE_NOT_WIRED")
+        for name in ["shell", "hook.command"] {
+            XCTAssertEqual(items[name]?["available"] as? Bool, true, name)
+            XCTAssertNil(items[name]?["reason"] as? String, name)
+        }
         XCTAssertEqual(items["git.write"]?["reason"] as? String, "SHELL_ONLY")
         XCTAssertEqual(items["subprocess"]?["reason"] as? String, "BASH_C_ONLY")
         XCTAssertEqual(items["terminal"]?["path"] as? String, "unsupported")

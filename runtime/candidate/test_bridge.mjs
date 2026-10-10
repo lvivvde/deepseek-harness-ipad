@@ -41,6 +41,7 @@ function services(map = entries => new Map(entries)) {
   }
   class Shell {
     static decorateResult(result, decorate) { return decorate(result); }
+    resolve(request) { return request; }
     async execute() { return 'confined'; }
     async executeArgv(spec, argv) { calls.executeArgv = argv; return {exitCode: 0}; }
   }
@@ -62,8 +63,12 @@ function services(map = entries => new Map(entries)) {
 // Loads the bridge in a fresh realm; `answer(body)` plays the Swift host.
 function load(answer, {fetch = async () => 'network'} = {}) {
   const sent = [];
+  // Intervals never fire on their own; a test runs one with `intervals.get(id)()`.
+  const intervals = new Map();
+  let intervalId = 0;
   const context = {Buffer, URL, TextDecoder, TextEncoder, Headers, Response, ReadableStream, DOMException, atob, btoa,
-    setTimeout: fn => { fn(); return 0; }, clearTimeout: () => {}, setInterval: () => 0, process, fetch,
+    setTimeout: fn => { fn(); return 0; }, clearTimeout: () => {}, process, fetch,
+    setInterval: fn => { intervals.set(++intervalId, fn); return intervalId; }, clearInterval: id => { intervals.delete(id); },
     promises: {readFile: async () => 'vfs'}};
   context.self = context;
   context.globalThis = context;
@@ -75,7 +80,7 @@ function load(answer, {fetch = async () => 'network'} = {}) {
   vm.createContext(context);
   vm.runInContext(bridge, context);
   // Plain copies: the bridge's objects come from another realm.
-  return {self: context, native: () => JSON.parse(JSON.stringify(sent.filter(x => x.t === 'candidate-native').map(x => x.body))),
+  return {self: context, intervals, native: () => JSON.parse(JSON.stringify(sent.filter(x => x.t === 'candidate-native').map(x => x.body))),
     map: entries => vm.runInContext('entries => new Map(entries)', context)(entries)};
 }
 
@@ -196,6 +201,88 @@ test('an interactive terminal is refused with its fixed code instead of crashing
   for (const cwd of ['/dsh/workspace/p', '/tmp']) {
     await assert.rejects(table.subprocess.spawnTerminal({argv: ['/bin/sh'], cwd}), /TERMINAL_UNSUPPORTED/);
   }
+});
+
+// The official runner the hook plugins call; it reads a throw or a missing exit code as "no decision".
+const hookProtocol = path.join(here, '../../build/test-dependencies/harness/node_modules/@deepseek-ai/dsh-hook-protocol/lib/index.js');
+async function runOfficialHook(reply, {cwd = '/dsh/workspace/p/src', abort = false} = {}) {
+  const {runHook} = await import(hookProtocol);
+  const {self, native, map} = load(body => body.operation === 'execute' ? reply : host()(body));
+  const {ctx, loader, table} = services(map);
+  const vfs = memoryVfs();
+  await self.candidateRestore(vfs);
+  await self.candidateInstall(ctx, loader, vfs);
+  const controller = new AbortController();
+  if (abort) controller.abort();
+  const {output} = await runHook(table.shell, {command: 'check-tool', timeoutSec: 5},
+    {payload: {hook_event_name: 'PreToolUse', note: "it's"}, env: {CLAUDE_PROJECT_DIR: '/dsh/workspace/p'}, cwd,
+      signal: controller.signal, trailingNewline: true, defaultTimeoutMs: 1000, expectedEventName: 'PreToolUse'}, () => 0);
+  return {output, execute: native().find(x => x.operation === 'execute')};
+}
+const hookSkip = !existsSync(hookProtocol) && 'official hook protocol not installed';
+
+test('a hook in a project runs on Linux with its payload and environment', {skip: hookSkip}, async () => {
+  const {output, execute} = await runOfficialHook({status: 'COMPLETED', exitCode: 0, signal: null,
+    stdout: '{"decision":"block","reason":"no"}', stderr: ''});
+  assert.equal(execute.trigger, 'hook');
+  assert.equal(execute.cwd, '/dsh/workspace/p/src');
+  assert.equal(execute.timeoutMs, 5000);
+  // The guest sees the project at /workspace; the payload is replayed on stdin, quotes intact.
+  assert.equal(execute.command, "export CLAUDE_PROJECT_DIR='/workspace'\n"
+    + `printf '%s' '{"hook_event_name":"PreToolUse","note":"it'\\''s"}\n' | (\ncheck-tool\n)\n`);
+  assert.equal(output.decision, 'block');
+  assert.equal(output.reason, 'no');
+});
+
+test('a hook that did not run on Linux blocks with its fixed code', {skip: hookSkip}, async () => {
+  for (const [reply, code] of [[{status: 'REFUSED', reason: 'LINUX_PLUGIN_NOT_ENABLED'}, 'LINUX_PLUGIN_NOT_ENABLED'],
+    [{status: 'WRITER_UNKNOWN', stdout: '', stderr: ''}, 'WRITER_UNKNOWN'],
+    [{status: 'COMPLETED', exitCode: null, signal: 'SIGKILL', stdout: '', stderr: '', timedOut: true}, 'HOOK_TIMEOUT'],
+    [{status: 'COMPLETED', exitCode: null, signal: 'SIGKILL', stdout: '', stderr: '', cancelled: true}, 'HOOK_CANCELLED'],
+    [{status: 'CANCELLED_BEFORE_DISPATCH'}, 'CANCELLED_BEFORE_DISPATCH']]) {
+    const {output} = await runOfficialHook(reply);
+    assert.equal(output.decision, 'block', code);
+    assert.equal(output.reason, 'DSH_HOOK_NOT_RUN ' + code);
+  }
+  const {output, execute} = await runOfficialHook({}, {abort: true});
+  assert.equal(execute, undefined, 'an aborted hook is never dispatched');
+  assert.equal(output.reason, 'DSH_HOOK_NOT_RUN CANCELLED_BEFORE_DISPATCH');
+});
+
+test('a project watch fires when the native store changes and stops when unwatched', async () => {
+  let version = 'v1', names = ['a'];
+  const {self, intervals, map} = load(body => {
+    if (body.operation === 'fs' && body.method === 'stat')
+      return {value: body.args.path.endsWith('/dir') ? {type: 'directory', version: null, mode: 0o40755, size: 0}
+        : {type: 'file', version, mode: 0o100644, size: 1}};
+    if (body.operation === 'path') return {value: {dev: 1, ino: 2, size: 0, mtimeNs: 3, ctimeNs: 4}};
+    if (body.operation === 'fs' && body.method === 'list')
+      return {value: names.map(name => ({name, type: 'file', version: 'x', size: 1, target: '/dsh/workspace/p/dir/' + name}))};
+    if (body.operation === 'execute') return {status: 'COMPLETED', exitCode: 0, signal: null, stdout: '', stderr: ''};
+    return host()(body);
+  });
+  const {ctx, loader, LocalFileSystem, table} = services(map);
+  const vfs = memoryVfs();
+  await self.candidateRestore(vfs);
+  await self.candidateInstall(ctx, loader, vfs);
+  const fs = new LocalFileSystem();
+  const seen = {file: 0, dir: 0};
+  const file = await fs.watch({targetKey: '/dsh/workspace/p/a', displayPath: '/dsh/workspace/p/a'}, error => { assert.equal(error, undefined); seen.file++; });
+  const dir = await fs.watch({targetKey: '/dsh/workspace/p/dir', displayPath: '/dsh/workspace/p/dir'}, () => { seen.dir++; });
+  const [poll] = [...intervals.entries()].find(([, fn]) => fn.name === 'candidatePollWatches');
+  await intervals.get(poll)();
+  assert.deepEqual(seen, {file: 0, dir: 0}, 'nothing changed');
+  version = 'v2';
+  await intervals.get(poll)();
+  assert.deepEqual(seen, {file: 1, dir: 0});
+  // A command on Linux polls at once when it finishes, without waiting for the interval.
+  names = ['a', 'b'];
+  await table.subprocess.spawn({argv: ['bash', '-c', 'touch dir/b'], cwd: '/dsh/workspace/p', stdio: {stdout: {}, stderr: {}}}).done;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(seen, {file: 1, dir: 1});
+  file(); dir();
+  assert.equal(intervals.has(poll), false, 'the last unwatch stops polling');
+  assert.equal(await fs.watch({targetKey: '/tmp/x', displayPath: '/tmp/x'}, () => {}), 'local-watch');
 });
 
 test('project writes through the Worker VFS are refused; other paths are untouched', async () => {

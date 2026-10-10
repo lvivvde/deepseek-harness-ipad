@@ -18,6 +18,7 @@ const candidateOfficialMessages = 'https://api.deepseek.com/anthropic/v1/message
 const candidateCommandTimeoutMs = 600000;
 const candidateCheckpointDelayMs = 1500;
 const candidateCheckpointIntervalMs = 30000;
+const candidateWatchIntervalMs = 2000;
 
 // MARK: Native calls
 
@@ -413,12 +414,53 @@ function candidateInstallFileSystem(require) {
       return {version: FsVersion(outcome.version), before: original.content, after: edited.content};
     });
   };
-  // No change feed from the native store yet: a project watch never fires (documented gap).
+  // dsh-fs-local's watch: a directory reports its direct entries, a file itself (absent until it appears).
   proto.watch = async function (target, changed, signal) {
     if (!inProject(target)) return original.watch.call(this, target, changed, signal);
     signal?.throwIfAborted();
-    return () => {};
+    const info = await probe(target.targetKey, true).catch(() => null);
+    signal?.throwIfAborted();
+    const watch = {key: target.targetKey, directory: info?.type === 'directory', changed};
+    watch.signature = await candidateSignature(watch);
+    signal?.throwIfAborted();
+    candidateWatches.add(watch);
+    candidateWatchTimer ??= setInterval(candidatePollWatches, candidateWatchIntervalMs);
+    return () => {
+      candidateWatches.delete(watch);
+      if (candidateWatches.size === 0 && candidateWatchTimer !== undefined) { clearInterval(candidateWatchTimer); candidateWatchTimer = undefined; }
+    };
   };
+}
+
+// MARK: Project watches (the native store has no change feed, so each target's signature is polled)
+
+// Files change behind the Worker from Linux commands and native draft or writer actions; a Linux command
+// polls at once when it finishes, everything else within the interval.
+const candidateWatches = new Set();
+let candidateWatchTimer;
+let candidateWatchPoll;
+async function candidateSignature(watch) {
+  try {
+    if (!watch.directory) {
+      const info = await candidateTool('fs', 'stat', {path: watch.key, follow: true});
+      return info ? JSON.stringify([info.type, info.version, info.size]) : 'absent';
+    }
+    const entries = await candidateTool('fs', 'list', {path: watch.key});
+    return JSON.stringify(entries.map(x => [x.name, x.type, x.version ?? null, x.size ?? null])
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
+  } catch (error) { return 'failed:' + (error.code ?? 'UNKNOWN'); }
+}
+// Concurrent calls share one pass. A failed read is a signature too, so it reports once, not every pass.
+function candidatePollWatches() {
+  candidateWatchPoll ??= (async () => {
+    for (const watch of [...candidateWatches]) {
+      const signature = await candidateSignature(watch);
+      if (!candidateWatches.has(watch) || signature === watch.signature) continue;
+      watch.signature = signature;
+      try { watch.changed(); } catch (error) { candidateLog({event: 'watch-failed', code: error.code ?? String(error)}); }
+    }
+  })().finally(() => { candidateWatchPoll = undefined; });
+  return candidateWatchPoll;
 }
 
 // MARK: Subprocesses: rg and git reads run natively; a shell command in a project runs on Linux
@@ -480,8 +522,55 @@ function candidateLinuxProcess(spec) {
         case 'REFUSED': throw new Error(reply.reason);
         default: throw new Error(reply.status);
       }
-    } finally { spec.signal?.removeEventListener('abort', cancel); }
+    } finally {
+      spec.signal?.removeEventListener('abort', cancel);
+      candidatePollWatches();
+    }
   }, cancel);
+}
+// The official hook runner (dsh-hook-protocol runHook) is the only caller that gives a shell command stdin. It
+// reads a throw or a missing exit code as "no decision", which lets the action go on, so every answer that is
+// not a finished command becomes exit code 2 with `DSH_HOOK_NOT_RUN <code>`, which it reads as a block
+// (#39 gate 5). runHook only calls `result()` on the execution.
+const candidateHookNotRun = code => ({exitCode: 2, stdout: {text: ''}, stderr: {text: 'DSH_HOOK_NOT_RUN ' + code}});
+const candidateQuote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+// The guest gives a command no stdin and its own environment, so the payload is replayed from the command text
+// and the hook's env exported first. A path in the command's project is spelled as the guest mounts it.
+function candidateHookCommand(spec) {
+  const mount = candidateWorkspace + String(spec.workdir).slice(candidateWorkspace.length).split('/')[0];
+  const guest = value => value === mount || value.startsWith(mount + '/') ? '/workspace' + value.slice(mount.length) : value;
+  const lines = [];
+  for (const [name, value] of Object.entries(spec.env ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string' || value.includes('\0')) return {refused: 'HOOK_ENV_REFUSED'};
+    lines.push(`export ${name}=${candidateQuote(guest(value))}`);
+  }
+  if (typeof spec.stdin !== 'string' || spec.stdin.includes('\0')) return {refused: 'HOOK_STDIN_REFUSED'};
+  lines.push(`printf '%s' ${candidateQuote(spec.stdin)} | (\n${spec.command}\n)`);
+  return {command: lines.join('\n') + '\n'};
+}
+function candidateLinuxHook(spec) {
+  return {result: async () => {
+    const operationId = `hook-${candidateIdPrefix}-${++candidateOperationId}`;
+    const cancel = () => { candidateNative('cancel', {operationId}).catch(() => {}); };
+    if (spec.signal?.aborted) return candidateHookNotRun('CANCELLED_BEFORE_DISPATCH');
+    const built = candidateHookCommand(spec);
+    if (built.refused) return candidateHookNotRun(built.refused);
+    spec.signal?.addEventListener('abort', cancel, {once: true});
+    let reply;
+    try {
+      reply = await candidateNative('execute', {operationId, command: built.command, cwd: String(spec.workdir),
+        timeoutMs: Math.min(spec.timeoutMs ?? candidateCommandTimeoutMs, candidateCommandTimeoutMs), trigger: 'hook'});
+    } catch (error) {
+      return candidateHookNotRun(String(error?.message ?? error).split(/\s/)[0] || 'NATIVE_ERROR');
+    } finally {
+      spec.signal?.removeEventListener('abort', cancel);
+      candidatePollWatches();
+    }
+    if (reply.status !== 'COMPLETED') return candidateHookNotRun(reply.status === 'REFUSED' ? reply.reason : reply.status);
+    if (!Number.isInteger(reply.exitCode))
+      return candidateHookNotRun(reply.timedOut ? 'HOOK_TIMEOUT' : reply.cancelled ? 'HOOK_CANCELLED' : 'HOOK_NO_EXIT');
+    return {exitCode: reply.exitCode, stdout: {text: reply.stdout ?? ''}, stderr: {text: reply.stderr ?? ''}};
+  }};
 }
 const candidateShellCommand = argv => Array.isArray(argv) && argv.length === 3 && argv[0] === 'bash' && argv[1] === '-c'
   && typeof argv[2] === 'string';
@@ -505,6 +594,7 @@ function candidateInstallSubprocess(ctx) {
 }
 // The official bash tool confines a command with the Worker's virtual sandbox launcher. In a project the
 // command runs on the Linux VM instead, which is its isolation, so the plain `bash -c` argv reaches spawn.
+// A hook in a project runs on Linux as a task of its own.
 function candidateInstallShell(ctx) {
   const shell = ctx.get('shell');
   const proto = Object.getPrototypeOf(shell);
@@ -513,6 +603,7 @@ function candidateInstallShell(ctx) {
   const execute = proto.execute;
   proto.execute = async function (spec) {
     if (!candidateInside(String(spec.workdir))) return execute.call(this, spec);
+    if (spec.stdin !== undefined) return candidateLinuxHook(spec);
     const mode = spec.sandboxPolicy?.mode;
     return decorate(await this.executeArgv(spec, ['bash', '-c', spec.command]),
       result => ({...result, sandbox: {mode, denied: false}}));

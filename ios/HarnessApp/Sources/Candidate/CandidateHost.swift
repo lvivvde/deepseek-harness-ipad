@@ -25,7 +25,7 @@ public final class CandidateHost: @unchecked Sendable {
     private(set) var plugin: LinuxPlugin!
 
     private struct Open { let project: CandidateProject; let gateway: ProjectGateway; let tools: ProjectTools }
-    /// Guards `open`, `operations`, `pendingCancels`, `stopping` and `diagnostic`. Never held while a
+    /// Guards `open`, `operations`, `pendingCancels`, `terminals`, `stopping` and `diagnostic`. Never held while a
     /// gateway, the plugin or the guest is called.
     private let lock = NSLock()
     private var open: [String: Open] = [:]
@@ -33,6 +33,8 @@ public final class CandidateHost: @unchecked Sendable {
     private var operations: [String: String] = [:]
     /// Cancellations that arrived before their command.
     private var pendingCancels = Set<String>()
+    /// Terminal id → project id; the guest knows the terminal by the same id.
+    private var terminals: [String: String] = [:]
     /// The launcher stopped the VM itself; its exit must not replace the preparation failure's cause.
     private var stopping = false
     private var diagnostic: LinuxPlugin.Diagnostic?
@@ -70,6 +72,23 @@ public final class CandidateHost: @unchecked Sendable {
             case "cancel":
                 guard let id = body["operationId"] as? String else { throw CandidateError("ID_REFUSED") }
                 return ["status": cancel(id)]
+            case "terminal-open": return try terminalOpen(body)
+            case "terminal-write": return try terminalWrite(body)
+            case "terminal-read": return try terminalRead(body)
+            case "terminal-resize":
+                let (id, gateway) = try terminal(body)
+                try terminalCall { try gateway.resizeTerminal(id, cols: body["cols"] as? Int ?? 0, rows: body["rows"] as? Int ?? 0) }
+                return [:]
+            case "terminal-signal":
+                let (id, gateway) = try terminal(body)
+                return ["processGroupId": try terminalCall { try gateway.signalTerminal(id, signal: body["signal"] as? String ?? "") }]
+            case "terminal-inspect":
+                let (id, gateway) = try terminal(body)
+                let inspected = try terminalCall { try gateway.inspectTerminal(id) }
+                return ["foreground": inspected.foreground.map { ["processGroupId": $0.processGroupId, "inputWaiting": $0.inputWaiting] } as Any? ?? NSNull(),
+                        "activity": Self.activity(inspected.activity)]
+            case "terminal-close": return try terminalClose(body)
+            case "terminals-reset": return terminalsReset()
             case "writer-release":
                 guard let id = body["id"] as? String, let gateway = opened(id)?.gateway else { throw CandidateError("PROJECT_UNKNOWN") }
                 return ["status": Self.name(gateway.releaseUnknownWriter())]
@@ -141,7 +160,12 @@ public final class CandidateHost: @unchecked Sendable {
                 items[index]["reason"] = narrower
             }
         }
-        items.append(["name": "terminal", "path": "unsupported", "available": false, "reason": "TERMINAL_UNSUPPORTED"])
+        // The terminal runs where shell commands run; it holds the write lease only while a command runs in it.
+        if var terminal = items.first(where: { $0["name"] as? String == "shell" }) {
+            terminal["name"] = "terminal"
+            if terminal["available"] as? Bool == true { terminal["reason"] = "WRITE_LEASE_WHILE_BUSY" }
+            items.append(terminal)
+        }
         value["items"] = items
         return value
     }
@@ -214,11 +238,98 @@ public final class CandidateHost: @unchecked Sendable {
         operations[id] = target.project.id
         lock.unlock()
         switch target.gateway.execute(id, task: task, argv: ["/bin/sh", "-c", command], timeoutMs: timeout, cwd: guestCwd) {
-        case .completed(let result, _): return Self.result(result).merging(["status": "COMPLETED"]) { $1 }
+        case .completed(let result, _), .joined(let result): return Self.result(result).merging(["status": "COMPLETED"]) { $1 }
         case .refused(let code): return ["status": "REFUSED", "reason": code]
         case .cancelledBeforeDispatch: return ["status": "CANCELLED_BEFORE_DISPATCH"]
         case .writerUnknown(let result): return (result.map(Self.result) ?? [:]).merging(["status": "WRITER_UNKNOWN"]) { $1 }
         }
+    }
+
+    // MARK: Terminal
+
+    /// Opens a pty shell in the project whose mount holds `cwd`. Its view of the workspace is read-only
+    /// until a line is run in it.
+    private func terminalOpen(_ body: [String: Any]) throws -> [String: Any] {
+        guard let id = body["terminalId"] as? String, (1...128).contains(id.utf8.count),
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
+              let cwd = body["cwd"] as? String, let argv = body["argv"] as? [String], !argv.isEmpty,
+              let cols = body["cols"] as? Int, let rows = body["rows"] as? Int else { throw CandidateError("TERMINAL_REFUSED") }
+        lock.lock()
+        guard let (target, guestCwd) = locate(cwd) else { lock.unlock(); throw CandidateError("CWD_REFUSED") }
+        guard terminals[id] == nil else { lock.unlock(); throw CandidateError("DUPLICATE_TERMINAL") }
+        terminals[id] = target.project.id
+        lock.unlock()
+        do {
+            return ["pid": try target.gateway.openTerminal(id, argv: argv, cwd: guestCwd, cols: cols, rows: rows,
+                                                           env: body["env"] as? [String: String] ?? [:],
+                                                           terminalType: body["terminalType"] as? String)]
+        } catch let error as TerminalError {
+            // A start the guest may have half made stays tracked until a close confirms it is gone.
+            if error.code != "GUEST_UNREACHABLE" || Self.closed(id, target.gateway) {
+                lock.lock(); terminals[id] = nil; lock.unlock()
+            }
+            throw CandidateError(error.code)
+        }
+    }
+
+    private func terminalWrite(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        guard let text = body["data"] as? String, let data = Data(base64Encoded: text), data.count <= 48 * 1024 else {
+            throw CandidateError("WRITE_REFUSED")
+        }
+        switch gateway.writeTerminal(id, data) {
+        case .written(let leased): return ["status": "WRITTEN", "leased": leased]
+        case .refused(let code): return ["status": "REFUSED", "reason": code]
+        case .writerUnknown: return ["status": "WRITER_UNKNOWN"]
+        }
+    }
+
+    /// Long-polls output; `released` says the terminal's lease ended with this read.
+    private func terminalRead(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        let wait = min(max(body["waitMs"] as? Int ?? 0, 0), 20_000)
+        let read = try terminalCall { try gateway.readTerminal(id, offset: body["offset"] as? Int ?? 0, waitMs: wait) }
+        return ["data": read.data.base64EncodedString(), "next": read.next, "dropped": read.dropped,
+                "exited": read.exited.map { ["code": $0.code as Any? ?? NSNull(), "signal": $0.signal as Any? ?? NSNull()] } as Any? ?? NSNull(),
+                "activity": Self.activity(read.activity), "leased": read.leased, "released": read.release != nil]
+    }
+
+    /// The terminal stays tracked when the guest cannot confirm its lease ended.
+    private func terminalClose(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        let release = try terminalCall { try gateway.closeTerminal(id, graceMs: min(max(body["graceMs"] as? Int ?? 1000, 0), 5000)) }
+        lock.lock(); terminals[id] = nil; lock.unlock()
+        return ["closed": true, "released": release != nil]
+    }
+
+    /// A new Worker closes the terminals an earlier one left open; `remaining` could not be closed yet.
+    private func terminalsReset() -> [String: Any] {
+        lock.lock(); let left = terminals.compactMap { id, project in open[project].map { (id, $0.gateway) } }; lock.unlock()
+        var remaining: [String] = []
+        for (id, gateway) in left {
+            if Self.closed(id, gateway) { lock.lock(); terminals[id] = nil; lock.unlock() } else { remaining.append(id) }
+        }
+        return ["closed": left.count - remaining.count, "remaining": remaining.sorted()]
+    }
+
+    private static func closed(_ id: String, _ gateway: ProjectGateway) -> Bool {
+        do { try gateway.closeTerminal(id, graceMs: 0); return true } catch { return false }
+    }
+
+    private func terminal(_ body: [String: Any]) throws -> (String, ProjectGateway) {
+        lock.lock(); defer { lock.unlock() }
+        guard let id = body["terminalId"] as? String, let project = terminals[id], let gateway = open[project]?.gateway else {
+            throw CandidateError("TERMINAL_NOT_FOUND")
+        }
+        return (id, gateway)
+    }
+
+    private func terminalCall<T>(_ work: () throws -> T) throws -> T {
+        do { return try work() } catch let error as TerminalError { throw CandidateError(error.code) }
+    }
+
+    private static func activity(_ activity: TerminalActivity) -> [String: Any] {
+        ["state": activity.state, "revision": activity.revision]
     }
 
     /// Caller holds `lock`. Maps a Worker path inside an open project to the guest's `/workspace`.
@@ -296,6 +407,7 @@ public final class CandidateHost: @unchecked Sendable {
         let gateway = bound.flatMap { open[$0]?.gateway }
         lock.unlock()
         guard !ignore else { return }
+        lock.lock(); terminals.removeAll(); lock.unlock()
         if let gateway { gateway.guestExited(status: status) } else { plugin.vmExited(status: status) }
     }
 

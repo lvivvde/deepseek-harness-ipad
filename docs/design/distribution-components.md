@@ -62,11 +62,13 @@
    - 在 Worker 开头过滤候选消息帧，避免官方隧道因未知帧失败。
    - 补齐 WebKit 缺少的 `Symbol.dispose` 和 `Symbol.asyncDispose`（同第 3 条）。
 6. **官方页面**（`prepare.mjs`）：在官方 `index.html` 中加 importmap 和 `connector.js`，让传输层先于入口建立。
-7. **候选桥接**（`candidate-bridge.js`、`connector.js`）：
+7. **候选桥接**（`candidate-bridge.js`、`session-recovery.js`、`connector.js`）：
    - 项目内的文件、搜索、只读 Git、图片编解码和模型请求走原生网关。
    - 项目内的 shell 命令走 Linux。官方 bash 工具在项目内跳过 Worker 的虚拟沙箱启动器，因为 VM 本身就是隔离；结果里的 `sandbox.denied` 固定为 `false`。
    - 命令在 guest 中以 `/bin/sh -c` 运行，不是 bash。
    - 项目内的交互式终端在 guest 的 pty 上运行 `/bin/bash -i`，输出经长轮询读回，交给官方终端控制器。只接受 `/bin/bash -i`。
+
+   - 会话恢复 module 等官方 flush 后采集 home，并等待原生耐久确认；新增保存帧用于手动重试和前后台保存尝试。恢复受阻时不启动官方树。
 
 网页收据 `candidate-receipt.json` 的 `adaptations` 字段逐项列出上述改动。
 

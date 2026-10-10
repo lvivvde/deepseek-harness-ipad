@@ -832,46 +832,8 @@ globalThis.fetch = async (input, options = {}) => {
 
 // MARK: Worker home (restored before the tree boots; checkpointed after session events)
 
-const candidateHomePath = path => typeof path === 'string' && !path.split('/').some(p => p === '..' || p === '.')
-  && (path === candidateHome || path.startsWith(candidateHome + '/'))
-  && path !== candidateCredentials && !path.startsWith(candidateCredentials);
-function candidateSeedHome(vfs, snapshot) {
-  if (snapshot.formatVersion !== 1) throw new Error('HOME_SNAPSHOT_VERSION');
-  for (const entry of [...snapshot.directories, ...snapshot.files]) if (!candidateHomePath(entry.path)) throw new Error('HOME_PATH_REFUSED');
-  for (const d of snapshot.directories) vfs.seedDirectory(d.path, {mode: d.mode, mtimeMs: d.mtimeMs});
-  for (const f of snapshot.files) vfs.seed(f.path, candidateBytes(f.base64), {mode: f.mode, mtimeMs: f.mtimeMs});
-}
-function candidateSnapshotHome(vfs) {
-  const result = {formatVersion: 1, directories: [], files: []};
-  const visit = path => {
-    if (!candidateHomePath(path)) return;
-    const stat = vfs.statSync(path);
-    if (stat.isDirectory()) {
-      result.directories.push({path, mode: stat.mode, mtimeMs: stat.mtimeMs});
-      for (const name of vfs.readdirSync(path)) visit(path + '/' + name);
-    } else result.files.push({path, mode: stat.mode, mtimeMs: stat.mtimeMs, base64: candidateBase64(vfs.readFileSync(path))});
-  };
-  visit(candidateHome);
-  return result;
-}
-// The restore hook: runs in `start` right after the image loads, before the official tree boots.
-self.candidateRestore = async mounted => {
-  const {snapshot} = await candidateNative('restore');
-  if (snapshot) candidateSeedHome(mounted, snapshot);
-  candidateRouting = true;
-};
-let candidateCheckpointTimer;
-let candidateCheckpointChain = Promise.resolve();
-// Serialized: a later checkpoint never lands before an earlier one.
-function candidateCheckpoint(ctx, vfs) {
-  clearTimeout(candidateCheckpointTimer);
-  candidateCheckpointChain = candidateCheckpointChain.then(async () => {
-    // Accepted session events can still be in the upstream batching queue; its flush is a VFS barrier.
-    await ctx.get('sessionPersistence').flush();
-    await candidateNative('checkpoint', {snapshot: candidateSnapshotHome(vfs)});
-  }).catch(error => candidateLog({event: 'checkpoint-failed', code: error.code ?? String(error)}));
-  return candidateCheckpointChain;
-}
+// Startup adapter; home validation, sampling and durable confirmation live in session-recovery.js.
+self.candidateRestore = mounted => candidateRecovery.restore(mounted);
 
 // MARK: Projects (only projects the user opened natively become workspaces)
 
@@ -912,10 +874,6 @@ self.candidateInstall = async (ctx, loader, vfs) => {
   candidateEarlyProjects = [];
   candidateRegister = project => candidateRegisterProject(ctx, project)
     .catch(error => candidateLog({event: 'project-register-failed', code: error.code ?? String(error)}));
-  ctx.on('session/event', () => {
-    clearTimeout(candidateCheckpointTimer);
-    candidateCheckpointTimer = setTimeout(() => candidateCheckpoint(ctx, vfs), candidateCheckpointDelayMs);
-  });
-  setInterval(() => candidateCheckpoint(ctx, vfs), candidateCheckpointIntervalMs);
+  candidateRecovery.install(ctx, vfs);
   candidateLog({event: 'installed', projects: candidateRegistered.size});
 };

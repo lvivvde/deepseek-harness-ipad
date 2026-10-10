@@ -46,6 +46,7 @@ for (const name of Object.keys(promises)) {
   // WebKit lacks the disposal symbols the compiled resource-management helper names; they only name methods.
   return `self.addEventListener('message', event => {
   if (event.data?.t === 'candidate-native-reply') { event.stopImmediatePropagation(); self.candidateNativeReply?.(event.data); }
+  if (event.data?.t === 'candidate-save') { event.stopImmediatePropagation(); self.candidateSave?.().catch(error => self.postMessage({t: 'candidate-log', event: 'checkpoint-failed', code: error.code ?? String(error)})); }
   if (event.data?.t === 'candidate-project') { event.stopImmediatePropagation(); self.candidateProjectOpened?.(event.data.project); }
 });
 for (const key of ['dispose', 'asyncDispose']) {
@@ -126,7 +127,7 @@ function main() {
 
   const runtime = join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib');
   writeFileSync(join(out, 'worker.js'), patchWorker(readFileSync(join(runtime, 'worker.js'), 'utf8'),
-    readFileSync(join(source, 'candidate-bridge.js'), 'utf8')));
+    readFileSync(join(source, 'candidate-bridge.js'), 'utf8') + '\n' + readFileSync(join(source, 'session-recovery.js'), 'utf8')));
   cpSync(join(runtime, 'client.js'), join(out, 'client.js'));
   cpSync(join(workerDependencies, 'node_modules/@deepseek-ai/dsh-client-web/lib/apply-injections.js'), join(out, 'apply-injections.js'));
   cpSync(join(source, 'connector.js'), join(out, 'connector.js'));
@@ -146,7 +147,7 @@ function main() {
     // Every change to the official code, listed (distribution-components.md section 3).
     adaptations: ['fixed-zod-CJS-export-selection', 'WebKit-intrinsic-constructor-comparison', 'WebKit-disposal-symbols',
       'worker-hook-restore', 'worker-hook-install', 'worker-hook-fs-promises-route', 'fs-promises-copyFile',
-      'candidate-frames-filter', 'index-importmap-and-connector', 'candidate-bridge'],
+      'candidate-frames-filter', 'index-importmap-and-connector', 'candidate-bridge', 'session-recovery'],
     unresolvedExternalRequests: packed.unresolvedExternalRequests,
     files: Object.fromEntries(files(out).map(path => [path, sha256(readFileSync(join(out, path)))])),
   };

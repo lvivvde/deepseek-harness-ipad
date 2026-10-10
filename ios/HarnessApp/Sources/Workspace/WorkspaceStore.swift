@@ -262,6 +262,8 @@ public final class WorkspaceStore {
 
     // MARK: Reading state
 
+    public var unknownToolCalls: [String] { state.tools.filter { $0.outcome == Self.unknownOutcome }.map(\.id) }
+    public var recoveryComparable: Bool { state.lease == nil && recovery.anomalies.isEmpty && recovery.quarantined.isEmpty && recovery.missingDrafts.isEmpty }
     public var generation: Int { state.generation }
     public var epoch: Int { state.epoch }
     public var lease: Lease? { state.lease }

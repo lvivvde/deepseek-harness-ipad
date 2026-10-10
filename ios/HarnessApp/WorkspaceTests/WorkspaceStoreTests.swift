@@ -59,6 +59,12 @@ final class WorkspaceStoreTests: XCTestCase {
         guard case .conflict = try store.nativeWrite(p("new/dir/file.txt"), Data("y".utf8), base: nil) else { return XCTFail("cas") }
         XCTAssertEqual(try store.nativeWrite(p("../escape"), Data(), base: nil), .refused("PATH_REFUSED"))
         XCTAssertEqual(try store.nativeWrite(p(".dsh-tmp-x"), Data(), base: nil), .refused("PATH_RESERVED"))
+        for reserved in [".plan500-identity", ".dsh-mount-check"] {
+            XCTAssertEqual(try store.nativeWrite(p(reserved), Data(), base: nil), .refused("PATH_RESERVED"))
+        }
+        guard case .written = try store.nativeWrite(p("src/.dsh-mount-check"), Data("x".utf8), base: nil) else {
+            return XCTFail("only the workspace root reserves these names")
+        }
         XCTAssertEqual(try store.audit(), [])
     }
 

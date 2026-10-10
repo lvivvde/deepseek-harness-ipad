@@ -107,6 +107,21 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertEqual(lease["fence"], 1)
     }
 
+    func testTheCommandRunsInTheGivenGuestDirectoryInsideTheWorkspace() throws {
+        let guest = FakeGuest()
+        let (gateway, _) = try readyGateway(guest)
+        guest.finish.signal(); guest.finish.signal()
+        _ = gateway.execute("op-1", task: .shell("ls"), argv: ["/bin/sh", "-c", "ls"], timeoutMs: 1000)
+        _ = gateway.execute("op-2", task: .shell("ls"), argv: ["/bin/sh", "-c", "ls"], timeoutMs: 1000, cwd: "/workspace/src/子目录")
+        XCTAssertEqual(guest.bodies("/execute").map { $0["cwd"] as? String }, ["/workspace", "/workspace/src/子目录"])
+        for outside in ["/tmp", "/workspace2", "/workspace/../etc", "workspace/src"] {
+            XCTAssertEqual(gateway.execute("op-" + outside, task: .shell("ls"), argv: ["/bin/sh"], timeoutMs: 1000, cwd: outside),
+                           .refused("CWD_REFUSED"), outside)
+        }
+        XCTAssertEqual(guest.bodies("/execute").count, 2)
+        XCTAssertNil(gateway.lease)
+    }
+
     func testGuestRefusalBeforeSpawnReleasesTheLeaseWithNothingChanged() throws {
         let guest = FakeGuest()
         guest.handlers["/execute"] = { _ in throw GuestRPCError.refused("ARGV_REFUSED") }

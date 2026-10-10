@@ -17,6 +17,8 @@ final class SearchTests: XCTestCase {
         }
         try put("src/子目录/说明.md", "第一行 foo\n")
         try put(".dsh-identity", "foo identity\n")
+        try put(".plan500-identity", "foo identity guest\n")
+        try put(".dsh-mount-check", "foo identity sentinel\n")
         try put(".dsh-tmp-1234", "foo temporary\n")
         try put("src/.dsh-tmp-5678", "foo nested temporary\n")
         try "foo outside\n".write(toFile: root + "/outside/secret.txt", atomically: false, encoding: .utf8)
@@ -45,7 +47,7 @@ final class SearchTests: XCTestCase {
     }
 
     func testAnExplicitStoreFileIsRefused() {
-        for path in [".dsh-identity", ".dsh-tmp-1234", "src/.dsh-tmp-5678", Self.mount + "/.dsh-identity"] {
+        for path in [".dsh-identity", ".plan500-identity", ".dsh-mount-check", ".dsh-tmp-1234", "src/.dsh-tmp-5678", Self.mount + "/.dsh-identity"] {
             let result = rg(["--json", "--regexp=foo", "--", path])
             XCTAssertEqual(result.code, 2, path)
             XCTAssertEqual(result.out, "", path)

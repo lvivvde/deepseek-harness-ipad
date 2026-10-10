@@ -44,7 +44,7 @@ public struct RelativePath: Hashable, Comparable, Codable, CustomStringConvertib
         for component in components where component.isEmpty || component == [0x2E] || component == [0x2E, 0x2E] {
             throw WorkspaceError.pathRefused("PATH_REFUSED")
         }
-        if bytes == WorkspaceFiles.identity || components.last!.starts(with: WorkspaceFiles.temporaryPrefix) {
+        if WorkspaceFiles.reservedRootNames.contains(bytes) || components.last!.starts(with: WorkspaceFiles.temporaryPrefix) {
             throw WorkspaceError.pathRefused("PATH_RESERVED")
         }
     }

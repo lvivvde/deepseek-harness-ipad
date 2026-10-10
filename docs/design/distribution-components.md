@@ -1,6 +1,6 @@
 # 分发组件清单（给 #14 的材料）
 
-**状态：构建前清单。** 本文按 #17 当前源码和独立研究 App 的构建输入整理，列出正式候选 App 将随 IPA 分发的组件。正式候选 App 尚未接线和构建，所以：
+**状态：构建前清单。** 本文按 #17 当前源码和候选 App 的构建输入整理，列出候选 App 将随 IPA 分发的组件。候选 App 目前只构建了 macOS 版（未签名，2026-10-10），iPad 版尚未构建，所以：
 
 - 最终的组件集合、各文件 SHA256 和 IPA 体积，以候选 App 的构建收据为准。收据只留在忽略的 `build/`，公开时只记脱敏结果。
 - 收据出来后更新本表，再交给 #14。
@@ -18,6 +18,9 @@
 | `ModelGateway` | 模型请求的增量流式网关 |
 | `NativeTools` | 原生文件、搜索和图片工具，以及原生 Git 宿主 |
 | `UserDataMigration` | 隔离副本的迁入与核验 |
+| `HarnessCandidate` | 候选 App 的原生权威 `CandidateHost`、项目登记与 VM 接口 |
+
+候选 App 外壳在 `ios/HarnessApp/CandidateApp/Sources`，包括 SwiftUI 界面、WKWebView 宿主和回环资源服务。工程由 `runtime/candidate/build.py` 生成。
 
 仓库根目录目前没有 `LICENSE` 文件。[runtime-licensing.md](../research/runtime-licensing.md) 第 2 条的“MIT 并公开源码”仍只是计划。
 
@@ -32,7 +35,7 @@
 | `native-git-xdiff.js` | git 自带的 LibXDiff（`xdiffi.c`、`xprepare.c`、`xutils.c`） | LGPL（LibXDiff，Davide Libenzi） |
 | `native-git-objects.js` | 按 git 的对象和 pack 格式自写 | 待 #14 核对 |
 
-文件现在位于 `runtime/prototypes/plan500-ipad/web/`，接入正式 App 时会随之迁移。选型理由见 [native-read-only-git.md](native-read-only-git.md)。
+文件现在位于 `runtime/prototypes/plan500-ipad/web/`。候选 App 的网页根目录由 `runtime/candidate/prepare.mjs` 从这里复制，并按哈希收据核对。选型理由见 [native-read-only-git.md](native-read-only-git.md)。
 
 ## 3. 官方 Worker 及适配
 
@@ -51,6 +54,22 @@
 
 研究阶段的诊断和调试仪器不进入正式 App。
 
+候选 App 另有以下适配，实现在 `runtime/candidate/`：
+
+4. **Worker 挂接点**（`prepare.mjs`）：在官方 Worker 的副本中加三处挂接，每处锚点必须恰好出现一次。分别用于恢复 Worker home、装入候选桥接，以及让 `node:fs/promises` 先走候选路由。已安装的官方包不修改。
+5. **Worker 补充**（`prepare.mjs`）：
+   - 补上 Worker 没有的 `fs/promises.copyFile`，供快照插件复制 VFS 字节。
+   - 在 Worker 开头过滤候选消息帧，避免官方隧道因未知帧失败。
+   - 补齐 WebKit 缺少的 `Symbol.dispose` 和 `Symbol.asyncDispose`（同第 3 条）。
+6. **官方页面**（`prepare.mjs`）：在官方 `index.html` 中加 importmap 和 `connector.js`，让传输层先于入口建立。
+7. **候选桥接**（`candidate-bridge.js`、`connector.js`）：
+   - 项目内的文件、搜索、只读 Git、图片编解码和模型请求走原生网关。
+   - 项目内的 shell 命令走 Linux。官方 bash 工具在项目内跳过 Worker 的虚拟沙箱启动器，因为 VM 本身就是隔离；结果里的 `sandbox.denied` 固定为 `false`。
+   - 命令在 guest 中以 `/bin/sh -c` 运行，不是 bash。
+   - 交互式终端返回 `TERMINAL_UNSUPPORTED`。
+
+网页收据 `candidate-receipt.json` 的 `adaptations` 字段逐项列出上述改动。
+
 ## 4. Linux 执行器（插件）
 
 执行器是 UTM SE 构建的 QEMU 10.0.12 iOS framework 闭包，共 22 个 framework，随 IPA 的 `Frameworks/` 分发，由 App 进程载入。逐个 framework 的上游、版本和链接图见 [runtime-licensing.md](../research/runtime-licensing.md) 第 1 节。
@@ -63,15 +82,17 @@
 | --- | --- | --- |
 | `Image` | 内核 Alpine `6.18.52-0-virt` | Alpine 3.23 netboot，见 [miniguest-build-sources.md](../prototypes/miniguest-build-sources.md) |
 | `initramfs.gz` | 写租约探针的 initramfs，含从锁定 modloop 补入的 9P 等模块 | `runtime/prototypes/plan500-lease/run.py prepare` 与 `init.sh` |
-| `system.raw` | 只读系统盘，含 Node `24.21.0` 和 Git `2.47.3` | 沿用既有 Linux 原型；构建配方在候选构建前补入本表 |
+| `system.raw` | 只读系统盘，含 Node `24.21.0` 和 Git `2.47.3` | 沿用既有 Linux 原型；构建配方在 iPad 候选构建前补入本表 |
 | guest agent | 租约、取消和撤销协议 | `runtime/prototypes/plan500-lease/agent.cjs` |
 
 各输入的 SHA256 记在 [plan500-darwin.md](../research/plan500-darwin.md) 的输入表里。
 
-研究 App 构建时会逐个核对这些文件的 SHA256，见 `runtime/prototypes/plan500-ipad/build.py`。用户盘不随 IPA 分发，也不会被覆盖。
+研究 App 和候选 App 构建时都会逐个核对这些文件的 SHA256，见 `runtime/prototypes/plan500-ipad/build.py` 和 `runtime/candidate/build.py`。候选构建还要求 initramfs 中的 guest agent 与已提交的 `agent.cjs`、`init.sh` 一致。用户盘不随 IPA 分发，也不会被覆盖。
+
+macOS 候选 App 使用本机 Homebrew 的 `qemu-system-aarch64`，不随包分发，因此不属于本清单。
 
 ## 6. 可重建的构建输入
 
 - **Swift**：`ios/HarnessApp/Package.swift`。没有外部 Swift 包依赖。
-- **Worker**：上面的锁文件、`pack.mjs` 和 `prepare-web.mjs`。
+- **Worker**：上面的锁文件、`pack.mjs` 和 `prepare-web.mjs`；候选 App 另用 `runtime/candidate/prepare.mjs`。
 - **执行器**：[linux-executor-build-sources.md](../prototypes/linux-executor-build-sources.md)。**guest**：上表各行的来源。UTM 官方 CI artifact 会过期，二进制和对应源码需要自行归档（[runtime-licensing.md](../research/runtime-licensing.md)）。

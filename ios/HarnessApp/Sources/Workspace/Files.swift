@@ -72,6 +72,15 @@ func atomicReplace(directory: Int32, name: [UInt8], temporary: [UInt8], data: Da
     try fault?(FaultPoint(site, .afterRename))
 }
 
+/// One durable file outside the workspace store (a registry record, the guest identity, a checkpoint):
+/// the store's own replace, so it gets the full sync and a `.dsh-tmp-` temporary the scan treats as residue.
+public func durableReplace(_ path: String, _ data: Data, mode: mode_t) throws {
+    let directory = try openDirectory((path as NSString).deletingLastPathComponent)
+    defer { close(directory) }
+    try atomicReplace(directory: directory, name: Array((path as NSString).lastPathComponent.utf8), temporary: temporaryName(),
+                      data: data, mode: mode, site: .checkpoint, fault: nil)
+}
+
 func temporaryName(_ suffix: String = UUID().uuidString.lowercased()) -> [UInt8] { WorkspaceFiles.temporaryPrefix + Array(suffix.utf8) }
 
 /// POSIX view of the native workspace. Every walk is relative to directory descriptors with
@@ -79,6 +88,11 @@ func temporaryName(_ suffix: String = UUID().uuidString.lowercased()) -> [UInt8]
 /// special files (FIFO, socket, device) are fingerprinted from lstat without being opened.
 public final class WorkspaceFiles {
     public static let identity = Array(".dsh-identity".utf8)
+    /// The guest agent's copy of the project identity and the per-boot mount-check sentinel.
+    public static let guestIdentity = Array(".plan500-identity".utf8)
+    public static let mountCheck = Array(".dsh-mount-check".utf8)
+    /// Workspace-root names the store and the Linux plugin own; never part of the user's files.
+    public static let reservedRootNames: Set<[UInt8]> = [identity, guestIdentity, mountCheck]
     public static let temporaryPrefix = Array(".dsh-tmp-".utf8)
     public let root: String
 
@@ -199,7 +213,7 @@ public final class WorkspaceFiles {
         for name in try names(directory) {
             let path = prefix.appending(name)
             if name.starts(with: Self.temporaryPrefix) { temporaries.append(path); continue }
-            if prefix.bytes.isEmpty && name == Self.identity { continue }
+            if prefix.bytes.isEmpty && Self.reservedRootNames.contains(name) { continue }
             guard let fingerprint = fingerprint(directory: directory, name: name) else { continue }
             if fingerprint != "D" { found[path] = fingerprint; continue }
             let child = withCName(name) { openat(directory, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }

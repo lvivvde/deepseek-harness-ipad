@@ -20,11 +20,15 @@ final class LinuxBringUpTests: XCTestCase {
 
     var boots: [String] = []
     var attaches = 0
+    var checks = 0
+    var stops = 0
     var exited = false
 
-    func bringUp(_ guest: Guest, timeout: TimeInterval = 2, attach: (() throws -> Void)? = nil) -> LinuxBringUp {
+    func bringUp(_ guest: Guest, timeout: TimeInterval = 2, attach: (() throws -> Void)? = nil,
+                 check: (() throws -> Void)? = nil) -> LinuxBringUp {
         LinuxBringUp(rpc: guest, boot: { self.boots.append($0) }, exited: { self.exited },
-                     attach: attach ?? { self.attaches += 1 }, readyTimeout: timeout, pollInterval: 0.01)
+                     attach: attach ?? { self.attaches += 1 }, check: check ?? { self.checks += 1 }, stop: { self.stops += 1 },
+                     readyTimeout: timeout, pollInterval: 0.01)
     }
 
     func code(_ work: () throws -> Void) -> String? {
@@ -39,6 +43,8 @@ final class LinuxBringUpTests: XCTestCase {
         XCTAssertEqual(boots, ["A"])
         XCTAssertEqual(guest.polls, 3)
         XCTAssertEqual(attaches, 1)
+        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(stops, 0)
     }
 
     func testVMExitBeforeReadyFailsWithoutWaitingForTheDeadline() {
@@ -69,5 +75,28 @@ final class LinuxBringUpTests: XCTestCase {
         }, "VM_START_FAILED")
         XCTAssertEqual(code { try bringUp(Guest(), attach: { throw GuestRPCError.refused("EPOCH_CONFLICT") }).launch("A") },
                        "BIND_REFUSED")
+    }
+
+    func testEveryFailureStopsTheVMItStarted() {
+        let refused = Guest(); refused.proof["mount"] = "virtiofs"
+        XCTAssertNotNil(code { try bringUp(refused).launch("A") })
+        XCTAssertEqual(stops, 1)
+        let silent = Guest(); silent.readyAfter = .max
+        XCTAssertEqual(code { try bringUp(silent, timeout: 0.05).launch("A") }, "READY_TIMEOUT")
+        XCTAssertEqual(stops, 2)
+        XCTAssertEqual(code { try bringUp(Guest(), attach: { throw GuestRPCError.refused(nil) }).launch("A") }, "BIND_REFUSED")
+        XCTAssertEqual(stops, 3)
+        XCTAssertEqual(checks, 0, "the mount is checked only after a bound guest")
+    }
+
+    func testTheMountCheckRunsAfterBindAndItsFailureIsTheLaunchFailure() {
+        var order: [String] = []
+        let failure = code {
+            try bringUp(Guest(), attach: { order.append("attach") },
+                        check: { order.append("check"); throw LinuxPlugin.LaunchFailure("MOUNT_CHECK_FAILED") }).launch("A")
+        }
+        XCTAssertEqual(failure, "MOUNT_CHECK_FAILED")
+        XCTAssertEqual(order, ["attach", "check"])
+        XCTAssertEqual(stops, 1)
     }
 }

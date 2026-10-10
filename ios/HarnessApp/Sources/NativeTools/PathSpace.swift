@@ -281,7 +281,7 @@ public final class NativePathSpace {
     }
 
     func hidden(_ components: [[UInt8]]) -> Bool {
-        if components.first == WorkspaceFiles.identity { return true }
+        if let first = components.first, WorkspaceFiles.reservedRootNames.contains(first) { return true }
         return components.contains { $0.starts(with: WorkspaceFiles.temporaryPrefix) }
     }
 

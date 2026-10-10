@@ -98,11 +98,18 @@ public final class ProjectGateway: @unchecked Sendable {
         storeLock.lock(); defer { storeLock.unlock() }; return try store.nativeWrite(path, data, base: base)
     }
 
+    /// Runs native tool work that holds the same store (`NativeFileService`, path space, search, git)
+    /// serialized with every other store access. `body` must not call back into this gateway.
+    public func withStore<T>(_ body: (WorkspaceStore) throws -> T) rethrows -> T {
+        storeLock.lock(); defer { storeLock.unlock() }; return try body(store)
+    }
+
     /// Runs a Linux task once. The execution path is fixed before it starts; a task that may have had
     /// side effects is never rerun here or on another executor. An operation id runs at most once per
-    /// gateway, even after it was cancelled.
+    /// gateway, even after it was cancelled. `cwd` is a guest path inside `/workspace`.
     public func execute(_ id: String, task: LinuxPlugin.Task, argv: [String], timeoutMs: Int,
-                        secrets: [String: String] = [:]) -> ExecuteOutcome {
+                        secrets: [String: String] = [:], cwd: String = "/workspace") -> ExecuteOutcome {
+        guard Self.insideWorkspace(cwd) else { return .refused("CWD_REFUSED") }
         operationsLock.lock()
         guard operations[id] == nil else { operationsLock.unlock(); return .refused("DUPLICATE_OPERATION") }
         operations[id] = .waiting
@@ -138,7 +145,7 @@ public final class ProjectGateway: @unchecked Sendable {
             }
         } catch { return .refused("STORE_FAILED") }
         var request: [String: Any] = ["id": id, "projectId": project, "argv": argv, "timeoutMs": timeoutMs,
-                                      "cwd": "/workspace", "lease": ["epoch": lease.epoch, "fence": lease.fence]]
+                                      "cwd": cwd, "lease": ["epoch": lease.epoch, "fence": lease.fence]]
         if !secrets.isEmpty { request["secretEnv"] = secrets }
         let answer: [String: Any]
         do { answer = try rpc.call("/execute", request) }
@@ -221,6 +228,12 @@ public final class ProjectGateway: @unchecked Sendable {
             guard let release = try store.releaseLease(fence: lease.fence, reason: .reconciled) else { return .noUnknownWriter }
             return .released(release)
         } catch { return .storeFailed }
+    }
+
+    private static func insideWorkspace(_ path: String) -> Bool {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count >= 2, components[0].isEmpty, components[1] == "workspace" else { return false }
+        return !components.dropFirst(2).contains { $0.isEmpty || $0 == "." || $0 == ".." }
     }
 
     /// Caller holds `storeLock`. The lease stays held; the tool call is recorded as unknown, never replayed.

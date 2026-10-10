@@ -73,7 +73,7 @@ public final class NativeFileService {
         guard Self.type(info) == .directory else { throw ToolError("FS_NOT_DIRECTORY") }
         var entries: [ListedEntry] = []
         for name in try mount.names(directory).sorted(by: { $0.lexicographicallyPrecedes($1) }) {
-            if directory.isEmpty && name == WorkspaceFiles.identity { continue }
+            if directory.isEmpty && WorkspaceFiles.reservedRootNames.contains(name) { continue }
             if name.starts(with: WorkspaceFiles.temporaryPrefix) { continue }
             let child = mount.processPath(directory + [name])
             var target = child, info: EntryInfo?

@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-09，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-10，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -39,31 +39,48 @@
 - 关口 5 的代码在 [PR47](https://github.com/lvivvde/deepseek-harness-ipad/pull/47)，设计与限制见 [Git 写操作与 hook](../design/git-writes-and-hooks.md)。Git 写操作和 hook 走项目 Linux，原生只读复核。授权推送用的是本仓库的专用分支 `gate5-push-test`，token 由用户在 iPad 上输入；核对后该分支已删除。
 - 遗留限制：系统崩溃和断电未验；关口 1 真机写租约中的 Linux 写者是模拟的，真实 VM 补测记在 #17；快照或日志中段损坏时会丢草稿和租约记录；生成中切后台未在真机运行；hook 的 `workdir` 被忽略；shell 工具能直接 `git commit --no-verify`，同 uid 代码能从 `/proc` 读到 Git 令牌；iPad 上完整 clone 本仓库超过单条命令 60 s 的上限，大项目的 clone 时长留给 #18。
 
-#17 进展（分支 `feat/issue17-core-scheduler`，待开 PR）：
+#17 进展：
 
-- 已完成 macOS 可测的核心切片和文档，范围由用户 2026-10-09 确认。多项目时，Linux 绑定到本进程第一个打开的启用项目，其余启用项目为 `unavailable(LINUX_BOUND_TO_OTHER_PROJECT)`，提示关闭并重开 App。
-- 代码：
-  - `LinuxPlugin`：每个项目的阶段、准入，以及 VM 退出诊断。
-  - 新模块 `HarnessHost`：`ProjectGateway`（写租约下执行，以及写者未知与显式释放）、`LinuxBringUp`、`ReadyProof`。
-  - `WorkspaceStore` 新增释放原因 `RECONCILED`。
-  - 研究 App 的 `WorkerBridge` 已改用新接口；按 `run-worker.py` 的方式只做了类型检查，没有重跑集成。
-- 文档：[调度与隔离边界](../design/linux-plugin-scheduling.md)、[能力声明](../design/capability-declaration.md)、[分发组件清单（构建前）](../design/distribution-components.md)。
-- 已验证（macOS）：`make test-app` 全部通过（含 `LinuxPluginTests` 19 项、`HarnessHostTests` 20 项），`make check` 和 `make test-plan500-ipad` 也通过。没有真机证据。
+- 核心切片已在 [PR49](https://github.com/lvivvde/deepseek-harness-ipad/pull/49) 合并，范围由用户 2026-10-09 确认。
+  - `LinuxPlugin`：每个项目的阶段、准入和 VM 退出诊断。
+  - `HarnessHost`：`ProjectGateway`、`LinuxBringUp`、`ReadyProof`。
+  - `WorkspaceStore`：新增释放原因 `RECONCILED`。
+  - 多项目时，Linux 绑定到本进程第一个打开的启用项目。
+- 候选 App 的 macOS 竖切在分支 `feat/issue17-candidate-host`，未推送、未开 PR。范围由用户 2026-10-10 确认：
+  - 代码放在正式源码树：`Sources/Candidate`、`CandidateApp/`、`runtime/candidate/`。
+  - 由脚本生成独立工程，bundle ID 为 `org.lvivvde.harness.candidate`，不加研究仪器。
+  - 先打通 macOS，iPad 安装与验收放到下一个 PR。
+  - 设计、实测与缺口见 [调度与隔离边界](../design/linux-plugin-scheduling.md)“候选 App”一节；组件变化已写入 [分发组件清单](../design/distribution-components.md)。
+- 宿主新增 `GatedGuestRPC`、`MountCheck`（宿主直接写保留名哨兵文件，再由 guest 读回），`LinuxBringUp` 在准备失败时停止 QEMU。
+- 已做两轴代码审查（标准、规格），并按结论修正：
+  - 网页只能停留在本地资源源，消息处理器核对帧来源，外链交给系统浏览器；资源服务解析符号链接。
+  - 登记记录与项目身份文件改走工作区存储的耐久替换（`durableReplace`）。
+  - 能力声明显示候选 App 与正式范围的差距：`hook.command` 为 `CANDIDATE_NOT_WIRED`，`git.write` 为 `SHELL_ONLY`，`subprocess` 为 `BASH_C_ONLY`，另加不支持的 `terminal` 行。
+  - 写者未知时，侧栏提示并提供需确认的“Release writer…”；VM 退出后提示关闭并重开 App。
+  - 网页收据的 `adaptations` 列全 10 项改动；文档写明 guest 用 `/bin/sh -c`。
+  - 未改并说明理由：操作记录不修剪（每条命令很小，且网关保留已结束 id 以回答迟到的取消）、原型 `GatedTransport` 重复与 `plan500` 命名（留给 #14 的构建输入整理）。
+- 已验证（macOS，审查修正后）：
+  - `make test-app`（含候选宿主 13 项）、`make check`、`make test-plan500-ipad` 通过，无警告；`make test-candidate` 中桥接 10 项、构建闸门 9 项通过。
+  - 用真实 Homebrew QEMU 跑了 `make candidate-web` 和 `make candidate-app`，得到未签名 `.app`。
+  - 界面操作：项目进入 READY，官方前端在导航锁定下正常加载，原生工作区文件可列出和读取，终端显示 `TERMINAL_UNSUPPORTED`。能力差距行由单元测试覆盖，侧栏未在界面上滚动核对。
+  - 退出后没有残留 QEMU。
+  - 运行数据在 `build/candidate/run`（启动时设 `HARNESS_CANDIDATE_ROOT`）。
+- 未验：模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key。
 
-**下一步：** 合并核心切片 PR（需用户同意），然后是正式候选 App 的接线：
+**下一步：**
 
-- 固定官方 Worker 与适配接入。
-- QEMU 生命周期，包括准备失败后停止仍在运行的 QEMU，以及宿主侧用哨兵文件核对挂载。
-- iPad 真机验收，并用真实 VM 写者补测关口 1。
-- #17 要求的测量和迁移演练。
-- 用候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
+1. 本分支经用户同意后推送、开 PR，合并另获同意。
+2. 下一个 PR：候选 App 的 iPad 构建，执行器换成进程内 QEMU framework，签名安装后做真机验收，并用真实 VM 写者补测关口 1。
+3. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
+4. #17 要求的测量和迁移演练。
+5. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 
 ## 开放任务
 
 | Issue | 依赖与边界 |
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#19、#32、#39 已关闭，作为历史保留。 |
-| [#17 实现](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 当前任务，核心切片见上文“#17 进展”。实现原生 Harness 宿主、同一项目工作区、Linux 预热及准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验项转兼容插件技术债，不标记通过。 |
+| [#17 实现](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 当前任务，进度见上文“#17 进展”。实现原生 Harness 宿主、同一项目工作区、Linux 预热及准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验项转兼容插件技术债，不标记通过。 |
 | [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
@@ -99,6 +116,7 @@
 - Lima `ubuntu` 内 `/var/tmp/ipad-bundled-guest-storage-v6` 可跑 Linux 验收，使用新临时盘；`/Users/edwin` 只读挂载，`/private/tmp` 不挂载。Linux/QEMU 只用隔离盘，不读 iPad 原盘。
 - 正式包：`build/maintenance19/r2-7956e8c/`。研究 App 与收据：`build/prototypes/plan500-ipad/`（`device-r1/` 签名与两模式收据，`worker-device-r1/`、`r2/`、`r4/` 协作与模型收据）；macOS 原型收据在 `build/prototypes/plan500-{worker,sharing,lease,darwin}/`。
 - #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）；`build/issue39-gate5/`（`device/device-private.py`，步骤为 sign、install、launch、wait；收据在 `device/*-safe.json`，macOS 运行在 `mac-3/` 和 `mac-push-dry/`）。iPad 上现装的是关口 5 版研究 App，演练 App `g6drill` 已卸载。
+- #17 候选 App：`build/candidate/CandidateWeb`（网页根目录与 `candidate-receipt.json`）；`build/candidate/app/`（生成的工程、`build-private.log`、`build-safe.json` 和 `.app`）；`build/candidate/run/`（macOS 实测的数据根，含私有日志和测试项目 `demo`）。
 - 历史归档：`build/acceptance-archive/2026-10-05/`（旧日志、xcresult、截图、脱敏结果与 SHA256 清单）；Issue 正文备份与草稿在 `build/issue-drafts/`。
 - `harness-30` 锁屏提醒已暂停，保持取消。
 

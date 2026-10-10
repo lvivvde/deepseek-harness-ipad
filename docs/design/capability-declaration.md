@@ -43,6 +43,17 @@
 
 `native` 项在任何状态下都可用。`unsupported` 项始终不可用，原因 `SHARE_MODE_NONE`。阶段规则见 [linux-plugin-scheduling.md](linux-plugin-scheduling.md)。
 
+## 候选 App 的声明
+
+候选 App（#17）显示的是正式范围加上候选 App 自己的缺口，由 `CandidateHost.candidateDeclaration` 生成。路径划分不变，不足之处写进声明，不隐藏：
+
+- `hook.command`：官方 Worker 自己发起的 hook 还没有接到 Linux，始终不可用，原因 `CANDIDATE_NOT_WIRED`。
+- `git.write`：只有在 shell 中运行的 git 走 Linux。官方 git 工具解析到原生只读 Git。可用时附原因 `SHELL_ONLY`。
+- `subprocess`：只有 `bash -c` 形式的子进程走 Linux，git 和 rg 走原生。可用时附原因 `BASH_C_ONLY`。
+- 另加一项 `terminal`，路径 `unsupported`，原因 `TERMINAL_UNSUPPORTED`。交互式终端需要 PTY 流，guest 协议只返回执行完的命令结果。
+
+这些缺口补上后，从候选声明中删去对应条目。
+
 ## 收紧与扩展
 
 - #39 关口 3 确认的 4 项收紧见 [native-official-tools.md](native-official-tools.md)。

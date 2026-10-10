@@ -191,7 +191,7 @@ struct Run {
 
     mutating func walk(_ directory: Int32, components: [[UInt8]], display: [UInt8], stack: [DirectoryIgnores]) throws {
         for name in try names(directory).sorted(by: { $0.lexicographicallyPrecedes($1) }) {
-            if components.isEmpty && name == WorkspaceFiles.identity { continue }
+            if components.isEmpty && WorkspaceFiles.reservedRootNames.contains(name) { continue }
             if name.starts(with: WorkspaceFiles.temporaryPrefix) { continue }
             var info = stat()
             guard withCName(name, { fstatat(directory, $0, &info, AT_SYMLINK_NOFOLLOW) }) == 0 else { continue }

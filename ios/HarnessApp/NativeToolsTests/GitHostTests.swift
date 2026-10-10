@@ -186,8 +186,13 @@ final class GitHostTests: XCTestCase {
         // The store's own names are not part of the Worker's view.
         try put(".dsh-tmp-partial", Data("x".utf8))
         if !FileManager.default.fileExists(atPath: workspace + "/.dsh-identity") { try put(".dsh-identity", Data("id".utf8)) }
-        XCTAssertFalse(try paths.readdir(Self.mount).map(\.name).contains { $0.hasPrefix(".dsh-") })
+        try put(".plan500-identity", Data("guest".utf8))
+        try put(".dsh-mount-check", Data("nonce".utf8))
+        XCTAssertFalse(try paths.readdir(Self.mount).map(\.name).contains { $0.hasPrefix(".dsh-") || $0.hasPrefix(".plan500-") })
         XCTAssertEqual(code { try paths.lstat(Self.mount + "/.dsh-identity") }, "ENOENT")
+        XCTAssertEqual(code { try paths.lstat(Self.mount + "/.plan500-identity") }, "ENOENT")
+        try? FileManager.default.removeItem(atPath: workspace + "/.plan500-identity")
+        try? FileManager.default.removeItem(atPath: workspace + "/.dsh-mount-check")
         XCTAssertEqual(code { try paths.readFile(Self.mount + "/.dsh-tmp-partial") }, "ENOENT")
         busy = true
         XCTAssertEqual(code { try paths.readFile(Self.mount + "/README.md") }, "EBUSY")

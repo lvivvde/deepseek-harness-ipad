@@ -123,7 +123,7 @@ QEMU 退出后：
 
 ## 验证
 
-macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPluginTests|HarnessHostTests'`。
+macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPluginTests|HarnessHostTests|HarnessCandidateTests'`，以及 `make test-candidate`（Worker 桥接、官方锚点与构建闸门）。
 
 - `LinuxPluginTests`：阶段、准入、首个项目绑定、VM 退出诊断、准备失败原因，以及缺失与存在两个分支。
 - `ReadyProofTests`：就绪证明的四项检查。
@@ -138,10 +138,43 @@ macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPl
 
 guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写租约研究中的 `runtime/prototypes/plan500-lease/agent.cjs`，这里只测网关对它的调用合同。
 
+## 候选 App（macOS 竖切）
+
+正式候选 App 的 bundle ID 为 `org.lvivvde.harness.candidate`，与正式 App 分开。代码在正式源码树中：
+
+- `ios/HarnessApp/Sources/Candidate`（模块 `HarnessCandidate`）：`CandidateHost` 是 Worker 唯一的原生权威，负责项目、文件、子进程、Linux 执行与取消、模型流和 Worker home 检查点；`QemuMachine` 是 macOS 上的 VM。
+- `ios/HarnessApp/CandidateApp/Sources`：SwiftUI 外壳，以及装载官方页面的 WKWebView 与回环资源服务。
+- `runtime/candidate`：`prepare.mjs` 从固定官方包生成网页根目录，在副本中给官方 Worker 加挂接点；`candidate-bridge.js` 把官方服务接到原生调用；`build.py` 核对输入后生成独立 Xcode 工程，构建未签名的 `.app`。正式 App 的工程不改。
+
+接线行为：
+
+- 打开启用插件的项目后异步预热。每个进程只启动一次 QEMU，挂载项目工作区（9P，`none`）。
+- 就绪后由宿主核对挂载（`MountCheck`）：宿主直接在原生工作区写入保留名哨兵文件 `.dsh-mount-check`，不经网关和耐久层，再由 guest 读回。哨兵名是保留名，工具看不到。核对失败视为准备失败，并停止仍在运行的 QEMU。
+- App 退出时停止 QEMU，这次退出不记为 Linux 失败。
+- VM 意外退出时，先保存固定诊断，再在侧栏提示关闭并重开 App。本进程内 Linux 不再恢复。
+- 写者未知时，项目侧栏显示提示和"Release writer…"按钮。用户确认后才调用 `writer-release`：命令留在工作区的内容按原样保留，暂存的草稿在其上变基。
+- shell 命令在 guest 中以 `/bin/sh -c` 运行（Alpine 的 BusyBox ash），不是 bash。官方工具发出的 `bash -c` 只取命令文本，依赖 bash 语法的命令可能失败。
+- 网页只能停留在回环资源服务的源上，原生调用和日志也只接受这个源的主框架。用户点击的外部链接交给系统浏览器打开。
+- 侧栏显示每个项目的能力声明（`native` / `linux` / `unsupported` 及原因），其中候选 App 的缺口也逐项列出，见 [capability-declaration.md](capability-declaration.md)。
+- Key 只在内存中，由用户在 App 内输入。
+
+macOS 实测（2026-10-10，Homebrew QEMU，数据根指向忽略的 `build/candidate/run`）：
+
+- 新建启用插件的项目并打开，阶段由 PREPARING 进入 READY，guest 输出就绪标记。
+- 官方前端完整加载。工作区文件面板经原生网关列出并读取了项目文件。
+- 官方终端显示固定错误 `TERMINAL_UNSUPPORTED`，见下文缺口。
+- 正常退出后不残留 QEMU，重开后没有遗留诊断。
+
+**候选 App 已知缺口：**
+
+- 交互式终端：需要 PTY 流，而 guest 协议只返回执行完的命令结果。
+- 官方 Worker 自己发起的 hook 执行和 Git 写操作还没有接到 Linux。在 shell 工具里运行的 git 命令照常走 Linux。
+- 项目文件监听：原生工作区还没有变更通知，`watch` 不会触发。
+- 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证。
+- App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。
+
 **未完成**（不算通过，见[开发交接](../agents/handoff.md)）：
 
-- 正式候选 App 的接线：固定官方 Worker 与适配接入、QEMU 生命周期，以及准备失败后停止仍在运行的 QEMU。
-- 就绪证明目前是 guest 的自报。接线时由宿主侧核对挂载的确实是本项目的原生工作区，例如经网关写一个哨兵文件，再由 guest 读回。
-- iPad 真机验证，以及关口 1 用真实 VM 写者补测写租约（#17 的 2026-10-05 评论）。
+- 候选 App 的 iPad 构建、签名安装与真机验收，以及关口 1 用真实 VM 写者补测写租约（#17 的 2026-10-05 评论）。
 - #17 要求的测量。
 - 迁移演练：只用 #39 关口 6 核验过的隔离副本。

@@ -78,6 +78,8 @@ final class FileServiceTests: XCTestCase {
         try link("doc", "src/子目录/说明.md")
         try put(".dsh-identity", "id")
         try put(".dsh-tmp-left", "tmp")
+        try put(".plan500-identity", "guest id")
+        try put(".dsh-mount-check", "nonce")
         let entries = try fs.list(at(""))
         XCTAssertEqual(entries.map(\.name), ["doc", "notes.txt", "src"])
         XCTAssertEqual(entries.map(\.type), [.file, .file, .directory])
@@ -100,6 +102,8 @@ final class FileServiceTests: XCTestCase {
         XCTAssertEqual(code { try fs.read(at("src"), limit: 10) }, "FS_NOT_REGULAR_FILE")
         XCTAssertEqual(code { try fs.read(at("missing"), limit: 10) }, "FS_NOT_FOUND")
         XCTAssertEqual(code { try fs.read(at(".dsh-identity"), limit: 10) }, "FS_PERMISSION_DENIED")
+        try put(".dsh-mount-check", "nonce")
+        XCTAssertEqual(code { try fs.read(at(".dsh-mount-check"), limit: 10) }, "FS_PERMISSION_DENIED")
         guard case .granted = try store.acquireLease("linux") else { return XCTFail("lease") }
         XCTAssertEqual(code { try fs.read(at("notes.txt"), limit: 10) }, "WORKSPACE_LEASE_BUSY")
         XCTAssertEqual(try fs.stat(at("notes.txt"), follow: true)?.type, .file)

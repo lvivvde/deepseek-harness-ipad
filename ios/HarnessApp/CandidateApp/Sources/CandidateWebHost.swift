@@ -1,6 +1,10 @@
 import Foundation
 import HarnessCandidate
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import WebKit
 
 /// The official frontend and Worker in one WKWebView. Every native call the Worker's bridge makes is
@@ -93,7 +97,11 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
     private func openExternally(_ action: WKNavigationAction) {
         guard action.navigationType == .linkActivated || action.targetFrame == nil, let url = action.request.url,
               url.scheme == "https" || url.scheme == "http" else { return }
+        #if os(macOS)
         NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
+        #endif
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,

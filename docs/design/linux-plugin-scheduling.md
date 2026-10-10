@@ -138,19 +138,19 @@ macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPl
 
 guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写租约研究中的 `runtime/prototypes/plan500-lease/agent.cjs`，这里只测网关对它的调用合同。
 
-## 候选 App（macOS 竖切）
+## 候选 App（macOS 与 iPad）
 
 正式候选 App 的 bundle ID 为 `org.lvivvde.harness.candidate`，与正式 App 分开。代码在正式源码树中：
 
-- `ios/HarnessApp/Sources/Candidate`（模块 `HarnessCandidate`）：`CandidateHost` 是 Worker 唯一的原生权威，负责项目、文件、子进程、Linux 执行与取消、模型流和 Worker home 检查点；`QemuMachine` 是 macOS 上的 VM。
+- `ios/HarnessApp/Sources/Candidate`（模块 `HarnessCandidate`）：`CandidateHost` 是 Worker 唯一的原生权威，负责项目、文件、子进程、Linux 执行与取消、模型流和 Worker home 检查点。VM 接口 `GuestMachine` 有两个实现：macOS 上的 `QemuMachine` 是子进程；iPad 上的 `EmbeddedMachine` 把随包的 QEMU framework 载入 App 进程，在单独线程上运行。两者共用同一组 guest 参数（`GuestArguments`）。
 - `ios/HarnessApp/CandidateApp/Sources`：SwiftUI 外壳，以及装载官方页面的 WKWebView 与回环资源服务。
-- `runtime/candidate`：`prepare.mjs` 从固定官方包生成网页根目录，在副本中给官方 Worker 加挂接点；`candidate-bridge.js` 把官方服务接到原生调用；`build.py` 核对输入后生成独立 Xcode 工程，构建未签名的 `.app`。正式 App 的工程不改。
+- `runtime/candidate`：`prepare.mjs` 从固定官方包生成网页根目录，在副本中给官方 Worker 加挂接点；`candidate-bridge.js` 把官方服务接到原生调用；`build.py` 核对输入后生成独立 Xcode 工程（`--sdk macosx` 或 `iphoneos`）。iPad 构建先按 `frameworks.json` 核对执行器闭包的集合与 SHA256，再嵌入 `Frameworks/`；只有提供私有 `--signing-file` 时才签名，签名设置只接受开发团队、签名方式和描述文件三项。正式 App 的工程不改。
 
 接线行为：
 
 - 打开启用插件的项目后异步预热。每个进程只启动一次 QEMU，挂载项目工作区（9P，`none`）。
 - 就绪后由宿主核对挂载（`MountCheck`）：宿主直接在原生工作区写入保留名哨兵文件 `.dsh-mount-check`，不经网关和耐久层，再由 guest 读回。哨兵名是保留名，工具看不到。核对失败视为准备失败，并停止仍在运行的 QEMU。
-- App 退出时停止 QEMU，这次退出不记为 Linux 失败。
+- macOS 上 App 退出时停止 QEMU，这次退出不记为 Linux 失败。iPad 上 QEMU 随进程结束；`EmbeddedMachine.stop` 经 QMP 发 `quit`，串口和 QMP 都用 socketpair，不监听路径或额外端口。载入的 QEMU 不能在进程内重启，第二次启动直接拒绝。
 - VM 意外退出时，先保存固定诊断，再在侧栏提示关闭并重开 App。本进程内 Linux 不再恢复。
 - 写者未知时，项目侧栏显示提示和"Release writer…"按钮。用户确认后才调用 `writer-release`：命令留在工作区的内容按原样保留，暂存的草稿在其上变基。
 - shell 命令在 guest 中以 `/bin/sh -c` 运行（Alpine 的 BusyBox ash），不是 bash。官方工具发出的 `bash -c` 只取命令文本，依赖 bash 语法的命令可能失败。
@@ -165,16 +165,26 @@ macOS 实测（2026-10-10，Homebrew QEMU，数据根指向忽略的 `build/cand
 - 官方终端显示固定错误 `TERMINAL_UNSUPPORTED`，见下文缺口。
 - 正常退出后不残留 QEMU，重开后没有遗留诊断。
 
+iPad 实测（2026-10-10，签名安装到用户的 iPad；设备验收部分完成，模型与 shell 端到端见下文缺口）：
+
+- `.app` 约 1.1 GB，其中 Linux 输入约 1.0 GB、执行器 22 个 framework 约 100 MB。
+- 进程内 QEMU 启动 guest，项目进入 READY，官方页面正常加载（用户在设备上确认）。
+- 关口 1 用真实 VM 写者补测通过。候选 App 内置 `Gate1Probe`，只在设置启动环境变量 `HARNESS_CANDIDATE_GATE1=hold|check` 时运行，走 Worker 桥接相同的操作，不需要模型或 Key。每个阶段自己判定，全部条件成立才记 `passed`；`check` 还把草稿摘要与 `hold` 的记录比对：
+  - `hold`：新建启用插件的项目，在 guest 中经 9P 运行 `echo run >> runs.txt; sleep 300`。命令持有写租约期间，原生写 `draft.txt` 返回 `WORKSPACE_DRAFT_HELD`，存为草稿，工作区里没有这个文件。随后从 Mac 强制结束 App（`devicectl process terminate --kill`）。从设备拉回的日志中有 `leaseGrant`、`toolStart`、`draftAdd`，没有释放记录（人工核对）。
+  - `check`（重新启动后）：项目一打开就是写者未知，30 s 后仍未自动释放；新命令被拒绝（`WRITER_UNKNOWN`）；`runs.txt` 仍只有一行，命令没有重放；草稿与强制结束前逐字节一致。拉回的日志新增 `leaseUnknown` 和结果未知的 `toolEnd`（人工核对）。被拒绝的命令不进入 guest，由单元测试覆盖，真机上没有单独观测。
+  - 每个阶段只写固定字段到数据根下的 `probe/gate1-<阶段>.json`。
+
+iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No Accounts"。需要先在 Xcode 界面中对生成的工程运行一次，生成描述文件，之后命令行带 `-allowProvisioningUpdates` 即可复用。免费团队的 App 名额有限；需要腾名额时，只卸载用户授权过的本项目占位 App（Harness 占位版、DeviceAcceptance 运行器）或本项目旧的候选 IPA，不动 LinuxPrototype 和正式 Harness 的数据。
+
 **候选 App 已知缺口：**
 
 - 交互式终端：需要 PTY 流，而 guest 协议只返回执行完的命令结果。
 - 官方 Worker 自己发起的 hook 执行和 Git 写操作还没有接到 Linux。在 shell 工具里运行的 git 命令照常走 Linux。
 - 项目文件监听：原生工作区还没有变更通知，`watch` 不会触发。
-- 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证。
+- 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证（macOS 和 iPad 都未验）。
 - App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。
 
 **未完成**（不算通过，见[开发交接](../agents/handoff.md)）：
 
-- 候选 App 的 iPad 构建、签名安装与真机验收，以及关口 1 用真实 VM 写者补测写租约（#17 的 2026-10-05 评论）。
 - #17 要求的测量。
 - 迁移演练：只用 #39 关口 6 核验过的隔离副本。

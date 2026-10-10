@@ -46,7 +46,7 @@
   - `HarnessHost`：`ProjectGateway`、`LinuxBringUp`、`ReadyProof`。
   - `WorkspaceStore`：新增释放原因 `RECONCILED`。
   - 多项目时，Linux 绑定到本进程第一个打开的启用项目。
-- 候选 App 的 macOS 竖切在分支 `feat/issue17-candidate-host`，未推送、未开 PR。范围由用户 2026-10-10 确认：
+- 候选 App 的 macOS 竖切已在 [PR50](https://github.com/lvivvde/deepseek-harness-ipad/pull/50) 合并（2026-10-10）。范围由用户 2026-10-10 确认：
   - 代码放在正式源码树：`Sources/Candidate`、`CandidateApp/`、`runtime/candidate/`。
   - 由脚本生成独立工程，bundle ID 为 `org.lvivvde.harness.candidate`，不加研究仪器。
   - 先打通 macOS，iPad 安装与验收放到下一个 PR。
@@ -66,11 +66,18 @@
   - 退出后没有残留 QEMU。
   - 运行数据在 `build/candidate/run`（启动时设 `HARNESS_CANDIDATE_ROOT`）。
 - 未验：模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key。
+- iPad 构建与真机验收在分支 `feat/issue17-candidate-ipad`，PR #51 已开（合并另获同意），关口 1 脱敏结果已发到 #17：
+  - `build.py --sdk iphoneos` 核对并嵌入 QEMU framework 闭包（22 个，按 `frameworks.json` 核 SHA256）；签名只用私有 `--signing-file`。`make candidate-ipad` 构建未签名版。
+  - `EmbeddedMachine` 在 App 进程内运行 QEMU，串口与 QMP 用 socketpair，`stop` 走 QMP `quit`；进程内只启动一次。
+  - 真机：签名安装到用户 iPad，项目 READY，官方页面正常（用户确认）。`.app` 约 1.1 GB。
+  - 关口 1 用真实 VM 写者补测通过，由内置 `Gate1Probe`（启动环境变量 `HARNESS_CANDIDATE_GATE1=hold|check`）自动完成，无需用户操作：强制结束后写者未知、不自动释放、新命令被拒、命令不重放、草稿逐字节一致。探针每阶段自判 `passed`；修正 QEMU 入口签名后的 r5 构建复测两阶段均 `passed`。细节见 [调度与隔离边界](../design/linux-plugin-scheduling.md)“候选 App”一节。
+  - 新 bundle ID 首次签名须在 Xcode 界面运行一次生成描述文件，之后命令行可复用。
+  - 已验证：`make check`、`make test-app`（候选 23 项）、`make test-candidate`（桥接 10、构建 15）、`make test-plan500-ipad` 通过、无警告；`make candidate-app` 与 `make candidate-ipad` 构建完成。
 
 **下一步：**
 
-1. 本分支经用户同意后推送、开 PR，合并另获同意。
-2. 下一个 PR：候选 App 的 iPad 构建，执行器换成进程内 QEMU framework，签名安装后做真机验收，并用真实 VM 写者补测关口 1。
+1. PR #51 待用户同意后合并。
+2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
 4. #17 要求的测量和迁移演练。
 5. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
@@ -115,8 +122,9 @@
 - `build/test-dependencies/harness/`：固定官方 `@deepseek-ai/dsh@0.2.0-rc.2`、pnpm 11.28.4 的宿主测试依赖和 lock。设置 `HARNESS_TEST_MODULES="$PWD/build/test-dependencies/harness/node_modules"` 后运行 `make test-runtime`，核对无跳过。依赖丢失时用保留的 lock 重装。
 - Lima `ubuntu` 内 `/var/tmp/ipad-bundled-guest-storage-v6` 可跑 Linux 验收，使用新临时盘；`/Users/edwin` 只读挂载，`/private/tmp` 不挂载。Linux/QEMU 只用隔离盘，不读 iPad 原盘。
 - 正式包：`build/maintenance19/r2-7956e8c/`。研究 App 与收据：`build/prototypes/plan500-ipad/`（`device-r1/` 签名与两模式收据，`worker-device-r1/`、`r2/`、`r4/` 协作与模型收据）；macOS 原型收据在 `build/prototypes/plan500-{worker,sharing,lease,darwin}/`。
-- #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）；`build/issue39-gate5/`（`device/device-private.py`，步骤为 sign、install、launch、wait；收据在 `device/*-safe.json`，macOS 运行在 `mac-3/` 和 `mac-push-dry/`）。iPad 上现装的是关口 5 版研究 App，演练 App `g6drill` 已卸载。
+- #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）；`build/issue39-gate5/`（`device/device-private.py`，步骤为 sign、install、launch、wait；收据在 `device/*-safe.json`，macOS 运行在 `mac-3/` 和 `mac-push-dry/`）。研究 App 已于 2026-10-10 卸载以腾出名额，演练 App `g6drill` 已卸载；iPad 上现装候选 App `org.lvivvde.harness.candidate`（现为 r5 构建；内有用户建的项目 Gate1 和探针项目 gate1-probe-2 至 4，均保持写者未知，可随时整体卸载）。
 - #17 候选 App：`build/candidate/CandidateWeb`（网页根目录与 `candidate-receipt.json`）；`build/candidate/app/`（生成的工程、`build-private.log`、`build-safe.json` 和 `.app`）；`build/candidate/run/`（macOS 实测的数据根，含私有日志和测试项目 `demo`）。
+- #17 iPad 候选：`build/candidate/ipad-signed-r5/`（现装签名构建与收据）；`build/candidate/ipad-signed/project` 是注入团队后供 Xcode 界面首次运行的工程；`build/candidate/device/device-private.py`（步骤 free-slot、install、launch、gate1 hold|check、running、terminate、pull SUBDIR DEST）。一键复测：`python3 build/candidate/device/gate1-auto-private.py <.app> <上次 hold.json 相对 device/ 的路径>`，安装、hold、强制结束、check 全自动，只打印 `HOLD_PASSED`/`CHECK_PASSED`。关口 1 证据：最新 `device/gate1-auto-204420/`（`hold.json`、`check.json`）；首次手动版在 `device/gate1-killed/` 与 `device/gate1-checked/`。
 - 历史归档：`build/acceptance-archive/2026-10-05/`（旧日志、xcresult、截图、脱敏结果与 SHA256 清单）；Issue 正文备份与草稿在 `build/issue-drafts/`。
 - `harness-30` 锁屏提醒已暂停，保持取消。
 

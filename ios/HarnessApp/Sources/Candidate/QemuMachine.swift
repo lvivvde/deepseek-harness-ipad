@@ -3,9 +3,8 @@ import Darwin
 import Foundation
 import HarnessHost
 
-/// The macOS vertical slice's VM: Homebrew `qemu-system-aarch64` under TCG, booted once with the
-/// project's workspace as its 9P share (`security_model=none`) and the guest agent forwarded to a
-/// loopback port. Serial and QEMU output go only to `logs`, a private directory.
+/// The macOS VM: Homebrew `qemu-system-aarch64` as a child process, booted once with `GuestArguments`.
+/// Serial and QEMU output go only to `logs`, a private directory.
 public final class QemuMachine: GuestMachine, @unchecked Sendable {
     public struct Configuration {
         public let executable: String
@@ -28,7 +27,7 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
 
     public init(_ configuration: Configuration) throws {
         self.configuration = configuration
-        port = try Self.freePort()
+        port = try GuestArguments.freePort()
         rpc = GatedGuestRPC(port: port, token: configuration.token)
     }
 
@@ -39,20 +38,11 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
         guard process == nil, !ended else { throw CandidateError("VM_ALREADY_STARTED") }
         try FileManager.default.createDirectory(atPath: configuration.logs, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        let inputs = configuration.inputs
         let process = Process()
         process.executableURL = URL(fileURLWithPath: configuration.executable)
-        process.arguments = [
-            "-machine", "virt", "-cpu", "cortex-a72", "-smp", "1", "-m", "1024", "-accel", "tcg",
-            "-nodefaults", "-display", "none", "-monitor", "none",
-            "-chardev", "file,id=serial,path=" + Self.option(configuration.logs + "/serial-private.log"), "-serial", "chardev:serial",
-            "-kernel", inputs + "/Image", "-initrd", inputs + "/initramfs.gz", "-append", "console=ttyAMA0 rdinit=/init",
-            "-drive", "file=" + Self.option(inputs + "/system.raw") + ",if=none,id=system,format=raw,readonly=on",
-            "-device", "virtio-blk-pci,drive=system",
-            "-netdev", "user,id=net,restrict=on,hostfwd=tcp:127.0.0.1:\(port)-:4500", "-device", "virtio-net-pci,netdev=net,romfile=",
-            "-fsdev", "local,id=workspace,path=" + Self.option(workspace) + ",security_model=none,writeout=immediate",
-            "-device", "virtio-9p-pci,fsdev=workspace,mount_tag=workspace",
-        ]
+        process.arguments = GuestArguments.machine(
+            inputs: configuration.inputs, workspace: workspace, port: port,
+            serial: "file,id=serial,path=" + GuestArguments.option(configuration.logs + "/serial-private.log"))
         let log = configuration.logs + "/qemu-private.log"
         FileManager.default.createFile(atPath: log, contents: nil, attributes: [.posixPermissions: 0o600])
         process.standardInput = FileHandle.nullDevice
@@ -75,24 +65,6 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
     private func finished(_ status: Int32) {
         lock.lock(); let first = !ended; ended = true; lock.unlock()
         if first { onExit?(status) }
-    }
-
-    /// QEMU option values split on commas; a literal comma is doubled.
-    static func option(_ value: String) -> String { value.replacingOccurrences(of: ",", with: ",,") }
-
-    static func freePort() throws -> UInt16 {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw CandidateError("PORT_UNAVAILABLE") }
-        defer { close(fd) }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let bound = withUnsafeMutablePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) == 0 && getsockname(fd, $0, &size) == 0 }
-        }
-        guard bound else { throw CandidateError("PORT_UNAVAILABLE") }
-        return UInt16(bigEndian: address.sin_port)
     }
 }
 #endif

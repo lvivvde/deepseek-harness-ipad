@@ -1,9 +1,9 @@
 # 分发组件清单（给 #14 的材料）
 
-**状态：构建前清单。** 本文按 #17 当前源码和候选 App 的构建输入整理，列出候选 App 将随 IPA 分发的组件。候选 App 目前只构建了 macOS 版（未签名，2026-10-10），iPad 版尚未构建，所以：
+**状态：构建前清单。** 本文按 #17 当前源码和候选 App 的构建输入整理，列出候选 App 将随 IPA 分发的组件。候选 App 已构建 macOS 版（未签名）和 iPad 版（签名安装到用户设备，2026-10-10）。iPad `.app` 约 1.1 GB：Linux 输入约 1.0 GB，执行器约 100 MB。
 
-- 最终的组件集合、各文件 SHA256 和 IPA 体积，以候选 App 的构建收据为准。收据只留在忽略的 `build/`，公开时只记脱敏结果。
-- 收据出来后更新本表，再交给 #14。
+- 组件集合与各文件 SHA256 以 iPad 构建收据（`build-safe.json` 的 `inputs`、`web`、`executor` 字段）为准。收据只留在忽略的 `build/`，公开时只记脱敏结果。
+- 交给 #14 前，用收据核对本表，并补上 `system.raw` 的构建配方。
 - 许可证结论属于 #14，不在 #17 范围内。本表只记来源和链接方式；已知的许可证事实只是供 #14 核对的线索，不是判断。
 
 ## 1. App 自有 Swift 代码
@@ -18,7 +18,7 @@
 | `ModelGateway` | 模型请求的增量流式网关 |
 | `NativeTools` | 原生文件、搜索和图片工具，以及原生 Git 宿主 |
 | `UserDataMigration` | 隔离副本的迁入与核验 |
-| `HarnessCandidate` | 候选 App 的原生权威 `CandidateHost`、项目登记与 VM 接口 |
+| `HarnessCandidate` | 候选 App 的原生权威 `CandidateHost`、项目登记、VM 接口（iPad 上为进程内 `EmbeddedMachine`）与关口 1 探针 |
 
 候选 App 外壳在 `ios/HarnessApp/CandidateApp/Sources`，包括 SwiftUI 界面、WKWebView 宿主和回环资源服务。工程由 `runtime/candidate/build.py` 生成。
 
@@ -72,7 +72,7 @@
 
 ## 4. Linux 执行器（插件）
 
-执行器是 UTM SE 构建的 QEMU 10.0.12 iOS framework 闭包，共 22 个 framework，随 IPA 的 `Frameworks/` 分发，由 App 进程载入。逐个 framework 的上游、版本和链接图见 [runtime-licensing.md](../research/runtime-licensing.md) 第 1 节。
+执行器是 UTM SE 构建的 QEMU 10.0.12 iOS framework 闭包，共 22 个 framework，随 IPA 的 `Frameworks/` 分发，由 App 进程载入。候选构建按 `ios/LinuxPrototype/.runtime/frameworks.json` 核对集合和 SHA256，嵌入时去掉原签名和调试符号后用 App 的身份重签；QEMU 数据目录（`-L`）为空的 `qemu/`。逐个 framework 的上游、版本和链接图见 [runtime-licensing.md](../research/runtime-licensing.md) 第 1 节。
 
 [runtime-licensing.md](../research/runtime-licensing.md) 中的风险 R1（OpenSSL 与 Vulkan-Loader 跟 GPLv2 的 QEMU 处于同一进程）仍未处理，由 #14 判断。
 
@@ -82,7 +82,7 @@
 | --- | --- | --- |
 | `Image` | 内核 Alpine `6.18.52-0-virt` | Alpine 3.23 netboot，见 [miniguest-build-sources.md](../prototypes/miniguest-build-sources.md) |
 | `initramfs.gz` | 写租约探针的 initramfs，含从锁定 modloop 补入的 9P 等模块 | `runtime/prototypes/plan500-lease/run.py prepare` 与 `init.sh` |
-| `system.raw` | 只读系统盘，含 Node `24.21.0` 和 Git `2.47.3` | 沿用既有 Linux 原型；构建配方在 iPad 候选构建前补入本表 |
+| `system.raw` | 只读系统盘，含 Node `24.21.0` 和 Git `2.47.3` | 沿用既有 Linux 原型；构建配方仍待补入本表（交给 #14 前） |
 | guest agent | 租约、取消和撤销协议 | `runtime/prototypes/plan500-lease/agent.cjs` |
 
 各输入的 SHA256 记在 [plan500-darwin.md](../research/plan500-darwin.md) 的输入表里。

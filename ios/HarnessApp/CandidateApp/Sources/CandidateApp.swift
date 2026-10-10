@@ -7,7 +7,11 @@ struct CandidateApp: App {
 
     var body: some Scene {
         WindowGroup("Harness Candidate") {
+            #if os(macOS)
             CandidateView(model: model).frame(minWidth: 960, minHeight: 640)
+            #else
+            CandidateView(model: model)
+            #endif
         }
     }
 }
@@ -105,8 +109,16 @@ struct CapabilitySection: View {
     }
 }
 
+#if os(macOS)
 struct WebView: NSViewRepresentable {
     let view: WKWebView
     func makeNSView(context: Context) -> WKWebView { view }
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
+#else
+struct WebView: UIViewRepresentable {
+    let view: WKWebView
+    func makeUIView(context: Context) -> WKWebView { view }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+#endif

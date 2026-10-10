@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import Foundation
 import HarnessCandidate
 import ModelGateway
@@ -73,7 +75,7 @@ final class CandidateModel: ObservableObject {
             let registry = try ProjectRegistry(root: root.path)
             let token = try String(contentsOf: inputs.appendingPathComponent("token-private"), encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let machine = try QemuMachine(.init(inputs: inputs.path, token: token, logs: logs.path))
+            let machine = try Self.machine(resources: resources, inputs: inputs, token: token, logs: logs)
             let scripts = try CandidateHost.gitScriptNames.map {
                 (name: $0, source: try String(contentsOf: webRoot.appendingPathComponent($0), encoding: .utf8))
             }
@@ -90,14 +92,34 @@ final class CandidateModel: ObservableObject {
         web = made?.1
         self.failure = failure
         web?.onEvent = { [weak self] in self?.lastEvent = $0 }
+        // A device acceptance launch runs one gate 1 phase on its own project; see `Gate1Probe`.
+        if let host, let phase = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_GATE1"].flatMap(Gate1Probe.Phase.init) {
+            Thread.detachNewThread { Gate1Probe.run(phase, host: host) }
+        }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
+        #if os(macOS)
         // QEMU is a child process on macOS and would outlive the App; quitting stops it.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) {
             [host = self.host] _ in host?.shutdown()
         }
+        #endif
+    }
+
+    /// Homebrew QEMU as a child process on macOS; on iPad the bundled QEMU framework inside this process,
+    /// which ends with it.
+    private static func machine(resources: URL, inputs: URL, token: String, logs: URL) throws -> GuestMachine {
+        #if os(macOS)
+        return try QemuMachine(.init(inputs: inputs.path, token: token, logs: logs.path))
+        #else
+        let library = Bundle.main.privateFrameworksURL!
+            .appendingPathComponent("qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu")
+        return try EmbeddedMachine(.init(inputs: inputs.path, firmware: resources.appendingPathComponent("qemu").path,
+                                         token: token, logs: logs.path),
+                                   engine: EmbeddedMachine.library(at: library.path))
+        #endif
     }
 
     func setKey(_ value: String) { key.set(value) }

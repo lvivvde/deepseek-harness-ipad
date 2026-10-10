@@ -1,4 +1,4 @@
-.PHONY: help doctor check test-app test-runtime test-device-tools test-plan500-ipad test-candidate candidate-web candidate-app
+.PHONY: help doctor check test-app test-runtime test-device-tools test-plan500-ipad test-candidate candidate-web candidate-app candidate-ipad
 
 help:
 	@echo "make doctor  检查本机 iPad 开发环境"
@@ -10,6 +10,7 @@ help:
 	@echo "make test-candidate 验证候选 App 的 Worker 桥接、官方锚点与构建闸门（无需设备）"
 	@echo "make candidate-web 从固定官方包生成候选 App 网页根目录（输出在 build/candidate）"
 	@echo "make candidate-app 生成独立工程并构建未签名的 macOS 候选 App（先运行 candidate-web）"
+	@echo "make candidate-ipad 构建嵌入已核验 QEMU 执行器的未签名 iPad 候选 App（签名用私有 --signing-file）"
 
 doctor:
 	@bash scripts/doctor.sh
@@ -53,3 +54,6 @@ candidate-web:
 
 candidate-app:
 	@python3 runtime/candidate/build.py
+
+candidate-ipad:
+	@python3 runtime/candidate/build.py --sdk iphoneos

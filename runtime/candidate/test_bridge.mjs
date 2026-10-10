@@ -215,7 +215,7 @@ async function runOfficialHook(reply, {cwd = '/dsh/workspace/p/src', abort = fal
   const controller = new AbortController();
   if (abort) controller.abort();
   const {output} = await runHook(table.shell, {command: 'check-tool', timeoutSec: 5},
-    {payload: {hook_event_name: 'PreToolUse', note: "it's"}, env: {CLAUDE_PROJECT_DIR: '/dsh/workspace/p'}, cwd,
+    {payload: {hook_event_name: 'PreToolUse', note: "it's", tool_input: {file_path: '/dsh/workspace/p/src/a.js', other: '/dsh/workspace/pp/b'}}, env: {CLAUDE_PROJECT_DIR: '/dsh/workspace/p'}, cwd,
       signal: controller.signal, trailingNewline: true, defaultTimeoutMs: 1000, expectedEventName: 'PreToolUse'}, () => 0);
   return {output, execute: native().find(x => x.operation === 'execute')};
 }
@@ -227,9 +227,10 @@ test('a hook in a project runs on Linux with its payload and environment', {skip
   assert.equal(execute.trigger, 'hook');
   assert.equal(execute.cwd, '/dsh/workspace/p/src');
   assert.equal(execute.timeoutMs, 5000);
-  // The guest sees the project at /workspace; the payload is replayed on stdin, quotes intact.
+  // The guest sees the project at /workspace, in env and payload paths; the payload is replayed on stdin, quotes intact.
   assert.equal(execute.command, "export CLAUDE_PROJECT_DIR='/workspace'\n"
-    + `printf '%s' '{"hook_event_name":"PreToolUse","note":"it'\\''s"}\n' | (\ncheck-tool\n)\n`);
+    + `printf '%s' '{"hook_event_name":"PreToolUse","note":"it'\\''s",`
+    + `"tool_input":{"file_path":"/workspace/src/a.js","other":"/dsh/workspace/pp/b"}}\n' | (\ncheck-tool\n)\n`);
   assert.equal(output.decision, 'block');
   assert.equal(output.reason, 'no');
 });
@@ -239,6 +240,7 @@ test('a hook that did not run on Linux blocks with its fixed code', {skip: hookS
     [{status: 'WRITER_UNKNOWN', stdout: '', stderr: ''}, 'WRITER_UNKNOWN'],
     [{status: 'COMPLETED', exitCode: null, signal: 'SIGKILL', stdout: '', stderr: '', timedOut: true}, 'HOOK_TIMEOUT'],
     [{status: 'COMPLETED', exitCode: null, signal: 'SIGKILL', stdout: '', stderr: '', cancelled: true}, 'HOOK_CANCELLED'],
+    [{status: 'REFUSED', reason: 'BODY_TOO_LARGE'}, 'BODY_TOO_LARGE'], [{status: 'REFUSED'}, 'REFUSED'],
     [{status: 'CANCELLED_BEFORE_DISPATCH'}, 'CANCELLED_BEFORE_DISPATCH']]) {
     const {output} = await runOfficialHook(reply);
     assert.equal(output.decision, 'block', code);
@@ -250,11 +252,14 @@ test('a hook that did not run on Linux blocks with its fixed code', {skip: hookS
 });
 
 test('a project watch fires when the native store changes and stops when unwatched', async () => {
-  let version = 'v1', names = ['a'];
+  let version = 'v1', names = ['a'], duringStat;
   const {self, intervals, map} = load(body => {
-    if (body.operation === 'fs' && body.method === 'stat')
-      return {value: body.args.path.endsWith('/dir') ? {type: 'directory', version: null, mode: 0o40755, size: 0}
-        : {type: 'file', version, mode: 0o100644, size: 1}};
+    if (body.operation === 'fs' && body.method === 'stat') {
+      if (body.args.path.endsWith('/dir')) return {value: {type: 'directory', version: null, mode: 0o40755, size: 0}};
+      const value = {type: 'file', version, mode: 0o100644, size: 1};
+      const during = duringStat; duringStat = undefined; during?.();
+      return {value};
+    }
     if (body.operation === 'path') return {value: {dev: 1, ino: 2, size: 0, mtimeNs: 3, ctimeNs: 4}};
     if (body.operation === 'fs' && body.method === 'list')
       return {value: names.map(name => ({name, type: 'file', version: 'x', size: 1, target: '/dsh/workspace/p/dir/' + name}))};
@@ -280,6 +285,10 @@ test('a project watch fires when the native store changes and stops when unwatch
   await table.subprocess.spawn({argv: ['bash', '-c', 'touch dir/b'], cwd: '/dsh/workspace/p', stdio: {stdout: {}, stderr: {}}}).done;
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(seen, {file: 1, dir: 1});
+  // A change that lands after a running pass read its target is caught by one more pass.
+  duringStat = () => { version = 'v3'; intervals.get(poll)(); };
+  await intervals.get(poll)();
+  assert.deepEqual(seen, {file: 2, dir: 1});
   file(); dir();
   assert.equal(intervals.has(poll), false, 'the last unwatch stops polling');
   assert.equal(await fs.watch({targetKey: '/tmp/x', displayPath: '/tmp/x'}, () => {}), 'local-watch');

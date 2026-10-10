@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-10，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-11，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -37,7 +37,7 @@
 
 - 六项关口全部勾选。关口 1、2、3、4、6 的代码在 [PR46](https://github.com/lvivvde/deepseek-harness-ipad/pull/46)，已合并。设计与限制见 [工作区耐久](../design/workspace-durability.md)、[Linux 插件可用性](../design/linux-plugin-availability.md)、[原生官方工具](../design/native-official-tools.md)（含用户确认的 4 项收紧）、[原生只读 Git](../design/native-read-only-git.md)、[模型网关](../design/model-gateway.md)、[用户数据迁移](../design/user-data-migration.md)。
 - 关口 5 的代码在 [PR47](https://github.com/lvivvde/deepseek-harness-ipad/pull/47)，设计与限制见 [Git 写操作与 hook](../design/git-writes-and-hooks.md)。Git 写操作和 hook 走项目 Linux，原生只读复核。授权推送用的是本仓库的专用分支 `gate5-push-test`，token 由用户在 iPad 上输入；核对后该分支已删除。
-- 遗留限制：系统崩溃和断电未验；关口 1 真机写租约中的 Linux 写者是模拟的，真实 VM 补测记在 #17；快照或日志中段损坏时会丢草稿和租约记录；生成中切后台未在真机运行；hook 的 `workdir` 被忽略；shell 工具能直接 `git commit --no-verify`，同 uid 代码能从 `/proc` 读到 Git 令牌；iPad 上完整 clone 本仓库超过单条命令 60 s 的上限，大项目的 clone 时长留给 #18。
+- 遗留限制：系统崩溃和断电未验；关口 1 真机写租约中的 Linux 写者是模拟的，真实 VM 补测记在 #17；快照或日志中段损坏时会丢草稿和租约记录；生成中切后台未在真机运行；hook 的 `workdir` 被忽略（候选 App 已修正）；shell 工具能直接 `git commit --no-verify`，同 uid 代码能从 `/proc` 读到 Git 令牌；iPad 上完整 clone 本仓库超过单条命令 60 s 的上限，大项目的 clone 时长留给 #18。
 
 #17 进展：
 
@@ -73,11 +73,17 @@
   - 关口 1 用真实 VM 写者补测通过，由内置 `Gate1Probe`（启动环境变量 `HARNESS_CANDIDATE_GATE1=hold|check`）自动完成，无需用户操作：强制结束后写者未知、不自动释放、新命令被拒、命令不重放、草稿逐字节一致。探针每阶段自判 `passed`；修正 QEMU 入口签名后的 r5 构建复测两阶段均 `passed`。细节见 [调度与隔离边界](../design/linux-plugin-scheduling.md)“候选 App”一节。
   - 新 bundle ID 首次签名须在 Xcode 界面运行一次生成描述文件，之后命令行可复用。
   - 已验证：`make check`、`make test-app`（候选 23 项）、`make test-candidate`（桥接 10、构建 15）、`make test-plan500-ipad` 通过、无警告；`make candidate-app` 与 `make candidate-ipad` 构建完成。
+- 候选缺口第一批在分支 `feat/issue17-candidate-gaps`（未开 PR）：
+  - 项目内 hook 作为独立 Linux 任务运行（触发方式 `hook`），在 `workdir` 中运行，payload 中的项目路径换成 `/workspace`；没跑完的一律阻止（退出码 2，`DSH_HOOK_NOT_RUN <原因>`）。官方网页版不加载 hook 插件，只由桥接测试（用官方 `runHook`）覆盖；声明里 `hook.command` 由 `CANDIDATE_NOT_WIRED` 改为可用并附 `NO_OFFICIAL_CALLER`。
+  - 项目 `watch` 每 2 秒比对原生存储，Linux 命令或 hook 结束后立即再比对。
+  - 官方网页版没有发起仓库写操作的 Git 调用方，只改文档；`git.write` 保留 `SHELL_ONLY`。
+  - 顺带修正：发出前就被拒的 RPC 请求（超过 128 KiB 或路由非法）以前记为写者未知，会锁住项目；现在记为拒绝并释放租约。
+  - 已验证：`make test-app`、`make check`、`make test-candidate`（桥接 13 项）通过。这一批未上真机，只有单元测试覆盖。
 
 **下一步：**
 
 1. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
-2. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
+2. 交互式终端：guest 协议要加 PTY 流，单独一个 PR。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 

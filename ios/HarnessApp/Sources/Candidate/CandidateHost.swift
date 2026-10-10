@@ -130,8 +130,8 @@ public final class CandidateHost: @unchecked Sendable {
     }
 
     /// Where the candidate falls short of the formal scope, declared instead of hidden. A narrower path
-    /// qualifies an item that is available.
-    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY"]
+    /// qualifies an item that is available; hooks run on Linux, but the official web profile loads no hook plugin.
+    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY", "hook.command": "NO_OFFICIAL_CALLER"]
 
     static func candidateDeclaration(_ declaration: CapabilityDeclaration) -> [String: Any] {
         var value = json(declaration) as? [String: Any] ?? [:]

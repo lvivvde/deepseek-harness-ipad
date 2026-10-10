@@ -439,6 +439,8 @@ function candidateInstallFileSystem(require) {
 const candidateWatches = new Set();
 let candidateWatchTimer;
 let candidateWatchPoll;
+let candidateWatchRunning = false;
+let candidateWatchAgain = false;
 async function candidateSignature(watch) {
   try {
     if (!watch.directory) {
@@ -450,16 +452,22 @@ async function candidateSignature(watch) {
       .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
   } catch (error) { return 'failed:' + (error.code ?? 'UNKNOWN'); }
 }
-// Concurrent calls share one pass. A failed read is a signature too, so it reports once, not every pass.
+// A call during a pass runs one more pass after it, since the running one may have read a target before the
+// change. A failed read is a signature too, so it reports once, not every pass.
 function candidatePollWatches() {
-  candidateWatchPoll ??= (async () => {
-    for (const watch of [...candidateWatches]) {
-      const signature = await candidateSignature(watch);
-      if (!candidateWatches.has(watch) || signature === watch.signature) continue;
-      watch.signature = signature;
-      try { watch.changed(); } catch (error) { candidateLog({event: 'watch-failed', code: error.code ?? String(error)}); }
-    }
-  })().finally(() => { candidateWatchPoll = undefined; });
+  if (candidateWatchRunning) { candidateWatchAgain = true; return candidateWatchPoll; }
+  candidateWatchRunning = true;
+  candidateWatchPoll = (async () => {
+    do {
+      candidateWatchAgain = false;
+      for (const watch of [...candidateWatches]) {
+        const signature = await candidateSignature(watch);
+        if (!candidateWatches.has(watch) || signature === watch.signature) continue;
+        watch.signature = signature;
+        try { watch.changed(); } catch (error) { candidateLog({event: 'watch-failed', code: error.code ?? String(error)}); }
+      }
+    } while (candidateWatchAgain);
+  })().finally(() => { candidateWatchRunning = false; candidateWatchPoll = undefined; });
   return candidateWatchPoll;
 }
 
@@ -533,19 +541,27 @@ function candidateLinuxProcess(spec) {
 // not a finished command becomes exit code 2 with `DSH_HOOK_NOT_RUN <code>`, which it reads as a block
 // (#39 gate 5). runHook only calls `result()` on the execution.
 const candidateHookNotRun = code => ({exitCode: 2, stdout: {text: ''}, stderr: {text: 'DSH_HOOK_NOT_RUN ' + code}});
+const candidateCode = (value, fallback) => String(value ?? '').match(/^[A-Z][A-Z0-9_]*/)?.[0] || fallback;
 const candidateQuote = value => "'" + value.replace(/'/g, "'\\''") + "'";
 // The guest gives a command no stdin and its own environment, so the payload is replayed from the command text
-// and the hook's env exported first. A path in the command's project is spelled as the guest mounts it.
+// and the hook's env exported first. A path in the command's project, in an env value or a JSON payload string,
+// is spelled as the guest mounts it. A payload too large for one request is refused natively (BODY_TOO_LARGE).
 function candidateHookCommand(spec) {
   const mount = candidateWorkspace + String(spec.workdir).slice(candidateWorkspace.length).split('/')[0];
   const guest = value => value === mount || value.startsWith(mount + '/') ? '/workspace' + value.slice(mount.length) : value;
+  const guestJSON = value => typeof value === 'string' ? guest(value)
+    : Array.isArray(value) ? value.map(guestJSON)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, guestJSON(item)]))
+    : value;
   const lines = [];
   for (const [name, value] of Object.entries(spec.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string' || value.includes('\0')) return {refused: 'HOOK_ENV_REFUSED'};
     lines.push(`export ${name}=${candidateQuote(guest(value))}`);
   }
   if (typeof spec.stdin !== 'string' || spec.stdin.includes('\0')) return {refused: 'HOOK_STDIN_REFUSED'};
-  lines.push(`printf '%s' ${candidateQuote(spec.stdin)} | (\n${spec.command}\n)`);
+  let stdin = spec.stdin;
+  try { stdin = JSON.stringify(guestJSON(JSON.parse(stdin))) + (stdin.endsWith('\n') ? '\n' : ''); } catch {}
+  lines.push(`printf '%s' ${candidateQuote(stdin)} | (\n${spec.command}\n)`);
   return {command: lines.join('\n') + '\n'};
 }
 function candidateLinuxHook(spec) {
@@ -561,12 +577,13 @@ function candidateLinuxHook(spec) {
       reply = await candidateNative('execute', {operationId, command: built.command, cwd: String(spec.workdir),
         timeoutMs: Math.min(spec.timeoutMs ?? candidateCommandTimeoutMs, candidateCommandTimeoutMs), trigger: 'hook'});
     } catch (error) {
-      return candidateHookNotRun(String(error?.message ?? error).split(/\s/)[0] || 'NATIVE_ERROR');
+      return candidateHookNotRun(candidateCode(error?.message ?? error, 'NATIVE_ERROR'));
     } finally {
       spec.signal?.removeEventListener('abort', cancel);
       candidatePollWatches();
     }
-    if (reply.status !== 'COMPLETED') return candidateHookNotRun(reply.status === 'REFUSED' ? reply.reason : reply.status);
+    if (reply.status !== 'COMPLETED')
+      return candidateHookNotRun(reply.status === 'REFUSED' ? candidateCode(reply.reason, 'REFUSED') : candidateCode(reply.status, 'NATIVE_ERROR'));
     if (!Number.isInteger(reply.exitCode))
       return candidateHookNotRun(reply.timedOut ? 'HOOK_TIMEOUT' : reply.cancelled ? 'HOOK_CANCELLED' : 'HOOK_NO_EXIT');
     return {exitCode: reply.exitCode, stdout: {text: reply.stdout ?? ''}, stderr: {text: reply.stderr ?? ''}};

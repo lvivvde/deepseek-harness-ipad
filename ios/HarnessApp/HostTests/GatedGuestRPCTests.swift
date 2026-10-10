@@ -157,4 +157,18 @@ final class GatedGuestRPCTests: XCTestCase {
         server.lock.lock(); let count = server.executed; server.lock.unlock()
         XCTAssertEqual(count, 0)
     }
+
+    /// A request the client will not send is a refusal: nothing reached the guest, so no writer can exist.
+    func testARequestNeverSentIsRefused() throws {
+        let server = try AgentServer(); defer { server.closeServer() }
+        let transport = GatedGuestRPC(port: server.port, token: "test-token")
+        XCTAssertThrowsError(try transport.call("/execute", ["argv": [String(repeating: "x", count: 131_072)]])) { error in
+            XCTAssertEqual(error as? GuestRPCError, .refused("BODY_TOO_LARGE"))
+        }
+        XCTAssertThrowsError(try transport.call("/execute x", [:])) { error in
+            XCTAssertEqual(error as? GuestRPCError, .refused("REQUEST_REFUSED"))
+        }
+        server.lock.lock(); let count = server.executed; server.lock.unlock()
+        XCTAssertEqual(count, 0)
+    }
 }

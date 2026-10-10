@@ -176,10 +176,10 @@ final class CandidateHostTests: XCTestCase {
         XCTAssertEqual(execute(host, "op-2", cwd: "/dsh/workspace/p", trigger: "hook")["status"] as? String, "COMPLETED")
         let declaration = try XCTUnwrap(projectEntry(host, project)?["capabilities"] as? [String: Any])
         let items = Dictionary(uniqueKeysWithValues: (declaration["items"] as? [[String: Any]] ?? []).map { ($0["name"] as? String ?? "", $0) })
-        for name in ["shell", "hook.command"] {
-            XCTAssertEqual(items[name]?["available"] as? Bool, true, name)
-            XCTAssertNil(items[name]?["reason"] as? String, name)
-        }
+        XCTAssertEqual(items["shell"]?["available"] as? Bool, true)
+        XCTAssertNil(items["shell"]?["reason"] as? String)
+        XCTAssertEqual(items["hook.command"]?["available"] as? Bool, true)
+        XCTAssertEqual(items["hook.command"]?["reason"] as? String, "NO_OFFICIAL_CALLER")
         XCTAssertEqual(items["git.write"]?["reason"] as? String, "SHELL_ONLY")
         XCTAssertEqual(items["subprocess"]?["reason"] as? String, "BASH_C_ONLY")
         XCTAssertEqual(items["terminal"]?["path"] as? String, "unsupported")

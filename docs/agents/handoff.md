@@ -73,7 +73,7 @@
   - 关口 1 用真实 VM 写者补测通过，由内置 `Gate1Probe`（启动环境变量 `HARNESS_CANDIDATE_GATE1=hold|check`）自动完成，无需用户操作：强制结束后写者未知、不自动释放、新命令被拒、命令不重放、草稿逐字节一致。探针每阶段自判 `passed`；修正 QEMU 入口签名后的 r5 构建复测两阶段均 `passed`。细节见 [调度与隔离边界](../design/linux-plugin-scheduling.md)“候选 App”一节。
   - 新 bundle ID 首次签名须在 Xcode 界面运行一次生成描述文件，之后命令行可复用。
   - 已验证：`make check`、`make test-app`（候选 23 项）、`make test-candidate`（桥接 10、构建 15）、`make test-plan500-ipad` 通过、无警告；`make candidate-app` 与 `make candidate-ipad` 构建完成。
-- 候选缺口第一批在 [PR52](https://github.com/lvivvde/deepseek-harness-ipad/pull/52)（待用户同意合并）：
+- 候选缺口第一批已由 [PR52](https://github.com/lvivvde/deepseek-harness-ipad/pull/52) 合入 main（2026-10-11）：
   - 项目内 hook 作为独立 Linux 任务运行（触发方式 `hook`），在 `workdir` 中运行，payload 中的项目路径换成 `/workspace`；没跑完的一律阻止（退出码 2，`DSH_HOOK_NOT_RUN <原因>`）。官方网页版不加载 hook 插件，只由桥接测试（用官方 `runHook`）覆盖；声明里 `hook.command` 由 `CANDIDATE_NOT_WIRED` 改为可用并附 `NO_OFFICIAL_CALLER`。
   - 项目 `watch` 每 2 秒比对原生存储，Linux 命令或 hook 结束后立即再比对。
   - 官方网页版没有发起仓库写操作的 Git 调用方，只改文档；`git.write` 保留 `SHELL_ONLY`。

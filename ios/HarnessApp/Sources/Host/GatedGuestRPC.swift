@@ -26,9 +26,9 @@ public final class GatedGuestRPC: GuestRPC {
 
     public func call(_ route: String, _ body: [String: Any]?) throws -> [String: Any] {
         guard route.hasPrefix("/"), !route.contains("\r"), !route.contains("\n"), !route.contains(" "),
-              !token.contains("\r"), !token.contains("\n") else { throw GuestRPCError.unreachable("REQUEST_REFUSED") }
+              !token.contains("\r"), !token.contains("\n") else { throw GuestRPCError.refused("REQUEST_REFUSED") }
         let data = try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data()
-        guard data.count <= 131072 else { throw GuestRPCError.unreachable("BODY_TOO_LARGE") }
+        guard data.count <= 131072 else { throw GuestRPCError.refused("BODY_TOO_LARGE") }
         let stream: LoopbackHTTP
         gate.lock()
         do {

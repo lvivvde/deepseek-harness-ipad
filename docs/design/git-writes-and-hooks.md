@@ -71,7 +71,7 @@ Linux 正在启动时，hook 排队等待就绪。等待中被取消的 hook 不
 ## 已知限制
 
 - **只有 Git 工具受 hook 保护。** 经事务和 runHook 的 Git 操作不能跳过 hook。模型的 shell 工具在 Linux 上执行的是任意命令，它直接运行的 `git commit --no-verify` 或对 `.git` 的改写不受这层保护。这与桌面上的 shell 工具相同：shell 有用户本人的权限。
-- **hook 的工作目录被忽略。** `runHook` 请求里的 `workdir` 不生效，hook 命令一律在 `/workspace` 运行。
+- **hook 的工作目录被忽略。** `runHook` 请求里的 `workdir` 不生效，hook 命令一律在 `/workspace` 运行。候选 App（#17）已按 `workdir` 运行，见 [调度与隔离边界](linux-plugin-scheduling.md)。
 - **macOS 宿主上锁定 `core.ignorecase`。** 宿主的共享目录在 APFS 上，大小写不敏感。Linux git 在 `init` 时会写 `core.ignorecase=true`，而原生子集拒绝这种仓库（见 `native-git.js`）。关口 5 的仓库先记录检测到的值，再设成 `false`。iPad 上检测结果是未设置，说明那里的卷大小写敏感。
 - **iPad 上 60 s 内做不完完整 clone。** iPad 的 guest 是单核解释执行（TCG）。完整 clone 本仓库 main（约 2.2 MB）并检出全部文件，超过单条命令 60 s 的上限，结果是写者未知。授权推送因此改用 `--depth 1 --filter=blob:none --no-checkout`：只取 main 的提交和目录树，再用 `git read-tree HEAD` 建索引。完整 clone 大一些的项目，需要另定时长或分步方案，留给 #18。
 

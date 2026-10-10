@@ -129,19 +129,15 @@ public final class CandidateHost: @unchecked Sendable {
         return value
     }
 
-    /// Where the candidate falls short of the formal scope, declared instead of hidden. Not wired: the item
-    /// is unavailable whatever Linux's state. A narrower path qualifies an item that is available.
-    static let notWired = ["hook.command"]
-    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY"]
+    /// Where the candidate falls short of the formal scope, declared instead of hidden. A narrower path
+    /// qualifies an item that is available; hooks run on Linux, but the official web profile loads no hook plugin.
+    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY", "hook.command": "NO_OFFICIAL_CALLER"]
 
     static func candidateDeclaration(_ declaration: CapabilityDeclaration) -> [String: Any] {
         var value = json(declaration) as? [String: Any] ?? [:]
         var items = value["items"] as? [[String: Any]] ?? []
         for index in items.indices {
-            let name = items[index]["name"] as? String ?? ""
-            if notWired.contains(name) {
-                items[index]["available"] = false; items[index]["reason"] = "CANDIDATE_NOT_WIRED"
-            } else if let narrower = narrower[name], items[index]["available"] as? Bool == true {
+            if let narrower = narrower[items[index]["name"] as? String ?? ""], items[index]["available"] as? Bool == true {
                 items[index]["reason"] = narrower
             }
         }

@@ -46,7 +46,7 @@
   - `HarnessHost`：`ProjectGateway`、`LinuxBringUp`、`ReadyProof`。
   - `WorkspaceStore`：新增释放原因 `RECONCILED`。
   - 多项目时，Linux 绑定到本进程第一个打开的启用项目。
-- 候选 App 的 macOS 竖切在分支 `feat/issue17-candidate-host`，未推送、未开 PR。范围由用户 2026-10-10 确认：
+- 候选 App 的 macOS 竖切已在 [PR50](https://github.com/lvivvde/deepseek-harness-ipad/pull/50) 合并（2026-10-10）。范围由用户 2026-10-10 确认：
   - 代码放在正式源码树：`Sources/Candidate`、`CandidateApp/`、`runtime/candidate/`。
   - 由脚本生成独立工程，bundle ID 为 `org.lvivvde.harness.candidate`，不加研究仪器。
   - 先打通 macOS，iPad 安装与验收放到下一个 PR。
@@ -69,11 +69,10 @@
 
 **下一步：**
 
-1. 本分支经用户同意后推送、开 PR，合并另获同意。
-2. 下一个 PR：候选 App 的 iPad 构建，执行器换成进程内 QEMU framework，签名安装后做真机验收，并用真实 VM 写者补测关口 1。
-3. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
-4. #17 要求的测量和迁移演练。
-5. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
+1. 下一个 PR：候选 App 的 iPad 构建，执行器换成进程内 QEMU framework，签名安装后做真机验收，并用真实 VM 写者补测关口 1。
+2. 补上缺口：交互式终端、官方 Worker 发起的 hook 与 Git 写操作、项目文件监听。
+3. #17 要求的测量和迁移演练。
+4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。
 
 ## 开放任务
 

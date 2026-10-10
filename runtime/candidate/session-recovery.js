@@ -34,6 +34,9 @@ function candidateSeedHome(vfs, snapshot) {
   }
   for (const d of [...snapshot.directories].sort((a, b) => a.path.length - b.path.length)) vfs.seedDirectory(d.path, {mode: d.mode, mtimeMs: d.mtimeMs});
   for (const [f, bytes] of decoded) vfs.seed(f.path, bytes, {mode: f.mode, mtimeMs: f.mtimeMs});
+  // The real VFS touches parent directories while seeding files. Reapply captured metadata only after
+  // all children exist; seedDirectory is silent and retains their entries.
+  for (const d of snapshot.directories) vfs.seedDirectory(d.path, {mode: d.mode, mtimeMs: d.mtimeMs});
 }
 function candidateSnapshotHome(vfs) {
   const result = {formatVersion: 1, directories: [], files: []};
@@ -50,7 +53,7 @@ function candidateSnapshotHome(vfs) {
 }
 
 const candidateRecovery = (() => {
-  let worker, ctx, vfs, revision = 0, savedRevision = -1, timer, running;
+  let worker, ctx, vfs, revision = 0, savedRevision = -1, retryNeeded = false, timer, running;
   const report = fields => candidateNative('session-changed', {worker, revision, ...fields});
   const backgroundSave = () => save().catch(error => candidateLog({event: 'checkpoint-failed', code: error.code ?? String(error)}));
   const changed = () => {
@@ -74,7 +77,7 @@ const candidateRecovery = (() => {
     const snapshot = candidateSnapshotHome(vfs);
     const ack = await candidateNative('checkpoint', {worker, capture: ticket.capture, revision: target, snapshot});
     if (ack?.durable !== true || ack.worker !== worker || ack.capture !== ticket.capture || ack.revision !== target) throw new Error('DURABLE_ACK_REFUSED');
-    savedRevision = target;
+    savedRevision = target; retryNeeded = false;
   }
   function save() {
     if (!ctx) return Promise.reject(new Error('SESSION_NOT_READY'));
@@ -85,6 +88,7 @@ const candidateRecovery = (() => {
       // in target; merely producing the snapshot never clears a later event.
       do { await capture(); } while (revision > savedRevision);
     })().catch(async error => {
+      retryNeeded = true;
       await report({failure: error.code ?? 'CHECKPOINT_FAILED'}).catch(() => {});
       throw error;
     }).finally(() => { running = undefined; });
@@ -96,7 +100,7 @@ const candidateRecovery = (() => {
     ctx.on('session/created', changed);
     ctx.on('session/flush', save);
     vfs.subscribe?.(mutation => { if (candidateHomePath(mutation.path)) changed(); });
-    setInterval(() => { if (savedRevision < revision) backgroundSave(); }, candidateCheckpointIntervalMs);
+    setInterval(() => { if (retryNeeded || savedRevision < revision) backgroundSave(); }, candidateCheckpointIntervalMs);
     // Save settings and the initial empty home too, without waiting for the first model event.
     changed();
   }

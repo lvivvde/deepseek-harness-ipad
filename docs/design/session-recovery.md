@@ -119,3 +119,6 @@ module 的 interface 是测试面；测试断言可见结果，内部重构不�
 - `home-recovery-probe` 只供本机测试，使用合成临时根目录；禁止 Linux 启动和命令重放。测试运行真实固定 Worker VFS、模块加载器、Cordis、JSONL 持久化及同一 Swift handler。
 
 验证与真机缺口以交接文件的最新记录为准。系统断电、iPad 强制结束与前后台的这一版行为尚未实测；macOS 的 SIGKILL 矩阵不能替代它们。
+
+
+本机验证前置：先准备固定官方依赖并运行 `make candidate-web`；`make test-candidate` 构建 Swift 探针并运行跨语言合同，缺少真实 Worker/VFS 镜像时直接失败，不跳过往返。原始测试和构建日志保留在忽略的 `build/candidate/`。

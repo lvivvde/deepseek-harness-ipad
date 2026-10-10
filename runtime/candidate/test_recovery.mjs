@@ -61,6 +61,7 @@ test('real official flush and Worker bytes survive Swift storage and a new Worke
     first.vfs.seedDirectory('/dsh/home/test', {mode: 0o40700, mtimeMs: 1234});
     first.vfs.seed('/dsh/home/test/binary', new Uint8Array([0, 255, 128, 10]), {mode: 0o100600, mtimeMs: 2345});
     first.vfs.seed('/dsh/home/test/text', new TextEncoder().encode('会话\n'), {mode: 0o100640, mtimeMs: 3456});
+    first.vfs.seedDirectory('/dsh/home/test', {mode: 0o40700, mtimeMs: 1234});
     first.vfs.seed('/dsh/home/.credentials.yaml', new TextEncoder().encode('must stay out'));
     await first.persistence.create({version: 4, id: 'recovery-test', createdAt: 1, isSeeded: false});
     assert.equal([...first.vfs.files.keys()].some(x => x.endsWith('session.v4.jsonl')), false, 'create is still buffered');
@@ -80,6 +81,7 @@ test('real official flush and Worker bytes survive Swift storage and a new Worke
     assert.equal(second.vfs.statSync('/dsh/home/test/text').mode, 0o100640);
     assert.equal(second.vfs.statSync('/dsh/home/test/text').mtimeMs, 3456);
     assert.equal(second.vfs.statSync('/dsh/home/test').mode, 0o40700);
+    assert.equal(second.vfs.statSync('/dsh/home/test').mtimeMs, 1234);
     assert.deepEqual(Array.from(second.vfs.readFileSync(sessionPath)), sessionBytes);
     assert.equal((await second.persistence.stat('recovery-test')).header.createdAt, 1);
     assert.equal(second.vfs.existsSync('/dsh/home/.credentials.yaml'), false);

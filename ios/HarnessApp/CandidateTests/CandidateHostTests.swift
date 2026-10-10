@@ -385,7 +385,7 @@ final class CandidateHostTests: XCTestCase {
         let bad: [String: Any] = ["formatVersion": 1, "directories": [],
                                   "files": [["path": "/dsh/home/a", "mode": 33188, "mtimeMs": 1, "data": "eA=="]]]
         XCTAssertEqual(host.handle(["operation": "checkpoint", "snapshot": bad])["error"] as? String, "SNAPSHOT_REFUSED")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/worker-home.json"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/home-current.json"))
     }
 
     func testTheCheckpointHoldsOnlyTheWorkerHome() throws {

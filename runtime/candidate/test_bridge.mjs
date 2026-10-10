@@ -461,3 +461,18 @@ test('failed save stays retryable through both the periodic and manual save path
   await self.candidateSave();
   assert.equal(attempts, 3);
 });
+
+test('a failed manual flush retries periodically even when no new events arrive', async () => {
+  let attempts = 0;
+  const {self, map, intervals} = load(body => {
+    if (body.operation === 'checkpoint' && ++attempts === 2) return {error: 'CHECKPOINT_FAILED'};
+    return host()(body);
+  }, {manualTimers: true});
+  const {ctx, loader} = services(map); const vfs = memoryVfs();
+  await self.candidateRestore(vfs); await self.candidateInstall(ctx, loader, vfs);
+  await self.candidateSave();
+  await assert.rejects(self.candidateSave(), /CHECKPOINT_FAILED/);
+  for (const callback of intervals.values()) callback();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(attempts, 3, 'failure retries without a later event');
+});

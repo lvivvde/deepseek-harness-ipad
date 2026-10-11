@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import {PassThrough} from 'node:stream';
 import path from 'node:path';
 import {existsSync, readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -67,7 +68,7 @@ function load(answer, {fetch = async () => 'network'} = {}) {
   const intervals = new Map();
   let intervalId = 0;
   const context = {Buffer, URL, TextDecoder, TextEncoder, Headers, Response, ReadableStream, DOMException, atob, btoa,
-    setTimeout: fn => { fn(); return 0; }, clearTimeout: () => {}, process, fetch,
+    setTimeout: fn => { fn(); return 0; }, clearTimeout: () => {}, process, fetch, PassThrough,
     setInterval: fn => { intervals.set(++intervalId, fn); return intervalId; }, clearInterval: id => { intervals.delete(id); },
     promises: {readFile: async () => 'vfs'}};
   context.self = context;
@@ -190,17 +191,69 @@ test('a refused or unknown-writer command fails with its fixed code', async () =
   }
 });
 
-test('an interactive terminal is refused with its fixed code instead of crashing', async () => {
-  const {self, map} = load(host());
+// A Swift host whose terminal reads come from `reads` in order; once they run out a read never answers.
+async function terminalBridge(answer = () => ({status: 'WRITTEN', leased: false}), reads = []) {
+  const {self, native, map} = load(body => {
+    if (body.operation === 'terminal-open') return {pid: 42};
+    if (body.operation === 'terminal-write') return answer(body);
+    if (body.operation === 'terminal-read') return reads.length ? reads.shift() : new Promise(() => {});
+    if (body.operation === 'terminal-inspect') return {foreground: {processGroupId: 42, inputWaiting: true}, activity: {state: 'idle', revision: 5}};
+    if (body.operation === 'terminal-close') return {closed: true, released: false};
+    return host()(body);
+  });
   const {ctx, loader, table} = services(map);
   const vfs = memoryVfs();
   await self.candidateRestore(vfs);
   await self.candidateInstall(ctx, loader, vfs);
-  // The terminal controller asks for the environment before it resolves a shell.
-  await assert.rejects(table.subprocess.terminalEnvironment(), /TERMINAL_UNSUPPORTED/);
-  for (const cwd of ['/dsh/workspace/p', '/tmp']) {
-    await assert.rejects(table.subprocess.spawnTerminal({argv: ['/bin/sh'], cwd}), /TERMINAL_UNSUPPORTED/);
-  }
+  const spec = {argv: ['/bin/bash', '-i'], cwd: '/dsh/workspace/p', cols: 80, rows: 24, terminalType: 'xterm-256color',
+    env: {DSH_SESSION_ID: 's'}, shellActivity: true, graceMs: 500};
+  return {native, subprocess: table.subprocess, spec};
+}
+const chunk = (text, next, fields = {}) => ({data: btoa(text), next, dropped: 0, exited: null,
+  activity: {state: 'busy', revision: 1}, leased: false, released: false, ...fields});
+
+test('a terminal in a project is a pty shell on Linux whose output ends when the shell exits', async () => {
+  const {native, subprocess, spec} = await terminalBridge(undefined,
+    [chunk('$ ', 2), chunk('ls\r\n', 6, {released: true}), chunk('', 6, {exited: {code: 0, signal: null}})]);
+  assert.ok(native().some(x => x.operation === 'terminals-reset'), 'a new Worker closes the old terminals first');
+  // The controller asks for the environment, then resolves the shell it names.
+  assert.deepEqual({...await subprocess.terminalEnvironment()}, {platform: 'posix', defaultShell: '/bin/bash'});
+  assert.equal(await subprocess.resolveExecutable('/bin/bash'), '/bin/bash');
+  await assert.rejects(subprocess.spawnTerminal({...spec, cwd: '/tmp'}), /TERMINAL_OUTSIDE_PROJECT/);
+  const handle = await subprocess.spawnTerminal(spec);
+  assert.equal(handle.pid, 42);
+  const opened = native().find(x => x.operation === 'terminal-open');
+  assert.deepEqual(opened, {cwd: '/dsh/workspace/p', argv: ['/bin/bash', '-i'], cols: 80, rows: 24, env: {DSH_SESSION_ID: 's'},
+    terminalType: 'xterm-256color', terminalId: opened.terminalId, operation: 'terminal-open'});
+  let text = '';
+  for await (const data of handle.output) text += Buffer.from(data).toString();
+  assert.equal(text, '$ ls\r\n');
+  assert.deepEqual({...await handle.done}, {exitCode: 0, signal: null});
+  assert.deepEqual(native().filter(x => x.operation === 'terminal-read').map(x => x.offset), [0, 2, 6]);
+  assert.equal(native().at(-1).operation, 'terminal-close', 'the exited shell frees its guest slot');
+  await assert.rejects(handle.write('x'), /terminal process has exited/);
+  assert.deepEqual({...await handle.inspectActivity()}, {state: 'idle', revision: 1});
+});
+
+test('a run line waits for another writer and the input after it keeps its order', async () => {
+  let busy = 2;
+  const {native, subprocess, spec} = await terminalBridge(body => atob(body.data) === '\r' && busy-- > 0
+    ? {status: 'REFUSED', reason: 'LEASE_BUSY'} : {status: 'WRITTEN', leased: atob(body.data) === '\r'});
+  const handle = await subprocess.spawnTerminal(spec);
+  await Promise.all([handle.write('\r'), handle.write(new TextEncoder().encode('x'))]);
+  assert.deepEqual(native().filter(x => x.operation === 'terminal-write').map(x => atob(x.data)), ['\r', '\r', '\r', 'x']);
+  assert.deepEqual({...await handle.inspectForeground()}, {processGroupId: 42, inputWaiting: true});
+  assert.deepEqual({...await handle.inspectActivity()}, {state: 'idle', revision: 5});
+  await handle.terminate();
+  assert.deepEqual({...await handle.done}, {exitCode: null, signal: 'SIGHUP'});
+  assert.equal(native().filter(x => x.operation === 'terminal-close').length, 1);
+});
+
+test('a run line another writer never frees, or an unknown writer, fails with its code', async () => {
+  const {subprocess, spec} = await terminalBridge(body => ({status: 'REFUSED', reason: atob(body.data) === '\r' ? 'LEASE_BUSY' : 'WRITER_UNKNOWN'}));
+  const handle = await subprocess.spawnTerminal(spec);
+  await assert.rejects(handle.write('\r'), /LEASE_BUSY/);
+  await assert.rejects(handle.write('x'), /WRITER_UNKNOWN/);
 });
 
 // The official runner the hook plugins call; it reads a throw or a missing exit code as "no decision".

@@ -19,6 +19,11 @@ const candidateCommandTimeoutMs = 600000;
 const candidateCheckpointDelayMs = 1500;
 const candidateCheckpointIntervalMs = 30000;
 const candidateWatchIntervalMs = 2000;
+// A terminal read waits at most this long for output, inside the guest call's own deadline.
+const candidateTerminalWaitMs = 15000;
+// A line run while another writer holds the project's lease waits for it this long, then fails LEASE_BUSY.
+const candidateTerminalBusyWaitMs = 70000;
+const candidateTerminalChunk = 32768;
 
 // MARK: Native calls
 
@@ -589,12 +594,99 @@ function candidateLinuxHook(spec) {
     return {exitCode: reply.exitCode, stdout: {text: reply.stdout ?? ''}, stderr: {text: reply.stderr ?? ''}};
   }};
 }
+// The official LocalTerminalHandle's shape (dsh-subprocess-local), backed by a pty shell on the project's
+// Linux plugin. The terminal holds the project's write lease only while a line runs in it: Swift takes it
+// when input runs a line at the prompt and releases it once the prompt is idle again with no file open for
+// writing. Output is the bundle's own stream PassThrough, ended when the shell exits.
+let candidateTerminalId = 0;
+const candidateSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function candidateTerminal(spec) {
+  spec.signal?.throwIfAborted();
+  const terminalId = `term-${candidateIdPrefix}-${++candidateTerminalId}`;
+  const call = (operation, fields = {}) => candidateNative('terminal-' + operation, {...fields, terminalId});
+  const {pid} = await call('open', {cwd: String(spec.cwd), argv: spec.argv, cols: spec.cols ?? 80, rows: spec.rows ?? 24,
+    env: spec.env ?? {}, terminalType: spec.terminalType});
+  const output = new PassThrough();
+  let exited = false, closing, settle, activity = {state: 'unknown', revision: 0}, writes = Promise.resolve();
+  const done = new Promise(resolve => { settle = resolve; });
+  const finish = outcome => { if (exited) return; exited = true; output.end(); settle(outcome); };
+  const close = () => closing ??= call('close', {graceMs: spec.graceMs ?? 1000})
+    .catch(error => { if (error.code !== 'TERMINAL_NOT_FOUND') { closing = undefined; throw error; } })
+    .finally(() => candidatePollWatches());
+  (async () => {
+    let offset = 0, failures = 0;
+    while (!exited) {
+      let read;
+      try { read = await call('read', {offset, waitMs: candidateTerminalWaitMs}); failures = 0; }
+      catch (error) {
+        // A terminal the guest no longer has, or a guest that stays unreachable, has hung up.
+        if (closing || error.code === 'TERMINAL_NOT_FOUND' || ++failures >= 3) break;
+        await candidateSleep(500);
+        continue;
+      }
+      activity = read.activity ?? activity;
+      offset = read.next;
+      if (read.data && !output.write(Buffer.from(candidateBytes(read.data))))
+        await new Promise(resolve => { output.once('drain', resolve); output.once('close', resolve); });
+      if (read.released) candidatePollWatches();
+      if (read.exited) {
+        finish({exitCode: read.exited.signal ? null : read.exited.code, signal: read.exited.signal ?? null});
+        // The guest keeps an exited shell until it is closed; free its slot now.
+        return close().catch(() => {});
+      }
+    }
+    finish({exitCode: null, signal: 'SIGHUP'});
+  })();
+  const live = () => { if (exited) throw new Error('terminal process has exited'); };
+  // Writes go out in order; a run line refused LEASE_BUSY holds the input after it until it is taken.
+  const send = async bytes => {
+    for (let at = 0; at < bytes.length; at += candidateTerminalChunk) {
+      const data = candidateBase64(bytes.subarray(at, at + candidateTerminalChunk));
+      for (let waited = 0; ; waited += 250) {
+        live();
+        const reply = await call('write', {data});
+        if (reply.status === 'WRITTEN') break;
+        if (reply.status !== 'REFUSED' || reply.reason !== 'LEASE_BUSY' || waited >= candidateTerminalBusyWaitMs)
+          throw new Error(reply.status === 'REFUSED' ? reply.reason : reply.status);
+        await candidateSleep(250);
+      }
+    }
+  };
+  return {
+    pid, output, done,
+    get running() { return !exited; },
+    async write(data) {
+      live();
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength);
+      const sent = writes.then(() => send(bytes));
+      writes = sent.catch(() => {});
+      return sent;
+    },
+    async resize(cols, rows) { live(); await call('resize', {cols, rows}); },
+    async inspectForeground() {
+      if (exited) return undefined;
+      const inspected = await call('inspect');
+      activity = inspected.activity ?? activity;
+      return inspected.foreground ?? undefined;
+    },
+    async inspectActivity() {
+      if (exited) return {state: 'idle', revision: activity.revision};
+      activity = (await call('inspect')).activity ?? activity;
+      return activity;
+    },
+    async signalForeground(signal) { live(); return (await call('signal', {signal})).processGroupId; },
+    async terminate() { await close(); finish({exitCode: null, signal: 'SIGHUP'}); },
+  };
+}
 const candidateShellCommand = argv => Array.isArray(argv) && argv.length === 3 && argv[0] === 'bash' && argv[1] === '-c'
   && typeof argv[2] === 'string';
+// The guest's terminal is always an interactive bash: only it reports an idle prompt, which ends its lease.
+const candidateTerminalShell = '/bin/bash';
 function candidateInstallSubprocess(ctx) {
   const proto = Object.getPrototypeOf(ctx.get('subprocess'));
   const {resolveExecutable, spawn} = proto;
   proto.resolveExecutable = async function (command, env, signal) {
+    if (command === candidateTerminalShell) return command;
     return command === 'git' ? candidateGit : resolveExecutable.call(this, command, env, signal);
   };
   proto.spawn = function (spec) {
@@ -603,11 +695,16 @@ function candidateInstallSubprocess(ctx) {
     const tool = spec.argv?.[0] === candidateGit ? 'git' : spec.argv?.[0] === candidateRg ? 'rg' : undefined;
     return tool ? candidateNativeProcess(tool, spec) : spawn.call(this, spec);
   };
-  // An interactive terminal needs a PTY stream; the Worker has no node-pty and the guest protocol only
-  // collects a finished command, so the terminal panel fails with a fixed code (documented gap). The
-  // controller asks for the environment first, so that refusal is the one the panel shows.
-  proto.terminalEnvironment = async function () { throw new Error('TERMINAL_UNSUPPORTED'); };
-  proto.spawnTerminal = async function () { throw new Error('TERMINAL_UNSUPPORTED'); };
+  // The Worker has no pty, so a terminal exists only in a project, as a shell on its Linux plugin. The
+  // environment names the guest's shell, which the controller resolves before it spawns.
+  proto.terminalEnvironment = async function (signal) {
+    signal?.throwIfAborted();
+    return {platform: 'posix', defaultShell: candidateTerminalShell};
+  };
+  proto.spawnTerminal = async function (spec) {
+    if (!candidateInside(String(spec.cwd))) throw new Error('TERMINAL_OUTSIDE_PROJECT');
+    return candidateTerminal(spec);
+  };
 }
 // The official bash tool confines a command with the Worker's virtual sandbox launcher. In a project the
 // command runs on the Linux VM instead, which is its isolation, so the plain `bash -c` argv reaches spawn.
@@ -806,6 +903,8 @@ self.candidateInstall = async (ctx, loader, vfs) => {
   candidateInstallSubprocess(ctx);
   candidateInstallShell(ctx);
   candidateInstallGuard(vfs, posix);
+  // Terminals an earlier Worker left open would hold guest slots, and a lease, nothing reads any more.
+  await candidateNative('terminals-reset').catch(error => candidateLog({event: 'terminals-reset-failed', code: error.code ?? String(error)}));
   // The provider needs a key to send; the real one is added by Swift and never enters the Worker.
   await ctx.get('credentials').set('DEEPSEEK_API_KEY', 'candidate-native-placeholder');
   const {projects} = await candidateNative('projects');

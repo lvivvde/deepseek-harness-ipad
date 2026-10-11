@@ -21,6 +21,9 @@ mount -t proc proc /rootfs/proc
 mount -t sysfs sysfs /rootfs/sys
 mount -t cgroup2 cgroup2 /rootfs/sys/fs/cgroup
 mount --bind /dev /rootfs/dev
+# Interactive terminals (#17) need their own pseudoterminals.
+mkdir -p /rootfs/dev/pts
+mount -t devpts -o gid=5,mode=0620,ptmxmode=0666 devpts /rootfs/dev/pts
 # system.raw /tmp is root-only; the unprivileged command uid needs HOME/tmp.
 mount -t tmpfs -o mode=1777 tmpfs /rootfs/tmp
 echo 0 > /proc/sys/user/max_user_namespaces

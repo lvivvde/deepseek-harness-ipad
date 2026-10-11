@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.error
 import uuid
 
 SOURCE = Path(__file__).resolve().parent
@@ -302,6 +303,176 @@ async def darwin_semantics(guest, state):
     return semantics
 
 
+async def terminal_contract(guest, state):
+    """Interactive terminal (#17): read-only until a lease, model commands join it, release only at an idle prompt."""
+    checks = []; guest.checks = checks; ws = guest.workspace
+
+    def check(name, passed, detail=None):
+        checks.append({'name': name, 'passed': bool(passed), 'detail': detail})
+        if not passed: raise AssertionError(name + ': ' + json.dumps(detail, ensure_ascii=False, default=str)[:600])
+
+    def rpc(route, body):
+        try: return 200, guest.rpc(route, body)
+        except urllib.error.HTTPError as error: return error.code, json.load(error)
+
+    class Terminal:
+        def __init__(self, cols=80, rows=24, argv=('/bin/bash', '-i')):
+            self.id = 'term-' + uuid.uuid4().hex[:12]; self.offset = 0; self.text = ''; self.last = None
+            self.opened = guest.rpc('/terminal/open', {'id': self.id, 'projectId': guest.identity, 'argv': list(argv),
+                                    'cwd': '/workspace', 'cols': cols, 'rows': rows, 'shellActivity': True,
+                                    'env': {'DSH_SESSION_ID': 'probe'}})
+
+        def read(self, wait=500):
+            answer = guest.rpc('/terminal/read', {'id': self.id, 'offset': self.offset, 'waitMs': wait})
+            self.offset = answer['next']; self.text += base64.b64decode(answer['data']).decode(errors='replace')
+            self.last = answer; return answer
+
+        async def until(self, predicate, timeout=15):
+            deadline = time.monotonic() + timeout
+            while True:
+                answer = await asyncio.to_thread(self.read)
+                if predicate(answer): return answer
+                if time.monotonic() > deadline: raise AssertionError(f'TERMINAL_TIMEOUT: {self.text[-300:]!r} {answer}')
+
+        def write(self, data, lease=None):
+            body = {'id': self.id, 'data': base64.b64encode(data.encode()).decode()}
+            if lease: body['lease'] = {'epoch': lease['epoch'], 'fence': lease['fence']}
+            return rpc('/terminal/write', body)
+
+        def idle(self, answer): return answer['activity']['state'] == 'idle' and not answer['data']
+
+        async def leased(self, gateway, data):
+            lease = gateway.acquire('terminal:' + self.id)
+            status, answer = self.write(data, lease)
+            assert status == 200 and answer['leased'], answer
+            return lease
+
+        async def release(self, gateway, lease, timeout=20):
+            await self.until(lambda x: x['releasable'], timeout)
+            status, answer = rpc('/terminal/unlease', {'id': self.id, 'fence': lease['fence']})
+            if status == 200 and answer['writerQuiescent']:
+                with gateway.lock: return {**gateway.release('COMPLETED'), 'unlease': answer}
+            return {'status': 'HELD', 'unlease': answer}
+
+    gateway = lease.Gateway(ws, state, guest)
+    ready = await guest.open(); gateway.attach()
+    check('ready: devpts is mounted for terminals', ready.get('terminal') is True, ready)
+
+    term = Terminal()
+    await term.until(lambda x: term.text.rstrip().endswith('$') and x['activity']['state'] == 'idle')
+    check('bash -i opens on a pty at /workspace and reports an idle prompt',
+          term.opened['pid'] > 0 and term.opened['shellActivity'] and '/workspace$' in term.text and not term.last['leased'],
+          {'opened': term.opened, 'tail': term.text[-120:], 'activity': term.last['activity']})
+
+    term.write('printf x > unleased; mount -o remount,rw /workspace; echo done-$?\r')
+    await term.until(lambda x: 'done-' in term.text and term.idle(x))
+    check('an unleased terminal command cannot write the workspace or remount it',
+          'Read-only file system' in term.text and 'done-0' not in term.text and not (ws / 'unleased').exists(), term.text[-300:])
+
+    term.write('stty size; tty\r')
+    await term.until(lambda x: '/dev/pts/' in term.text and term.idle(x))
+    status, resized = rpc('/terminal/resize', {'id': term.id, 'cols': 101, 'rows': 31})
+    term.text = ''; term.write('stty size\r')
+    await term.until(lambda x: '31 101' in term.text and term.idle(x))
+    check('resize reaches the pty', status == 200 and '31 101' in term.text, {'resized': resized, 'tail': term.text[-80:]})
+
+    term.text = ''
+    lease_ = await term.leased(gateway, 'printf one > from-terminal; echo wrote-$?\r')
+    released = await term.release(gateway, lease_)
+    # The idle state is written before the echoed output has crossed the pty, so read on to the prompt.
+    await term.until(lambda x: 'wrote-' in term.text and term.idle(x))
+    check('a leased line writes through the terminal view and releases at the idle prompt',
+          released['status'] == 'RELEASED' and 'from-terminal' in released['changed']
+          and (ws / 'from-terminal').read_text() == 'one' and 'wrote-0' in term.text, {'released': released, 'tail': term.text[-200:]})
+    term.write('printf again > from-terminal\r')
+    await term.until(lambda x: term.idle(x) and 'again' in term.text and term.text.rstrip().endswith('$'))
+    check('after release the terminal view is read-only again', (ws / 'from-terminal').read_text() == 'one'
+          and 'Read-only file system' in term.text, term.text[-200:])
+
+    term.text = ''
+    lease_ = await term.leased(gateway, 'sleep 6; printf done > slept\r')
+    await term.until(lambda x: x['activity']['state'] == 'busy', 5)
+    status, busy = await asyncio.to_thread(rpc, '/execute', {'id': uuid.uuid4().hex, 'projectId': guest.identity,
+        'argv': ['/bin/sh', '-c', 'true'], 'timeoutMs': 1000, 'cwd': '/workspace', 'lease': {'epoch': lease_['epoch'], 'fence': lease_['fence'] + 1}})
+    check('a separate lease is refused while a terminal command holds it', status == 409 and busy['error'] == 'LEASE_BUSY', busy)
+    status, joined = await asyncio.to_thread(rpc, '/execute', {'id': uuid.uuid4().hex, 'projectId': guest.identity,
+        'argv': ['/bin/sh', '-c', 'printf model > joined; sleep 30 & echo bg'], 'timeoutMs': 5000, 'cwd': '/workspace',
+        'lease': {'epoch': lease_['epoch'], 'fence': lease_['fence']}, 'join': term.id})
+    check('a model command joins the running terminal lease and writes; its stragglers are stopped',
+          status == 200 and joined['joined'] and joined['code'] == 0 and joined['writerQuiescent'] and joined['stragglersKilled'] >= 1, joined)
+    early = rpc('/terminal/unlease', {'id': term.id, 'fence': lease_['fence']})
+    released = await term.release(gateway, lease_)
+    check('release waits for the terminal command; joined and terminal writes both land',
+          early[1].get('reason') == 'BUSY' and released['status'] == 'RELEASED'
+          and {'joined', 'slept'} <= set(released['changed']), {'early': early, 'released': released})
+
+    term.text = ''
+    lease_ = await term.leased(gateway, 'exec 3>held; echo opened\r')
+    await term.until(lambda x: 'opened' in term.text and x['activity']['state'] == 'idle')
+    status, refused = rpc('/terminal/unlease', {'id': term.id, 'fence': lease_['fence']})
+    answer = await asyncio.to_thread(term.read, 300)
+    check('an idle prompt that still holds a file open for writing keeps the lease',
+          status == 200 and refused == {'writerQuiescent': False, 'reason': 'WRITERS_OPEN'} and answer['leased'] and not answer['releasable'],
+          {'refused': refused, 'answer': {k: answer[k] for k in ['leased', 'releasable', 'activity']}})
+    term.write('exec 3>&-\r', lease_)
+    released = await term.release(gateway, lease_)
+    check('closing the writer lets the same lease release', released['status'] == 'RELEASED', released)
+
+    term.text = ''
+    lease_ = await term.leased(gateway, 'cat\r')
+    await term.until(lambda x: x['activity']['state'] == 'busy', 5)
+    await asyncio.sleep(.3)
+    inspected = guest.rpc('/terminal/inspect', {'id': term.id})
+    _, interrupted = rpc('/terminal/signal', {'id': term.id, 'signal': 'SIGINT'})
+    released = await term.release(gateway, lease_)
+    check('inspect sees the foreground job waiting for input and SIGINT reaches it',
+          inspected['foreground']['processGroupId'] != term.opened['pid'] and inspected['foreground']['inputWaiting']
+          and interrupted['processGroupId'] == inspected['foreground']['processGroupId'] and released['status'] == 'RELEASED',
+          {'inspected': inspected, 'interrupted': interrupted, 'released': released['status']})
+    status, refusal = rpc('/terminal/signal', {'id': term.id, 'signal': 'SIGKILL'})
+    check('SIGKILL to the shell itself is refused', status == 409 and refusal['error'] == 'SHELL_KILL_REFUSED', refusal)
+
+    released = await asyncio.to_thread(gateway.run_leased, uuid.uuid4().hex, ['/bin/sh', '-c', 'printf y > op-file'], 5000)
+    answer = await asyncio.to_thread(term.read, 0)
+    check('another leased command sweeps leaks without killing the open terminal',
+          released['status'] == 'RELEASED' and not released['result']['leakedKilled'] and answer['exited'] is None
+          and answer['activity']['state'] == 'idle', {'released': released, 'answer': answer})
+
+    term.text = ''
+    lease_ = await term.leased(gateway, 'sleep 30\r')
+    await term.until(lambda x: x['activity']['state'] == 'busy', 5)
+    revoked = guest.rpc('/revoke', {'epoch': lease_['epoch'], 'fence': lease_['fence']})
+    status, gone = rpc('/terminal/read', {'id': term.id, 'offset': 0})
+    with gateway.lock: gateway.release('RECONCILED')
+    check('revoking a terminal lease ends that terminal', revoked['revoked'] and status == 409 and gone['error'] == 'TERMINAL_NOT_FOUND',
+          {'revoked': revoked, 'read': gone})
+
+    term = Terminal(argv=('/bin/bash', '-i'))
+    await term.until(lambda x: term.idle(x) and term.text.rstrip().endswith('$'))
+    lease_ = await term.leased(gateway, 'printf bye > exiting; (sleep 30 &); exit 3\r')
+    answer = await term.until(lambda x: x['exited'] is not None)
+    released = await term.release(gateway, lease_)
+    closed = guest.rpc('/terminal/close', {'id': term.id, 'graceMs': 100})
+    check('shell exit reports its code, leftovers are drained, and the lease releases',
+          answer['exited'] == {'code': 3, 'signal': None} and released['status'] == 'RELEASED' and 'exiting' in released['changed']
+          and closed['closed'], {'exited': answer['exited'], 'released': released, 'closed': closed})
+
+    term = Terminal()
+    await term.until(lambda x: term.idle(x) and term.text.rstrip().endswith('$'))
+    lease_ = await term.leased(gateway, 'sleep 30\r')
+    closed = guest.rpc('/terminal/close', {'id': term.id, 'graceMs': 200})
+    if closed['releasedFence'] == lease_['fence']:
+        with gateway.lock: gateway.release('COMPLETED')
+    check('closing a busy leased terminal ends it and gives the lease back', closed == {'closed': True, 'releasedFence': lease_['fence']}, closed)
+
+    plain = rpc('/terminal/open', {'id': 'bad', 'projectId': guest.identity, 'argv': ['/usr/bin/python3'], 'cwd': '/workspace'})
+    outside = rpc('/terminal/open', {'id': 'bad2', 'projectId': guest.identity, 'argv': ['/bin/bash', '-i'], 'cwd': '/tmp'})
+    check('only allowed shells inside the workspace can open a terminal',
+          plain[1].get('error') == 'ARGV_REFUSED' and outside[1].get('error') == 'CWD_REFUSED', [plain, outside])
+    guest.close()
+    return {'checks': checks, 'completed': all(x['passed'] for x in checks)}
+
+
 async def run_probe(args):
     if platform.system() != 'Darwin': raise SystemExit('probe runs on macOS')
     manifest = json.loads((args.inputs / 'inputs.json').read_text())
@@ -324,13 +495,14 @@ async def run_probe(args):
         caseSensitive = case_sensitive(output)
         for model in args.models:
             entry = {'model': model}
-            for phase in ['contract', 'darwin']:
+            for phase in args.phases:
                 guest = GatedGuest(args.inputs.resolve(), output, token, f'{model}-{phase}')
                 guest.model = model
                 state = output / f'gateway-{model}-{phase}'; state.mkdir()
                 try:
                     if phase == 'contract': entry.update(await lease.probe(guest, state))
-                    else: entry['darwinSemantics'] = await darwin_semantics(guest, state)
+                    elif phase == 'darwin': entry['darwinSemantics'] = await darwin_semantics(guest, state)
+                    else: entry['terminal'] = await terminal_contract(guest, state)
                 except Exception as error:
                     entry['completed'] = False; entry.setdefault('errors', []).append(f'{phase}: {type(error).__name__}: {error}')
                     (output / f'{model}-{phase}-traceback-private.log').write_text(traceback.format_exc())
@@ -340,7 +512,7 @@ async def run_probe(args):
                     for kind in ['serial', 'qemu']:  # both phases share the model's log names; keep each phase's copy
                         log = output / f'{model}-{kind}-private.log'
                         if log.exists(): log.rename(output / f'{model}-{phase}-{kind}-private.log')
-            entry['completed'] = entry.get('completed', False) and not entry.get('errors')
+            entry['completed'] = entry.get('completed', 'contract' not in args.phases) and not entry.get('errors')
             results.append(entry)
         report = {'completed': all(x['completed'] for x in results), 'platform': 'macOS QEMU 9P (Darwin local fsdev)',
                   'host': {'macOS': platform.mac_ver()[0], 'machine': platform.machine(), 'volume': args.volume,
@@ -359,6 +531,7 @@ async def run_probe(args):
         if not args.keep or args.volume != 'default': shutil.rmtree(output, ignore_errors=True)
     print(json.dumps({'completed': report['completed'], 'volume': args.volume, 'gateway': args.gateway, 'caseSensitive': caseSensitive,
                       'models': [{'model': r['model'], 'completed': r['completed'], 'passed': sum(c['passed'] for c in r.get('checks', [])),
+                                  'terminalPassed': sum(c['passed'] for c in r.get('terminal', {}).get('checks', [])),
                                   'errors': r.get('errors')} for r in results], 'receipt': str(receipt)}, ensure_ascii=False), flush=True)
     return 0 if report['completed'] else 1
 
@@ -373,6 +546,7 @@ if __name__ == '__main__':
     p.add_argument('--volume', choices=['default', 'case-sensitive'], default='case-sensitive')
     p.add_argument('--models', nargs='+', choices=['mapped-xattr', 'none'], default=['none', 'mapped-xattr'])
     p.add_argument('--gateway', choices=['python', 'swift'], default='python')
+    p.add_argument('--phases', nargs='+', choices=['contract', 'darwin', 'terminal'], default=['contract', 'darwin', 'terminal'])
     p.add_argument('--keep', action='store_true')
     args = parser.parse_args()
     sys.exit(prepare(args) if args.command == 'prepare' else asyncio.run(run_probe(args)))

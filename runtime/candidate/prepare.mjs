@@ -20,6 +20,8 @@ function replaceOnce(text, before, after, what) {
 
 // The official Worker plus the candidate hooks; each anchor must occur exactly once.
 export function patchWorker(worker, bridge) {
+  // The bridge's terminal output is the bundle's own stream PassThrough, as the official handle's is.
+  if (worker.split('const { Duplex, PassThrough, Readable,').length !== 2) throw new Error('Upstream anchor changed: stream PassThrough');
   // Restore the home and turn on native project routes before the tree boots and attaches sessions.
   worker = replaceOnce(worker, 'setActiveVfs(mounted);', 'await self.candidateRestore?.(mounted);\nsetActiveVfs(mounted);', 'restore');
   // Install once the tree is active, before the tunnel serves the page; a failure fails the start.
@@ -67,6 +69,21 @@ function files(directory, base = directory) {
     const path = join(directory, name);
     return statSync(path).isDirectory() ? files(path, base) : [relative(base, path)];
   });
+}
+
+// The terminal controller (dsh-api-terminal-controller, createLazyRequire) loads xterm lazily, which the
+// packer's sweep cannot see, so its entries name them beside the packer's own seeds. Those seeds
+// (IMAGE_ENTRY_SEEDS) are not exported; the build fails if the packer's copy no longer matches this one.
+const lazyModules = ['@xterm/headless', '@xterm/addon-serialize'];
+const imageSeeds = ['@deepseek-ai/dsh-app-boot', '@deepseek-ai/dsh-cmdline', '@deepseek-ai/cordis',
+  '@deepseek-ai/cordis-plugin-include', 'js-yaml'];
+const seedsLiteral = 'const IMAGE_ENTRY_SEEDS = [\n' + imageSeeds.map(name => `\t"${name}"`).join(',\n') + '\n];';
+
+function checkImageSeeds(packer) {
+  const lib = join(packer, 'lib');
+  const found = readdirSync(lib).filter(name => name.endsWith('.js'))
+    .some(name => readFileSync(join(lib, name), 'utf8').includes(seedsLiteral));
+  if (!found) throw new Error('Upstream anchor changed: packer IMAGE_ENTRY_SEEDS');
 }
 
 function main() {
@@ -117,9 +134,16 @@ function main() {
       'Function.prototype.toString.call(constructor) === Function.prototype.toString.call(name === "Array" ? Array : Object)', name));
     workspaces.set('@deepseek-ai/' + name, copy);
   }
+  checkImageSeeds(join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-packer'));
   const {packVfsImage} = createRequire(join(workerDependencies, 'package.json'))('@deepseek-ai/dsh-experimental-webworker-packer');
-  const packed = packVfsImage({config, profile: 'web', workspaces, resolveFrom: harness});
+  const packed = packVfsImage({config, profile: 'web', workspaces, resolveFrom: harness,
+    entries: [...imageSeeds, ...lazyModules]});
   if (packed.missing.length) throw new Error('packer reports missing packages: ' + packed.missing.join(', '));
+  for (const name of lazyModules) {
+    const manifest = packed.files[`node_modules/${name}/package.json`];
+    const entry = manifest && JSON.parse(new TextDecoder().decode(manifest)).main;
+    if (!entry || !packed.files[`node_modules/${name}/${entry}`]) throw new Error(`vfs image lacks ${name}`);
+  }
   writeFileSync(join(out, 'vfs-image.tar.gz'), packed.image);
 
   const runtime = join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib');
@@ -144,7 +168,7 @@ function main() {
     // Every change to the official code, listed (distribution-components.md section 3).
     adaptations: ['fixed-zod-CJS-export-selection', 'WebKit-intrinsic-constructor-comparison', 'WebKit-disposal-symbols',
       'worker-hook-restore', 'worker-hook-install', 'worker-hook-fs-promises-route', 'fs-promises-copyFile',
-      'candidate-frames-filter', 'index-importmap-and-connector', 'candidate-bridge'],
+      'candidate-frames-filter', 'vfs-image-lazy-xterm-entries', 'index-importmap-and-connector', 'candidate-bridge'],
     unresolvedExternalRequests: packed.unresolvedExternalRequests,
     files: Object.fromEntries(files(out).map(path => [path, sha256(readFileSync(join(out, path)))])),
   };

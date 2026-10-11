@@ -162,7 +162,7 @@ macOS 实测（2026-10-10，Homebrew QEMU，数据根指向忽略的 `build/cand
 
 - 新建启用插件的项目并打开，阶段由 PREPARING 进入 READY，guest 输出就绪标记。
 - 官方前端完整加载。工作区文件面板经原生网关列出并读取了项目文件。
-- 官方终端显示固定错误 `TERMINAL_UNSUPPORTED`，见下文缺口。
+- 官方终端显示固定错误 `TERMINAL_UNSUPPORTED`（当时终端尚未接入，见下文交互式终端）。
 - 正常退出后不残留 QEMU，重开后没有遗留诊断。
 
 iPad 实测（2026-10-10，签名安装到用户的 iPad；设备验收部分完成，模型与 shell 端到端见下文缺口）：
@@ -181,9 +181,21 @@ iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No
 - 项目内的 hook（官方 `runHook` 带 stdin 调用 shell 的 `execute`）作为独立的 Linux 任务运行，触发方式 `hook`。在 hook 的 `workdir` 中运行；环境变量先导出，环境变量和 JSON payload 中的项目路径换成 guest 的 `/workspace`，payload 经 `printf` 回放到命令的 stdin。整条请求超过 128 KiB 时，宿主在发出前拒绝（`BODY_TOO_LARGE`），写租约随即释放，hook 按阻止处理。没有跑完的 hook 一律按阻止处理：退出码 2，stderr 为 `DSH_HOOK_NOT_RUN <原因>`，原因包括 `REFUSED` 的具体原因（如 `WRITER_UNKNOWN`）、`HOOK_TIMEOUT`、`HOOK_CANCELLED` 和 `CANCELLED_BEFORE_DISPATCH`。官方网页版目前不加载 hook 插件，所以这条路径只由桥接测试（使用官方 `runHook`）覆盖，真机上没有调用方。
 - 项目内的 `watch` 每 2 秒经网关比对原生存储：文件比对类型、版本和大小，目录比对直接子项。每条 Linux 命令或 hook 结束后立即再比对一次。有变化就通知订阅方；比对进行中又有命令结束时，再比对一轮。读取失败也算一次变化，只通知一次、不带错误，订阅方重读时会看到错误。取消订阅后不再轮询。
 
+**交互式终端：**
+
+- 项目内的官方终端在 guest 的 pty 上运行 `/bin/bash -i`，输出由桥接长轮询读回（每次最多等 20 s），交给官方终端控制器。宿主只接受 `/bin/bash -i`，因为只有它能报告空闲提示符，而释放租约靠的就是这个；环境变量只接受 `DSH_` 开头的名字，同时最多 16 个终端。
+- 终端有自己的挂载命名空间，工作区默认只读。空闲时不占写租约，模型和文件面板照常工作。
+- 输入里含运行键（Enter、Ctrl-J、Ctrl-O、Ctrl-X）时，先取写租约，再把这个终端的视图改成可写。租约被占用时，桥接每 250 ms 重试，最长 70 s，之后返回 `LEASE_BUSY`；写者未知时返回 `WRITER_UNKNOWN`。
+- 命令运行期间，其他 Linux 命令（模型的 shell 命令、hook）并入终端的租约（同一 fence），不另取租约；原生写入照常存为草稿。
+- shell 回到空闲提示符、并入的命令都已结束后，guest 把视图改回只读，宿主释放租约。在读输出时释放的，随即比对一次项目文件监听；其他情况由 2 秒一次的比对发现。仍有文件以写方式打开时改回只读会失败，租约保留到下一次空闲。
+- 空闲要等 bash 打印新的提示符才算。停在续行提示符（PS2）、按了 Ctrl-X 组合键但没有运行，或者 `~/.bashrc` 设了 `trap`（这时活动状态始终为 `unknown`），都不算空闲，租约保留到下一个提示符或关闭终端。
+- 关闭终端时先向 shell 发 SIGHUP，再结束终端 cgroup 中剩下的进程，然后释放租约。shell 没有退出时不释放，关闭失败（`TERMINAL_BUSY`），可以再关。
+- 终端的写者未知时（如写入的应答丢失），按"Release writer…"会结束这个终端。新 Worker 安装时（如刷新页面）宿主关闭上一个 Worker 留下的终端；VM 退出时全部终端作废。
+
 **候选 App 已知缺口：**
 
-- 交互式终端：需要 PTY 流，而 guest 协议只返回执行完的命令结果。
+- 常驻 bash（`dsh-terminal-bash`，只在非默认的 minimal 预设中启用）：它的 argv 由 Worker 的沙箱启动器生成，guest 拒绝（`ARGV_REFUSED`），不能用。默认预设的 bash 工具走 `bash -c`，不受影响。
+- 交互式终端只在 Mac 上的 QEMU guest 中逐项验证（pty、运行键取租约、并入、空闲释放、关闭），iPad 上的官方终端面板端到端未验。macOS 候选 App 中 Linux 不可用（私有符号缺失），只能在 iPad 上验。
 - 官方 Worker 发起的 Git 写操作：官方网页版没有这样的调用方。Worker 自己调用的 git（变更审阅）解析到原生只读 Git，超出子集以退出码 128 拒绝；会修改仓库的 git 命令在 shell 工具里运行，走 Linux。
 - 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证（macOS 和 iPad 都未验）。
 - App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。

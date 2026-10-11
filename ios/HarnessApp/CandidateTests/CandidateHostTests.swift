@@ -15,6 +15,9 @@ final class CandidateHostTests: XCTestCase {
         /// What the mount check reads; nil reads the real sentinel through the share.
         var mountCheckAnswer: String?
         var exitOnStop = true
+        /// Open guest terminals and the fence a run line leased to one of them.
+        var terminals = Set<String>()
+        var terminalFence: Int?
         var onExit: ((Int32?) -> Void)?
         private var ended = false
 
@@ -48,8 +51,29 @@ final class CandidateHostTests: XCTestCase {
                     let text = mountCheckAnswer ?? ((try? String(contentsOfFile: share + "/.dsh-mount-check", encoding: .utf8)) ?? "")
                     return ["code": 0, "stdout": text, "stderr": "", "writerQuiescent": true]
                 }
-                return ["code": 0, "stdout": "ran " + (argv.last ?? ""), "stderr": "", "writerQuiescent": !(argv.last ?? "").hasPrefix("detach")]
+                return ["code": 0, "stdout": "ran " + (argv.last ?? ""), "stderr": "", "writerQuiescent": !(argv.last ?? "").hasPrefix("detach"),
+                        "joined": request["join"] != nil]
             case "/revoke": return ["revoked": true]
+            case "/terminal/open":
+                let request = body ?? [:]
+                guard request["projectId"] as? String == identity, request["cwd"] as? String == "/workspace/src" else { throw GuestRPCError.refused("CWD_REFUSED") }
+                terminals.insert(request["id"] as? String ?? "")
+                return ["pid": 42]
+            case "/terminal/write":
+                guard terminals.contains(body?["id"] as? String ?? "") else { throw GuestRPCError.refused("TERMINAL_NOT_FOUND") }
+                if let lease = body?["lease"] as? [String: Any] { terminalFence = lease["fence"] as? Int }
+                return ["written": 1, "leased": terminalFence != nil]
+            case "/terminal/read":
+                guard terminals.contains(body?["id"] as? String ?? "") else { throw GuestRPCError.refused("TERMINAL_NOT_FOUND") }
+                return ["data": Data("$ ".utf8).base64EncodedString(), "next": 2, "dropped": 0, "exited": NSNull(),
+                        "activity": ["state": "idle", "revision": 3], "leased": terminalFence != nil, "releasable": terminalFence != nil]
+            case "/terminal/unlease":
+                terminalFence = nil
+                return ["writerQuiescent": true]
+            case "/terminal/close":
+                let fence = terminalFence
+                terminals.remove(body?["id"] as? String ?? ""); terminalFence = nil
+                return ["closed": true, "releasedFence": fence as Any? ?? NSNull()]
             default: return [:]
             }
         }
@@ -182,11 +206,56 @@ final class CandidateHostTests: XCTestCase {
         XCTAssertEqual(items["hook.command"]?["reason"] as? String, "NO_OFFICIAL_CALLER")
         XCTAssertEqual(items["git.write"]?["reason"] as? String, "SHELL_ONLY")
         XCTAssertEqual(items["subprocess"]?["reason"] as? String, "BASH_C_ONLY")
-        XCTAssertEqual(items["terminal"]?["path"] as? String, "unsupported")
-        XCTAssertEqual(items["terminal"]?["reason"] as? String, "TERMINAL_UNSUPPORTED")
+        XCTAssertEqual(items["terminal"]?["path"] as? String, "linux")
+        XCTAssertEqual(items["terminal"]?["available"] as? Bool, true)
+        XCTAssertEqual(items["terminal"]?["reason"] as? String, "WRITE_LEASE_WHILE_BUSY")
         let workspace = try XCTUnwrap(machine.share)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: workspace + "/.plan500-identity")[.posixPermissions] as? Int, 0o644)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: workspace).filter { $0.hasPrefix(".dsh-tmp-") }, [])
+    }
+
+    func terminal(_ host: CandidateHost, _ operation: String, _ id: String = "t-1", _ fields: [String: Any] = [:]) -> [String: Any] {
+        host.handle(fields.merging(["operation": "terminal-" + operation, "terminalId": id]) { $1 })
+    }
+
+    func testATerminalLeasesOnlyWhileALineRunsAndClosesForGood() throws {
+        let host = try host()
+        let project = id(open(host, "p", plugin: true))
+        XCTAssertEqual(execute(host, "op-0", cwd: "/dsh/workspace/p")["status"] as? String, "COMPLETED")
+        let opened = terminal(host, "open", "t-1", ["cwd": "/dsh/workspace/p/src", "argv": ["/bin/bash", "-i"], "cols": 80, "rows": 24,
+                                                    "env": ["DSH_SESSION_ID": "s"], "terminalType": "xterm-256color"])
+        XCTAssertEqual(opened["pid"] as? Int, 42)
+        XCTAssertEqual(terminal(host, "write", "t-1", ["data": Data("ls".utf8).base64EncodedString()])["leased"] as? Bool, false)
+        XCTAssertNil(machine.terminalFence, "typing at the prompt takes no lease")
+        let ran = terminal(host, "write", "t-1", ["data": Data("\r".utf8).base64EncodedString()])
+        XCTAssertEqual(ran["status"] as? String, "WRITTEN")
+        XCTAssertEqual(ran["leased"] as? Bool, true)
+        XCTAssertEqual(execute(host, "op-1", cwd: "/dsh/workspace/p", "make")["status"] as? String, "COMPLETED", "a model command joins the running line")
+        XCTAssertEqual(machine.executed.last?["join"] as? String, "t-1")
+        let read = terminal(host, "read", "t-1", ["offset": 0, "waitMs": 99_000])
+        XCTAssertEqual(read["data"] as? String, Data("$ ".utf8).base64EncodedString())
+        XCTAssertEqual((read["activity"] as? [String: Any])?["revision"] as? Int, 3)
+        XCTAssertEqual(read["released"] as? Bool, true, "the idle prompt ends the lease")
+        XCTAssertEqual(read["leased"] as? Bool, false)
+        XCTAssertEqual(terminal(host, "close")["closed"] as? Bool, true)
+        XCTAssertEqual(terminal(host, "read", "t-1", ["offset": 2])["error"] as? String, "TERMINAL_NOT_FOUND")
+    }
+
+    func testATerminalOpensOnlyInAProjectAndANewWorkerClosesTheOldOnes() throws {
+        let host = try host()
+        _ = open(host, "p", plugin: true)
+        let spec: [String: Any] = ["cwd": "/dsh/workspace/p/src", "argv": ["/bin/bash", "-i"], "cols": 80, "rows": 24]
+        XCTAssertEqual(terminal(host, "open", "t-1", spec.merging(["cwd": "/dsh/home"]) { $1 })["error"] as? String, "CWD_REFUSED")
+        XCTAssertEqual(terminal(host, "open", "../t", spec)["error"] as? String, "TERMINAL_REFUSED")
+        XCTAssertEqual(terminal(host, "open", "t-1", spec.merging(["cwd": "/dsh/workspace/p"]) { $1 })["error"] as? String, "CWD_REFUSED",
+                       "a guest refusal comes back with its code and forgets the terminal")
+        XCTAssertNotNil(terminal(host, "open", "t-1", spec)["pid"])
+        XCTAssertEqual(terminal(host, "open", "t-1", spec)["error"] as? String, "DUPLICATE_TERMINAL")
+        XCTAssertNotNil(terminal(host, "open", "t-2", spec)["pid"])
+        let reset = host.handle(["operation": "terminals-reset"])
+        XCTAssertEqual(reset["closed"] as? Int, 2)
+        XCTAssertEqual(reset["remaining"] as? [String], [])
+        XCTAssertEqual(machine.terminals, [])
     }
 
     func testOnlyTheFirstPluginProjectBindsLinux() throws {

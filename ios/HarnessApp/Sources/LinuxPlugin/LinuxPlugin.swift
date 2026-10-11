@@ -47,11 +47,14 @@ public final class LinuxPlugin: @unchecked Sendable {
         case hook(String)
         /// A repository-changing Git operation and the hooks it runs (#39 gate 5). Git reads stay native.
         case git(String)
+        /// An interactive terminal session: a pty in the guest that holds the write lease only while a
+        /// command runs in it.
+        case terminal(String)
 
         public var path: ExecutionPath {
             switch self {
             case .native: return .native
-            case .shell, .hook, .git: return .linux
+            case .shell, .hook, .git, .terminal: return .linux
             }
         }
     }

@@ -61,12 +61,13 @@
    - 补上 Worker 没有的 `fs/promises.copyFile`，供快照插件复制 VFS 字节。
    - 在 Worker 开头过滤候选消息帧，避免官方隧道因未知帧失败。
    - 补齐 WebKit 缺少的 `Symbol.dispose` 和 `Symbol.asyncDispose`（同第 3 条）。
-6. **官方页面**（`prepare.mjs`）：在官方 `index.html` 中加 importmap 和 `connector.js`，让传输层先于入口建立。
-7. **候选桥接**（`candidate-bridge.js`、`connector.js`）：
+6. **VFS 镜像入口**（`prepare.mjs`）：官方终端控制器经 `createLazyRequire` 加载 `@xterm/headless`、`@xterm/addon-serialize`，打包器的清扫看不到。所以打包入口在打包器自己的种子之外加上这两个包，镜像随之带上 `@xterm/headless` 6.0.0 和 `@xterm/addon-serialize` 0.14.0。打包器的种子未导出，构建时核对其副本与 `prepare.mjs` 里的一致，并核对两个包的主文件在镜像内。
+7. **官方页面**（`prepare.mjs`）：在官方 `index.html` 中加 importmap 和 `connector.js`，让传输层先于入口建立。
+8. **候选桥接**（`candidate-bridge.js`、`connector.js`）：
    - 项目内的文件、搜索、只读 Git、图片编解码和模型请求走原生网关。
    - 项目内的 shell 命令走 Linux。官方 bash 工具在项目内跳过 Worker 的虚拟沙箱启动器，因为 VM 本身就是隔离；结果里的 `sandbox.denied` 固定为 `false`。
    - 命令在 guest 中以 `/bin/sh -c` 运行，不是 bash。
-   - 交互式终端返回 `TERMINAL_UNSUPPORTED`。
+   - 项目内的交互式终端在 guest 的 pty 上运行 `/bin/bash -i`，输出经长轮询读回，交给官方终端控制器。只接受 `/bin/bash -i`。
 
 网页收据 `candidate-receipt.json` 的 `adaptations` 字段逐项列出上述改动。
 

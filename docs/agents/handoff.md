@@ -11,6 +11,8 @@
 
 ## 当前状态
 
+架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。代码提交 `b64e6be` 已完成验证：Swift 全量测试与 `make check` 通过、无警告（网关 35、候选宿主 16 项）；`make test-candidate` 桥接 15、构建闸门 15 项通过、无跳过。macOS/iPad 候选 App 未签名构建成功，脱敏收据在本项 worktree 的忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`。规范审查无发现；规格审查三项（旧终端登记竞争、拒绝后的存储错误被吞、Gateway 兼容入口归属绕过）均修复并复核通过。图工具不可用，审查为有界源码核查。未安装、未上真机。用户已授权推送及创建草稿，分支已推送并创建 [PR #56](https://github.com/lvivvde/deepseek-harness-ipad/pull/56)，base 为 main；已同步包含 PR #54 的 main（`021959c`），冲突仅交接文档且已保留双方记录；组合后的 `make test-app`、`make check` 与 `make test-candidate` 全通过（网关 35、候选宿主 20、恢复合同 9、桥接 20、构建闸门 15 项），无跳过。macOS/iPad 未签名构建复验通过，脱敏收据在 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`；两轴组合审查无新发现。用户已具体授权将 PR #56 转为待合并并用 merge commit 合入 main；当前合并状态以 PR 页面为准。下一步为本项真机验收，未安装或上真机。
+
 架构基线为 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)（2026-10-06 用户确认，accepted）：官方 Worker 在 WKWebView 中运行，Swift 网关与原生工作区为唯一权威；Linux 是项目级兼容插件，启用后异步预热；9P 共享模式 `none`；耐久写租约与草稿；隔离语义为事后检测并转为冲突；工具按能力声明走 `native` / `linux` / `unsupported`。[ADR 0001](../adr/0001-local-linux-emulation.md) 中“Harness 在 Linux 内运行”的部分被取代。
 
 正式实现 #17 的 [#39 六项前置关口](https://github.com/lvivvde/deepseek-harness-ipad/issues/39)已全部完成，#39 于 2026-10-09 关闭，#17 解除阻塞。各关口的脱敏证据在 #39 评论中：
@@ -90,9 +92,7 @@
   - 已验证（macOS）：真实 QEMU guest 的 `run.py` 探针（含终端 18 项）通过；`make test-app`（网关 25、候选宿主 15）、`make check`、`make test-candidate`（桥接 15、构建 15）、`make test-plan500-ipad` 通过。
   - 已验证（真机，2026-10-11，签名 r7）：iPad 上终端打开，用户运行两次命令，项目日志各有一次终端租约授予并以 `COMPLETED` 释放，工作区出现 `f`。`echo hi > f` 本身无输出，所以界面上只是换出新提示符。macOS 候选 App 上同样验证并在文件面板看到 `f`。
 
-**下一步：**
-
-2026-10-11 架构扫描选定会话检查点与恢复，用户已确认设计并在 [PR54](https://github.com/lvivvde/deepseek-harness-ipad/pull/54) 实现，已于 2026-10-11 合并。详见 [会话恢复](../design/session-recovery.md)。Worker 与 Swift 共同收拢恢复、采集前项目基线、home 完整验证及耐久确认；保留当前/上一份和初始化身份，损坏隔离后可回退，无可用副本则阻止恢复。新建须明确确认并保留诊断与旧字节；失败持续显示未保存，自动和手动重试。项目提示读取正常打开后的状态，不清理调用账本，不预热其他项目，不回滚工作区或释放未知租约。
+2026-10-11 架构扫描选定会话检查点与恢复，用户已确认设计并在 [PR54](https://github.com/lvivvde/deepseek-harness-ipad/pull/54) 的 `codex/session-recovery` 实现（终端 PR53 与会话恢复 PR54 均已合入 main）。详见 [会话恢复](../design/session-recovery.md)。Worker 与 Swift 共同收拢恢复、采集前项目基线、home 完整验证及耐久确认；保留当前/上一份和初始化身份，损坏隔离后可回退，无可用副本则阻止恢复。新建须明确确认并保留诊断与旧字节；失败持续显示未保存，自动和手动重试。项目提示读取正常打开后的状态，不清理调用账本，不预热其他项目，不回滚工作区或释放未知租约。
 
 - 审查：规范轴无发现；规格轴的首次保存被空标记忽略、新建后诊断丢失两项已修复并复核。另补上无新事件时手动保存失败仍自动重试，并由真实 VFS 往返核对目录时间在恢复后保持。
 - 验证（macOS）：真实 Worker VFS/官方 JSONL flush→Swift handler→新 Worker 往返；恢复合同 9 项，包含已有副本 15 种及首次/新建 30 种 SIGKILL 组合；桥接 20 项无跳过；构建闸门 15 项。工作区 27、宿主 44、候选 28 项回归通过；审查修正后候选宿主 19 项复测通过；`make check` 通过。
@@ -103,7 +103,7 @@
   - 推入校验和损坏的当前副本：回退到上一份，会话一致，诊断 `CHECKPOINT_FALLBACK`，损坏副本进入隔离区。
   - 两份都损坏：没有新保存、不自动新建，两份进入隔离区；用户确认界面显示橙色 `Recovery blocked` 和 `Start a new session…`（未点）。推回完好副本后重开恢复，会话一致（23→25）。
   - 设备上的候选 App 因此保留 `CHECKPOINT_FALLBACK` 提示（按设计持续显示，直到明确新建）和 3 个隔离文件。Worker 日志里启动早期的 `checkpoint-failed SESSION_NOT_READY` 是会话就绪前的保存请求，无害，未改。
-- 未验：断电/系统崩溃；有新模型回合的会话（需 Key）。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期、原生工具适配另外两项留待探索。
+- 未验：断电/系统崩溃；有新模型回合的会话（需 Key）。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期在 PR #56 实现，原生工具适配留待探索。
 
 2026-10-11 #17 测量与迁移演练（分支 `feat/issue17-measure-migrate`，r10–r13 真机，结果见 [iPad 候选 App 的 #17 测量与迁移演练](../validation/ipad-candidate-measurements.md)）：
 
@@ -118,8 +118,11 @@
 - 工具约束：`devicectl device info files --recurse` 会漏掉某个目录的内容（这次漏了 `demo/ro/inside.txt`，文件本身在设备上）。私有 `device-private.py pull` 已改为逐个目录列出（旧版为 `device-private.py.bak-*`），见 [真机自动化](../validation/ipad-device-automation.md)“读取 App 容器”。
 - 模型回合与 shell 工具端到端已在 Gate1 通过（`e2e-auto-private.py`，证据 `device/e2e-check-163231`）。顺带发现的工作区根目录权限问题已修正；r12 时导入的 `migrated-demo` 按代码推断仍不可用 Linux（未复查），用 Gate1 或新导入的项目。
 
-1. 真实备份导入演练（设备上的 r13 已含工作区权限修正）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
-2. 本分支（含 #14 清单提交）的 [PR55](https://github.com/lvivvde/deepseek-harness-ipad/pull/55) 合并需用户另行同意。可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
+**下一步：**
+
+1. PR #53、#54、#56 已合并；本分支（含 #14 清单提交）的 [PR55](https://github.com/lvivvde/deepseek-harness-ipad/pull/55) 已同步 main，用户已同意以 merge commit 合入 main。Linux 执行生命周期（PR #56）的真机验收待安排。
+2. 真实备份导入演练（设备上的 r13 已含工作区权限修正）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
+3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 

@@ -98,9 +98,14 @@
 - 验证（macOS）：真实 Worker VFS/官方 JSONL flush→Swift handler→新 Worker 往返；恢复合同 9 项，包含已有副本 15 种及首次/新建 30 种 SIGKILL 组合；桥接 20 项无跳过；构建闸门 15 项。工作区 27、宿主 44、候选 28 项回归通过；审查修正后候选宿主 19 项复测通过；`make check` 通过。
 - 已有 QEMU 进程测试在与 App 编译同时运行的一次回归中读取到未完整写入的参数文件，单独及随后完整回归通过；测试自身的读文件时序窗口仍在。本次没有改它。
 - 未签名 macOS 与 iPad App 均已构建；最终收据在 `build/candidate/{app,ipad}/build-safe.json`。Xcode 保留已有 Gate1 `Phase` Sendable、传统 headermap 与 AppIntents 元数据提示，不登记为无警告。
-- 未验：这一版 iPad 真机重开、前后台、强制结束与 UI；macOS SIGKILL 不等于断电或真机验收。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期、原生工具适配另外两项留待探索。
+- 已验证（真机，2026-10-11，签名 r9）：无需用户操作的自动脚本（忽略的 `build/candidate/device/recovery-auto-private.py`）经启动环境变量 `HARNESS_CANDIDATE_OPEN=Gate1` 打开项目，只比对检查点内的会话文件：
+  - 覆盖安装后恢复（序号 14→16）、切到“文件”App 后台立即保存（16→18）、强制结束后重开恢复（20→22），会话文件均逐字节一致，无诊断。
+  - 推入校验和损坏的当前副本：回退到上一份，会话一致，诊断 `CHECKPOINT_FALLBACK`，损坏副本进入隔离区。
+  - 两份都损坏：没有新保存、不自动新建，两份进入隔离区；用户确认界面显示橙色 `Recovery blocked` 和 `Start a new session…`（未点）。推回完好副本后重开恢复，会话一致（23→25）。
+  - 设备上的候选 App 因此保留 `CHECKPOINT_FALLBACK` 提示（按设计持续显示，直到明确新建）和 3 个隔离文件。Worker 日志里启动早期的 `checkpoint-failed SESSION_NOT_READY` 是会话就绪前的保存请求，无害，未改。
+- 未验：断电/系统崩溃；有新模型回合的会话（需 Key）。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期、原生工具适配另外两项留待探索。
 
-1. 会话恢复（PR #54）iPad 真机验证；合并需用户另行同意。
+1. 会话恢复（PR #54）已完成 iPad 真机验证，合并需用户另行同意。
 2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。

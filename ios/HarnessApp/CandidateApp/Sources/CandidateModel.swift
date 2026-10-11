@@ -106,6 +106,13 @@ final class CandidateModel: ObservableObject {
         if let host, let phase = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_GATE1"].flatMap(Gate1Probe.Phase.init) {
             Thread.detachNewThread { Gate1Probe.run(phase, host: host) }
         }
+        // A device acceptance launch may open one project by name, so the Worker restores the session without a tap.
+        if let name = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_OPEN"] {
+            call(["operation": "status"]) { [weak self] reply in
+                let rows = (reply["projects"] as? [[String: Any]] ?? []).compactMap(ProjectRow.init)
+                if let row = rows.first(where: { $0.name == name }) { self?.open(row.id) }
+            }
+        }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }

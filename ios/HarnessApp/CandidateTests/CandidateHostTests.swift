@@ -220,7 +220,7 @@ final class CandidateHostTests: XCTestCase {
 
     func testATerminalLeasesOnlyWhileALineRunsAndClosesForGood() throws {
         let host = try host()
-        let project = id(open(host, "p", plugin: true))
+        _ = open(host, "p", plugin: true)
         XCTAssertEqual(execute(host, "op-0", cwd: "/dsh/workspace/p")["status"] as? String, "COMPLETED")
         let opened = terminal(host, "open", "t-1", ["cwd": "/dsh/workspace/p/src", "argv": ["/bin/bash", "-i"], "cols": 80, "rows": 24,
                                                     "env": ["DSH_SESSION_ID": "s"], "terminalType": "xterm-256color"])
@@ -306,6 +306,10 @@ final class CandidateHostTests: XCTestCase {
         _ = open(host, "p", plugin: true)
         XCTAssertEqual(host.handle(["operation": "cancel", "operationId": "op-1"])["status"] as? String, "CANCELLED_BEFORE_DISPATCH")
         XCTAssertEqual(execute(host, "op-1", cwd: "/dsh/workspace/p")["status"] as? String, "CANCELLED_BEFORE_DISPATCH")
+        let duplicate = execute(host, "op-1", cwd: "/dsh/workspace/p")
+        XCTAssertEqual(duplicate["status"] as? String, "REFUSED")
+        XCTAssertEqual(duplicate["reason"] as? String, "DUPLICATE_OPERATION")
+        XCTAssertEqual(host.handle(["operation": "cancel", "operationId": "op-1"])["status"] as? String, "FINISHED")
         XCTAssertFalse(machine.executed.contains { $0["id"] as? String == "op-1" })
     }
 

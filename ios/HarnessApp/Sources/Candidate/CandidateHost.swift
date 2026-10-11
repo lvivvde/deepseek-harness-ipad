@@ -23,18 +23,13 @@ public final class CandidateHost: @unchecked Sendable {
     private let readyTimeout: TimeInterval
     private let pollInterval: TimeInterval
     private(set) var plugin: LinuxPlugin!
+    private var execution: LinuxExecution!
 
     private struct Open { let project: CandidateProject; let gateway: ProjectGateway; let tools: ProjectTools }
-    /// Guards `open`, `operations`, `pendingCancels`, `terminals`, `stopping` and `diagnostic`. Never held while a
+    /// Guards `open`, `stopping` and `diagnostic`. Never held while a
     /// gateway, the plugin or the guest is called.
     private let lock = NSLock()
     private var open: [String: Open] = [:]
-    /// Operation id → project id, for cancellation.
-    private var operations: [String: String] = [:]
-    /// Cancellations that arrived before their command.
-    private var pendingCancels = Set<String>()
-    /// Terminal id → project id; the guest knows the terminal by the same id.
-    private var terminals: [String: String] = [:]
     /// The launcher stopped the VM itself; its exit must not replace the preparation failure's cause.
     private var stopping = false
     private var diagnostic: LinuxPlugin.Diagnostic?
@@ -50,6 +45,7 @@ public final class CandidateHost: @unchecked Sendable {
             guard let self else { throw LinuxPlugin.LaunchFailure("HOST_CLOSED") }
             try launch($0)
         }, diagnostics: { [weak self] in self?.save($0) })
+        execution = LinuxExecution(plugin: plugin, rpc: machine.rpc)
         machine.onExit = { [weak self] in self?.vmExited($0) }
     }
 
@@ -118,7 +114,7 @@ public final class CandidateHost: @unchecked Sendable {
     private func openProject(_ project: CandidateProject) throws -> CandidateProject {
         if opened(project.id) == nil {
             let store = try WorkspaceStore(workspace: registry.workspace(project), state: registry.state(project))
-            let gateway = ProjectGateway(project: project.id, store: store, plugin: plugin, rpc: machine.rpc)
+            let gateway = ProjectGateway(project: project.id, store: store, plugin: plugin, rpc: machine.rpc, execution: execution)
             let tools = try ProjectTools(gateway: gateway, workspace: registry.workspace(project), mount: project.mount,
                                          scratch: registry.scratch, gitScripts: gitScripts)
             lock.lock()
@@ -232,10 +228,7 @@ public final class CandidateHost: @unchecked Sendable {
         default: throw CandidateError("COMMAND_REFUSED")
         }
         lock.lock()
-        if pendingCancels.remove(id) != nil { lock.unlock(); return ["status": "CANCELLED_BEFORE_DISPATCH"] }
         guard let (target, guestCwd) = locate(cwd) else { lock.unlock(); return ["status": "REFUSED", "reason": "CWD_REFUSED"] }
-        guard operations[id] == nil else { lock.unlock(); return ["status": "REFUSED", "reason": "DUPLICATE_OPERATION"] }
-        operations[id] = target.project.id
         lock.unlock()
         switch target.gateway.execute(id, task: task, argv: ["/bin/sh", "-c", command], timeoutMs: timeout, cwd: guestCwd) {
         case .completed(let result, _), .joined(let result): return Self.result(result).merging(["status": "COMPLETED"]) { $1 }
@@ -256,18 +249,12 @@ public final class CandidateHost: @unchecked Sendable {
               let cols = body["cols"] as? Int, let rows = body["rows"] as? Int else { throw CandidateError("TERMINAL_REFUSED") }
         lock.lock()
         guard let (target, guestCwd) = locate(cwd) else { lock.unlock(); throw CandidateError("CWD_REFUSED") }
-        guard terminals[id] == nil else { lock.unlock(); throw CandidateError("DUPLICATE_TERMINAL") }
-        terminals[id] = target.project.id
         lock.unlock()
         do {
             return ["pid": try target.gateway.openTerminal(id, argv: argv, cwd: guestCwd, cols: cols, rows: rows,
                                                            env: body["env"] as? [String: String] ?? [:],
                                                            terminalType: body["terminalType"] as? String)]
         } catch let error as TerminalError {
-            // A start the guest may have half made stays tracked until a close confirms it is gone.
-            if error.code != "GUEST_UNREACHABLE" || Self.closed(id, target.gateway) {
-                lock.lock(); terminals[id] = nil; lock.unlock()
-            }
             throw CandidateError(error.code)
         }
     }
@@ -277,7 +264,7 @@ public final class CandidateHost: @unchecked Sendable {
         guard let text = body["data"] as? String, let data = Data(base64Encoded: text), data.count <= 48 * 1024 else {
             throw CandidateError("WRITE_REFUSED")
         }
-        switch gateway.writeTerminal(id, data) {
+        switch try terminalCall({ try gateway.writeTerminal(id, data) }) {
         case .written(let leased): return ["status": "WRITTEN", "leased": leased]
         case .refused(let code): return ["status": "REFUSED", "reason": code]
         case .writerUnknown: return ["status": "WRITER_UNKNOWN"]
@@ -298,30 +285,20 @@ public final class CandidateHost: @unchecked Sendable {
     private func terminalClose(_ body: [String: Any]) throws -> [String: Any] {
         let (id, gateway) = try terminal(body)
         let release = try terminalCall { try gateway.closeTerminal(id, graceMs: min(max(body["graceMs"] as? Int ?? 1000, 0), 5000)) }
-        lock.lock(); terminals[id] = nil; lock.unlock()
         return ["closed": true, "released": release != nil]
     }
 
     /// A new Worker closes the terminals an earlier one left open; `remaining` could not be closed yet.
     private func terminalsReset() -> [String: Any] {
-        lock.lock(); let left = terminals.compactMap { id, project in open[project].map { (id, $0.gateway) } }; lock.unlock()
-        var remaining: [String] = []
-        for (id, gateway) in left {
-            if Self.closed(id, gateway) { lock.lock(); terminals[id] = nil; lock.unlock() } else { remaining.append(id) }
-        }
-        return ["closed": left.count - remaining.count, "remaining": remaining.sorted()]
+        let reset = execution.resetTerminals()
+        return ["closed": reset.closed, "remaining": reset.remaining]
     }
 
-    private static func closed(_ id: String, _ gateway: ProjectGateway) -> Bool {
-        do { try gateway.closeTerminal(id, graceMs: 0); return true } catch { return false }
-    }
-
-    private func terminal(_ body: [String: Any]) throws -> (String, ProjectGateway) {
-        lock.lock(); defer { lock.unlock() }
-        guard let id = body["terminalId"] as? String, let project = terminals[id], let gateway = open[project]?.gateway else {
+    private func terminal(_ body: [String: Any]) throws -> (String, LinuxExecution) {
+        guard let id = body["terminalId"] as? String, execution.hasTerminal(id) else {
             throw CandidateError("TERMINAL_NOT_FOUND")
         }
-        return (id, gateway)
+        return (id, execution)
     }
 
     private func terminalCall<T>(_ work: () throws -> T) throws -> T {
@@ -348,12 +325,7 @@ public final class CandidateHost: @unchecked Sendable {
     }
 
     private func cancel(_ id: String) -> String {
-        lock.lock()
-        guard let project = operations[id], let gateway = open[project]?.gateway else {
-            pendingCancels.insert(id); lock.unlock(); return "CANCELLED_BEFORE_DISPATCH"
-        }
-        lock.unlock()
-        switch gateway.cancel(id) {
+        switch execution.cancel(id) {
         case .cancelledBeforeDispatch: return "CANCELLED_BEFORE_DISPATCH"
         case .requested: return "CANCEL_REQUESTED"
         case .writerUnknown: return "WRITER_UNKNOWN"
@@ -401,14 +373,9 @@ public final class CandidateHost: @unchecked Sendable {
     }
 
     private func vmExited(_ status: Int32?) {
-        let bound = plugin.boundProject
-        lock.lock()
-        let ignore = stopping
-        let gateway = bound.flatMap { open[$0]?.gateway }
-        lock.unlock()
+        lock.lock(); let ignore = stopping; lock.unlock()
         guard !ignore else { return }
-        lock.lock(); terminals.removeAll(); lock.unlock()
-        if let gateway { gateway.guestExited(status: status) } else { plugin.vmExited(status: status) }
+        execution.guestExited(status: status)
     }
 
     /// Saved before the failure is published, so the record survives the App being closed at once.

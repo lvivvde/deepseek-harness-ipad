@@ -7,6 +7,7 @@
 - `ios/HarnessApp/Sources/LinuxPlugin/`：每个项目的阶段、准入和能力声明，不依赖其他模块。
 - `ios/HarnessApp/Sources/Host/`（模块 `HarnessHost`）：
   - `ProjectGateway` 是一个项目的唯一权威，原生读写和 Linux 命令都经过它。
+  - `LinuxExecution` 是本进程 Linux 执行的 module：集中操作 ID、取消、终端归属及写租约结算；同一项目的执行与原生读写共用 storeLock。见 [生命周期收拢](linux-execution-lifecycle.md)。
   - `LinuxBringUp` 是插件的启动器。
   - `ReadyProof` 校验 guest 的就绪证明。
   - `GuestRPC` 是与 guest agent 通信的接口。
@@ -59,7 +60,7 @@
 - **派发后取消**：只重试幂等的 `/cancel`，从不重发 `/execute`。
   - guest 确认取消后，任务按自己的结果结束：guest 杀掉 cgroup，回报 `writerQuiescent` 后释放租约。
   - 在取消窗口内（默认 35 秒）没能确认时，写者状态为**未知**。
-- 每个操作 id 在一个网关里最多执行一次，取消之后也一样。重复提交返回 `DUPLICATE_OPERATION`。
+- 每个操作 id 在本进程的执行 module 里最多执行一次，取消之后也一样。重复提交返回 `DUPLICATE_OPERATION`。
 
 ## 写者未知
 

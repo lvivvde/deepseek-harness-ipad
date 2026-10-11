@@ -11,6 +11,8 @@
 
 ## 当前状态
 
+架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。当前正运行完整检查、构建与两轴审查；未上真机，未推送或创建本项 PR。
+
 架构基线为 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)（2026-10-06 用户确认，accepted）：官方 Worker 在 WKWebView 中运行，Swift 网关与原生工作区为唯一权威；Linux 是项目级兼容插件，启用后异步预热；9P 共享模式 `none`；耐久写租约与草稿；隔离语义为事后检测并转为冲突；工具按能力声明走 `native` / `linux` / `unsupported`。[ADR 0001](../adr/0001-local-linux-emulation.md) 中“Harness 在 Linux 内运行”的部分被取代。
 
 正式实现 #17 的 [#39 六项前置关口](https://github.com/lvivvde/deepseek-harness-ipad/issues/39)已全部完成，#39 于 2026-10-09 关闭，#17 解除阻塞。各关口的脱敏证据在 #39 评论中：

@@ -77,6 +77,52 @@ final class ProjectGatewayTests: XCTestCase {
         return { done.wait(timeout: .now() + 5) == .success ? box.firstObject as? T : nil }
     }
 
+    func testAFailedToolStartDoesNotDispatchOrLeaveALeaseBehind() throws {
+        let guest = FakeGuest()
+        let (gateway, _) = try readyGateway(guest)
+        var appends = 0
+        gateway.withStore { store in
+            store.fault = { point in
+                guard point == FaultPoint(.journal, .beforeSync) else { return }
+                appends += 1
+                if appends == 2 { throw WorkspaceError.io("write", ENOSPC) }
+            }
+        }
+        XCTAssertEqual(gateway.execute("failed", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .refused("STORE_FAILED"))
+        XCTAssertTrue(guest.bodies("/execute").isEmpty)
+        XCTAssertNil(gateway.lease, "a grant never sent to the guest must be cleaned up")
+        guest.finish.signal()
+        guard case .completed = gateway.execute("next", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000) else {
+            return XCTFail("a new command can run after storage recovers")
+        }
+        XCTAssertEqual(guest.bodies("/execute").count, 1)
+        XCTAssertNil(try WorkspaceStore(workspace: workspace, state: state).lease)
+    }
+
+    func testAnUnsentLeaseIsCleanedUpWhenPersistentStorageFailureEnds() throws {
+        let guest = FakeGuest()
+        let (gateway, _) = try readyGateway(guest)
+        var appends = 0
+        gateway.withStore { store in
+            store.fault = { point in
+                guard point == FaultPoint(.journal, .beforeSync) else { return }
+                appends += 1
+                if appends >= 2 { throw WorkspaceError.io("write", ENOSPC) }
+            }
+        }
+        XCTAssertEqual(gateway.execute("failed", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .refused("STORE_FAILED"))
+        XCTAssertNotNil(gateway.lease, "cannot acknowledge a rollback that storage did not commit")
+        XCTAssertTrue(guest.bodies("/execute").isEmpty)
+        gateway.withStore { $0.fault = nil }
+        guest.finish.signal()
+        guard case .completed = gateway.execute("next", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000) else {
+            return XCTFail("only the proven unsent lease is cleaned up before a new operation")
+        }
+        XCTAssertEqual(guest.bodies("/execute").count, 1)
+        XCTAssertEqual(guest.bodies("/execute").first?["id"] as? String, "next")
+        XCTAssertNil(gateway.lease)
+    }
+
     func testCommandRunsUnderTheLeaseAndNativeWritesMeanwhileBecomeDrafts() throws {
         let guest = FakeGuest()
         guest.writer = { [workspace] in try? "built".write(toFile: workspace + "/out.txt", atomically: false, encoding: .utf8) }
@@ -219,6 +265,62 @@ final class ProjectGatewayTests: XCTestCase {
 
     // MARK: VM exit and unknown writers
 
+    func testVMExitDuringGrantPreventsDispatch() throws {
+        let guest = FakeGuest()
+        let (gateway, plugin) = try readyGateway(guest)
+        let granting = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        var paused = false
+        gateway.withStore { store in
+            store.fault = { point in
+                if point == FaultPoint(.journal, .beforeSync), !paused {
+                    paused = true
+                    granting.signal()
+                    XCTAssertEqual(proceed.wait(timeout: .now() + 5), .success)
+                }
+            }
+        }
+        guest.finish.signal()
+        let command = inBackground { gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000) }
+        XCTAssertEqual(granting.wait(timeout: .now() + 5), .success)
+        let exit = inBackground { gateway.guestExited(status: 9); return true }
+        let deadline = Date().addingTimeInterval(5)
+        while plugin.phase(of: "A") == .ready, Date() < deadline { usleep(1_000) }
+        XCTAssertEqual(plugin.phase(of: "A"), .failed("LINUX_VM_EXITED"))
+        proceed.signal()
+        XCTAssertEqual(command(), .refused("LINUX_VM_EXITED"))
+        XCTAssertEqual(exit(), true)
+        XCTAssertTrue(guest.bodies("/execute").isEmpty)
+        XCTAssertNil(gateway.lease)
+    }
+
+    func testVMExitDuringTerminalGrantPreventsWritingTheLine() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, plugin) = try readyGateway(guest)
+        let granting = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        var paused = false
+        gateway.withStore { store in
+            store.fault = { point in
+                if point == FaultPoint(.journal, .beforeSync), !paused {
+                    paused = true
+                    granting.signal()
+                    XCTAssertEqual(proceed.wait(timeout: .now() + 5), .success)
+                }
+            }
+        }
+        let write = inBackground { gateway.writeTerminal("t1", Data("ls\r".utf8)) }
+        XCTAssertEqual(granting.wait(timeout: .now() + 5), .success)
+        let exit = inBackground { gateway.guestExited(status: 9); return true }
+        let deadline = Date().addingTimeInterval(5)
+        while plugin.phase(of: "A") == .ready, Date() < deadline { usleep(1_000) }
+        XCTAssertEqual(plugin.phase(of: "A"), .failed("LINUX_VM_EXITED"))
+        proceed.signal()
+        XCTAssertEqual(write(), .refused("LINUX_VM_EXITED"))
+        XCTAssertEqual(exit(), true)
+        XCTAssertTrue(guest.bodies("/terminal/write").isEmpty)
+        XCTAssertNil(gateway.lease)
+    }
+
     func testVMExitSavesDiagnosticsAndReleasesTheLeaseAsGuestTerminated() throws {
         let guest = FakeGuest()
         guest.handlers["/execute"] = { [guest] _ in
@@ -319,6 +421,26 @@ final class ProjectGatewayTests: XCTestCase {
         _ = result()
     }
 
+    func testExplicitReleaseUsesConfirmedVMExitWhenItsDurableSettlementFailed() throws {
+        let guest = FakeGuest()
+        guest.handlers["/execute"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
+        guest.handlers["/revoke"] = { _ in throw GuestRPCError.unreachable("VM_GONE") }
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .writerUnknown(nil))
+        gateway.withStore { store in
+            store.fault = { point in
+                if point == FaultPoint(.journal, .beforeSync) { throw WorkspaceError.io("write", ENOSPC) }
+            }
+        }
+        gateway.guestExited(status: 9)
+        XCTAssertEqual(gateway.lease?.state, .writerUnknown)
+        gateway.withStore { $0.fault = nil }
+        guard case .released = gateway.releaseUnknownWriter() else { return XCTFail("VM exit already proves the writer stopped") }
+        XCTAssertTrue(guest.bodies("/revoke").isEmpty)
+        XCTAssertNil(gateway.lease)
+        XCTAssertEqual(try WorkspaceStore(workspace: workspace, state: state).epoch, 2)
+    }
+
     func testNothingToReleaseWithoutAnUnknownWriter() throws {
         let (gateway, _) = try readyGateway(FakeGuest())
         XCTAssertEqual(gateway.releaseUnknownWriter(), .noUnknownWriter)
@@ -381,6 +503,29 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertEqual(reopened.recovery.unknownToolCalls, ["terminal:t1:2"], "a run still holding the lease when the App stops is unknown")
     }
 
+    func testAnUnsentTerminalGrantIsCleanedUpAfterStorageRecovers() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, _) = try readyGateway(guest)
+        var appends = 0
+        gateway.withStore { store in
+            store.fault = { point in
+                guard point == FaultPoint(.journal, .beforeSync) else { return }
+                appends += 1
+                if appends >= 2 { throw WorkspaceError.io("write", ENOSPC) }
+            }
+        }
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .refused("STORE_FAILED"))
+        XCTAssertTrue(guest.bodies("/terminal/write").isEmpty)
+        XCTAssertNotNil(gateway.lease)
+        gateway.withStore { $0.fault = nil }
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("pwd\r".utf8)), .written(leased: true))
+        XCTAssertEqual(guest.bodies("/terminal/write").count, 1)
+        XCTAssertEqual(gateway.lease?.operation, "terminal:t1:2")
+        XCTAssertNotNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+        XCTAssertNil(gateway.lease)
+    }
+
     func testARunLineIsRefusedAtOnceWhileAnotherWriterHoldsTheLease() throws {
         let guest = FakeGuest()
         terminalGuest(guest)
@@ -423,6 +568,28 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertNil(gateway.lease)
         let reopened = try WorkspaceStore(workspace: workspace, state: state)
         XCTAssertTrue(reopened.recovery.unknownToolCalls.isEmpty, "the run and the joined command both finished in the ledger")
+    }
+
+    func testAFailedJoinedToolStartKeepsTheTerminalLeaseReleasable() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let (gateway, _) = try readyGateway(guest)
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
+        let fence = gateway.lease?.fence
+        var failed = false
+        gateway.withStore { store in
+            store.fault = { point in
+                if point == FaultPoint(.journal, .beforeSync), !failed {
+                    failed = true
+                    throw WorkspaceError.io("write", ENOSPC)
+                }
+            }
+        }
+        XCTAssertEqual(gateway.execute("joined", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .refused("STORE_FAILED"))
+        XCTAssertTrue(guest.bodies("/execute").isEmpty)
+        XCTAssertEqual(gateway.lease?.fence, fence)
+        XCTAssertNotNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+        XCTAssertNil(gateway.lease)
     }
 
     func testAJoinedCommandWhoseCancelIsLostLeavesTheTerminalsWriterUnknown() throws {

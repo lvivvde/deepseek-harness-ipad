@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 @main
@@ -23,6 +24,7 @@ struct CandidateView: View {
     @State private var key = ""
     @State private var selected: String?
     @State private var confirmingFresh = false
+    @State private var importing = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -47,6 +49,15 @@ struct CandidateView: View {
                     Toggle("Linux plugin", isOn: $pluginEnabled)
                     Button("Create") { model.create(name: name, pluginEnabled: pluginEnabled); name = "" }
                         .disabled(name.isEmpty)
+                }
+                Section("Old App backup") {
+                    Button("Import backup…") { importing = true }
+                        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                            if case .success(let urls) = result { model.importBackup(urls) }
+                        }
+                    Text("Pick HarnessBackup.tar and its .sha256. The old App and its data stay untouched.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let status = model.importStatus { Text(status).font(.caption) }
                 }
                 Section("Model key") {
                     SecureField("DeepSeek API key", text: $key)

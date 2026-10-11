@@ -75,3 +75,7 @@ ctime 在任何写入时都会变化，用户空间无法回拨。
   - 选错文件时会以固定错误码拒绝：只选一个文件时是 `SELECTION_NEEDS_TAR_AND_SHA256`，选到不是完整备份的小归档时是 `LAYOUT_INVALID`。这时收据只记录归档结构（条目类型计数和顶层分类），不记录名字。
 
 正式 App 的升级和真实迁移不在本关口内。
+
+## 接入候选 App（#17）
+
+候选 App 用同一个迁移器导入旧 App 的完整备份（`BackupImport`）。旧项目变成启用插件的候选项目，旧的官方 home 在 Worker 下次恢复时并入一次；凭据不迁移，同名项目整份拒绝，中途被杀可以接着完成。规则和真机演练结果见 [iPad 候选 App 的 #17 测量与迁移演练](../validation/ipad-candidate-measurements.md)。

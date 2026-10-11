@@ -10,7 +10,8 @@ final class QemuMachineTests: XCTestCase {
     override func setUpWithError() throws {
         root = NSTemporaryDirectory() + "qemu-machine-" + UUID().uuidString
         try FileManager.default.createDirectory(atPath: root + "/share,odd", withIntermediateDirectories: true)
-        let script = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + root + "/argv\"\nexec sleep 30\n"
+        // The arguments appear whole: written aside, then renamed into place.
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + root + "/argv.tmp\"\nmv \"" + root + "/argv.tmp\" \"" + root + "/argv\"\nexec sleep 30\n"
         FileManager.default.createFile(atPath: root + "/qemu", contents: Data(script.utf8), attributes: [.posixPermissions: 0o700])
     }
 

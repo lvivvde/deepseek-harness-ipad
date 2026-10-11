@@ -20,6 +20,8 @@ final class CandidateHostTests: XCTestCase {
         var terminals = Set<String>()
         var terminalFence: Int?
         var onExit: ((Int32?) -> Void)?
+        var beforeTerminalOpen: (() -> Void)?
+        var beforeTerminalClose: (() -> Void)?
         private var ended = false
 
         var rpc: GuestRPC { self }
@@ -36,6 +38,8 @@ final class CandidateHostTests: XCTestCase {
         }
 
         func call(_ route: String, _ body: [String: Any]?) throws -> [String: Any] {
+            if route == "/terminal/open" { beforeTerminalOpen?() }
+            if route == "/terminal/close" { beforeTerminalClose?() }
             lock.lock(); defer { lock.unlock() }
             guard let share, !ended else { throw GuestRPCError.unreachable("down") }
             let identity = (try? String(contentsOfFile: share + "/.plan500-identity", encoding: .utf8)) ?? ""
@@ -242,6 +246,34 @@ final class CandidateHostTests: XCTestCase {
         XCTAssertEqual(terminal(host, "read", "t-1", ["offset": 2])["error"] as? String, "TERMINAL_NOT_FOUND")
     }
 
+    func testAWorkerResetWaitsForAnOpeningTerminalAndLeavesNoOrphan() throws {
+        let host = try host()
+        _ = open(host, "p", plugin: true)
+        XCTAssertEqual(execute(host, "ready", cwd: "/dsh/workspace/p")["status"] as? String, "COMPLETED")
+        let opening = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        let closeCalled = DispatchSemaphore(value: 0), openDone = DispatchSemaphore(value: 0), resetDone = DispatchSemaphore(value: 0)
+        machine.beforeTerminalOpen = {
+            opening.signal()
+            XCTAssertEqual(proceed.wait(timeout: .now() + 5), .success)
+        }
+        machine.beforeTerminalClose = { closeCalled.signal() }
+        DispatchQueue.global().async {
+            _ = self.terminal(host, "open", "t-1", ["cwd": "/dsh/workspace/p/src", "argv": ["/bin/bash", "-i"], "cols": 80, "rows": 24])
+            openDone.signal()
+        }
+        XCTAssertEqual(opening.wait(timeout: .now() + 5), .success)
+        DispatchQueue.global().async {
+            _ = host.handle(["operation": "terminals-reset"])
+            resetDone.signal()
+        }
+        XCTAssertEqual(closeCalled.wait(timeout: .now() + 0.2), .timedOut, "cannot confirm closing before open has answered")
+        proceed.signal()
+        XCTAssertEqual(openDone.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(resetDone.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(machine.terminals.isEmpty)
+        XCTAssertEqual(terminal(host, "read", "t-1")["error"] as? String, "TERMINAL_NOT_FOUND")
+    }
+
     func testATerminalOpensOnlyInAProjectAndANewWorkerClosesTheOldOnes() throws {
         let host = try host()
         _ = open(host, "p", plugin: true)
@@ -307,6 +339,10 @@ final class CandidateHostTests: XCTestCase {
         _ = open(host, "p", plugin: true)
         XCTAssertEqual(host.handle(["operation": "cancel", "operationId": "op-1"])["status"] as? String, "CANCELLED_BEFORE_DISPATCH")
         XCTAssertEqual(execute(host, "op-1", cwd: "/dsh/workspace/p")["status"] as? String, "CANCELLED_BEFORE_DISPATCH")
+        let duplicate = execute(host, "op-1", cwd: "/dsh/workspace/p")
+        XCTAssertEqual(duplicate["status"] as? String, "REFUSED")
+        XCTAssertEqual(duplicate["reason"] as? String, "DUPLICATE_OPERATION")
+        XCTAssertEqual(host.handle(["operation": "cancel", "operationId": "op-1"])["status"] as? String, "FINISHED")
         XCTAssertFalse(machine.executed.contains { $0["id"] as? String == "op-1" })
     }
 

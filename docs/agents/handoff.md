@@ -11,7 +11,7 @@
 
 ## 当前状态
 
-架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。代码提交 `b64e6be` 已完成验证：Swift 全量测试与 `make check` 通过、无警告（网关 35、候选宿主 16 项）；`make test-candidate` 桥接 15、构建闸门 15 项通过、无跳过。macOS/iPad 候选 App 未签名构建成功，脱敏收据在本项 worktree 的忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`。规范审查无发现；规格审查三项（旧终端登记竞争、拒绝后的存储错误被吞、Gateway 兼容入口归属绕过）均修复并复核通过。图工具不可用，审查为有界源码核查。未安装、未上真机。用户已授权推送及创建草稿，分支已推送并创建 [PR #56](https://github.com/lvivvde/deepseek-harness-ipad/pull/56)，base 为 main；下一步安排本项验收，合并另获同意。
+架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。代码提交 `b64e6be` 已完成验证：Swift 全量测试与 `make check` 通过、无警告（网关 35、候选宿主 16 项）；`make test-candidate` 桥接 15、构建闸门 15 项通过、无跳过。macOS/iPad 候选 App 未签名构建成功，脱敏收据在本项 worktree 的忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`。规范审查无发现；规格审查三项（旧终端登记竞争、拒绝后的存储错误被吞、Gateway 兼容入口归属绕过）均修复并复核通过。图工具不可用，审查为有界源码核查。未安装、未上真机。用户已授权推送及创建草稿，分支已推送并创建 [PR #56](https://github.com/lvivvde/deepseek-harness-ipad/pull/56)，base 为 main；已同步包含 PR #54 的 main（`021959c`），冲突仅交接文档且已保留双方记录；组合后的 `make test-app`、`make check` 与 `make test-candidate` 全通过（网关 35、候选宿主 20、恢复合同 9、桥接 20、构建闸门 15 项），无跳过。macOS/iPad 未签名构建复验通过，脱敏收据在 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`；两轴组合审查无新发现。下一步为 PR 合并授权和本项验收，合并另获同意。
 
 架构基线为 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)（2026-10-06 用户确认，accepted）：官方 Worker 在 WKWebView 中运行，Swift 网关与原生工作区为唯一权威；Linux 是项目级兼容插件，启用后异步预热；9P 共享模式 `none`；耐久写租约与草稿；隔离语义为事后检测并转为冲突；工具按能力声明走 `native` / `linux` / `unsupported`。[ADR 0001](../adr/0001-local-linux-emulation.md) 中“Harness 在 Linux 内运行”的部分被取代。
 
@@ -81,7 +81,7 @@
   - 官方网页版没有发起仓库写操作的 Git 调用方，只改文档；`git.write` 保留 `SHELL_ONLY`。
   - 顺带修正：发出前就被拒的 RPC 请求（超过 128 KiB 或路由非法）以前记为写者未知，会锁住项目；现在记为拒绝并释放租约。
   - 已验证：`make test-app`、`make check`、`make test-candidate`（桥接 13 项）通过。这一批未上真机，只有单元测试覆盖。
-- 交互式终端在分支 `feat/issue17-candidate-terminal`（2026-10-11，租约规则由用户确认：空闲不占写租约，运行时模型 shell 命令并入）：
+- 交互式终端在 [PR53](https://github.com/lvivvde/deepseek-harness-ipad/pull/53)，已合并（2026-10-11，租约规则由用户确认：空闲不占写租约，运行时模型 shell 命令并入）：
   - guest 代理新增 `/terminal/*`：pty 上的 `/bin/bash -i`，独立挂载命名空间，默认只读；运行键取租约后改为可写，回到空闲提示符且并入的命令结束后改回只读并释放。
   - `ProjectGateway` 终端 API 和并入路径（结果 `.joined`）；`CandidateHost` 的 `terminal-*` 原生调用，新 Worker 安装时 `terminals-reset` 关闭旧终端；声明里 `terminal` 随 `shell`，可用时附 `WRITE_LEASE_WHILE_BUSY`。
   - 桥接 `spawnTerminal` 返回官方终端控制器所需的句柄（输出流用 Worker 自己的 `PassThrough`）。
@@ -92,9 +92,22 @@
   - 已验证（macOS）：真实 QEMU guest 的 `run.py` 探针（含终端 18 项）通过；`make test-app`（网关 25、候选宿主 15）、`make check`、`make test-candidate`（桥接 15、构建 15）、`make test-plan500-ipad` 通过。
   - 已验证（真机，2026-10-11，签名 r7）：iPad 上终端打开，用户运行两次命令，项目日志各有一次终端租约授予并以 `COMPLETED` 释放，工作区出现 `f`。`echo hi > f` 本身无输出，所以界面上只是换出新提示符。macOS 候选 App 上同样验证并在文件面板看到 `f`。
 
+2026-10-11 架构扫描选定会话检查点与恢复，用户已确认设计并在 [PR54](https://github.com/lvivvde/deepseek-harness-ipad/pull/54) 的 `codex/session-recovery` 实现（终端 PR53 与会话恢复 PR54 均已合入 main）。详见 [会话恢复](../design/session-recovery.md)。Worker 与 Swift 共同收拢恢复、采集前项目基线、home 完整验证及耐久确认；保留当前/上一份和初始化身份，损坏隔离后可回退，无可用副本则阻止恢复。新建须明确确认并保留诊断与旧字节；失败持续显示未保存，自动和手动重试。项目提示读取正常打开后的状态，不清理调用账本，不预热其他项目，不回滚工作区或释放未知租约。
+
+- 审查：规范轴无发现；规格轴的首次保存被空标记忽略、新建后诊断丢失两项已修复并复核。另补上无新事件时手动保存失败仍自动重试，并由真实 VFS 往返核对目录时间在恢复后保持。
+- 验证（macOS）：真实 Worker VFS/官方 JSONL flush→Swift handler→新 Worker 往返；恢复合同 9 项，包含已有副本 15 种及首次/新建 30 种 SIGKILL 组合；桥接 20 项无跳过；构建闸门 15 项。工作区 27、宿主 44、候选 28 项回归通过；审查修正后候选宿主 19 项复测通过；`make check` 通过。
+- 已有 QEMU 进程测试在与 App 编译同时运行的一次回归中读取到未完整写入的参数文件，单独及随后完整回归通过；测试自身的读文件时序窗口仍在。本次没有改它。
+- 未签名 macOS 与 iPad App 均已构建；最终收据在 `build/candidate/{app,ipad}/build-safe.json`。Xcode 保留已有 Gate1 `Phase` Sendable、传统 headermap 与 AppIntents 元数据提示，不登记为无警告。
+- 已验证（真机，2026-10-11，签名 r9）：无需用户操作的自动脚本（忽略的 `build/candidate/device/recovery-auto-private.py`）经启动环境变量 `HARNESS_CANDIDATE_OPEN=Gate1` 打开项目，只比对检查点内的会话文件：
+  - 覆盖安装后恢复（序号 14→16）、切到“文件”App 后台立即保存（16→18）、强制结束后重开恢复（20→22），会话文件均逐字节一致，无诊断。
+  - 推入校验和损坏的当前副本：回退到上一份，会话一致，诊断 `CHECKPOINT_FALLBACK`，损坏副本进入隔离区。
+  - 两份都损坏：没有新保存、不自动新建，两份进入隔离区；用户确认界面显示橙色 `Recovery blocked` 和 `Start a new session…`（未点）。推回完好副本后重开恢复，会话一致（23→25）。
+  - 设备上的候选 App 因此保留 `CHECKPOINT_FALLBACK` 提示（按设计持续显示，直到明确新建）和 3 个隔离文件。Worker 日志里启动早期的 `checkpoint-failed SESSION_NOT_READY` 是会话就绪前的保存请求，无害，未改。
+- 未验：断电/系统崩溃；有新模型回合的会话（需 Key）。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期在 PR #56 实现，原生工具适配留待探索。
+
 **下一步：**
 
-1. PR #53 已合并；session-recovery（PR #54）与本项独立推进，各 PR 合并均另获用户同意。
+1. PR #53、#54 已合并；PR #56 已同步 main 并复验组合实现，合并仍须用户同意。
 2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。

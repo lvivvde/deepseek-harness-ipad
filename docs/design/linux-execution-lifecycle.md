@@ -93,3 +93,9 @@ Gateway 的全部终端兼容入口现在校验同一进程登记及项目归属
 2026-10-11，代码提交 `b64e6be`：Swift 全量测试及 `make check` 通过，无警告；网关 35 项、候选宿主 16 项。`make test-candidate` 桥接 15 项、构建闸门 15 项全部通过，无跳过。macOS 与 iPad 候选 App 未签名构建完成，不安装、不启动；本项未做真机行为验收。构建脱敏收据在忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`，原始日志保留私有。
 
 规范轴最终无文档规则违反或判断性 smell；规格轴三项发现均已修复并复核。审查为有界源码核查，代码图工具不可用、索引覆盖未知。用户随后授权本项分支推送及草稿 PR，已创建 PR #56；后续为验收，合并仍另获授权。
+
+### 同步 main 后的组合复验
+
+用户询问合并条件时，main 已合入会话恢复 PR #54（`021959c`）。本项以 merge 同步 main，仅交接文档发生冲突，已保留两项记录并更新合并状态；CandidateHost 及测试自动合并，LinuxExecution/Gateway 保持已审查实现。组合两轴审查无新发现，Host 基线采集仍通过同一 Gateway.storeLock，Host 锁不跨存储或恢复调用。
+
+组合后 `make check`、`make test-app` 全量测试通过（网关 35、候选宿主 20 项）；`make test-candidate` 恢复合同 9、桥接 20、构建闸门 15 项全通过，无跳过。重新生成固定依赖网页，macOS/iPad 未签名构建复验成功；脱敏收据在忽略的 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`。未安装、未上真机。PR 合并仍须具体授权。

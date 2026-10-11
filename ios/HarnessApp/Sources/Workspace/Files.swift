@@ -74,11 +74,11 @@ func atomicReplace(directory: Int32, name: [UInt8], temporary: [UInt8], data: Da
 
 /// One durable file outside the workspace store (a registry record, the guest identity, a checkpoint):
 /// the store's own replace, so it gets the full sync and a `.dsh-tmp-` temporary the scan treats as residue.
-public func durableReplace(_ path: String, _ data: Data, mode: mode_t) throws {
+public func durableReplace(_ path: String, _ data: Data, mode: mode_t, fault: FaultHook? = nil) throws {
     let directory = try openDirectory((path as NSString).deletingLastPathComponent)
     defer { close(directory) }
     try atomicReplace(directory: directory, name: Array((path as NSString).lastPathComponent.utf8), temporary: temporaryName(),
-                      data: data, mode: mode, site: .checkpoint, fault: nil)
+                      data: data, mode: mode, site: .checkpoint, fault: fault)
 }
 
 func temporaryName(_ suffix: String = UUID().uuidString.lowercased()) -> [UInt8] { WorkspaceFiles.temporaryPrefix + Array(suffix.utf8) }

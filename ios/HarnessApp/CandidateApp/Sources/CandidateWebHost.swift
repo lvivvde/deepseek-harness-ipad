@@ -70,6 +70,11 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
         view.evaluateJavaScript("window.candidateProjectOpened?.(\(String(decoding: data, as: UTF8.self)))")
     }
 
+    func saveSession() {
+        guard started else { return }
+        view.evaluateJavaScript("window.candidateSave?.()")
+    }
+
     private func trusted(_ url: URL?) -> Bool {
         guard let origin, let url else { return false }
         return url.scheme == origin.scheme && url.host == origin.host && url.port == origin.port

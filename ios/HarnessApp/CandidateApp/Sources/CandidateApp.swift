@@ -22,6 +22,8 @@ struct CandidateView: View {
     @State private var pluginEnabled = true
     @State private var key = ""
     @State private var selected: String?
+    @State private var confirmingFresh = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationSplitView {
@@ -51,6 +53,26 @@ struct CandidateView: View {
                         .onChange(of: key) { model.setKey($0) }
                     Text("Held in memory only.").font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Session") {
+                    Text(sessionStatus).foregroundStyle(model.sessionPhase == "BLOCKED" || model.sessionPhase == "UNSAVED" ? .orange : .secondary)
+                    if let date = model.sessionSavedAt { Text("Last saved: " + date.formatted()).font(.caption) }
+                    if model.sessionDiagnosis == "CHECKPOINT_FALLBACK" {
+                        Text("Restored the previous checkpoint. Newer session content could not be restored.").font(.caption)
+                    } else if model.sessionDiagnosis == "LEGACY_CHECKPOINT" {
+                        Text("Restored a legacy checkpoint. Workspace comparison is unavailable.").font(.caption)
+                    } else if let diagnosis = model.sessionDiagnosis { Text(diagnosis).font(.caption) }
+                    if let failure = model.sessionFailure { Text(failure).font(.caption) }
+                    if model.sessionPhase == "BLOCKED" {
+                        Button("Start a new session…") { confirmingFresh = true }
+                            .confirmationDialog("Start a new session?", isPresented: $confirmingFresh) {
+                                Button("Start new session", role: .destructive) { model.freshSession() }
+                            } message: {
+                                Text("Old checkpoint evidence is preserved. Project files, drafts and unknown calls remain as they are.")
+                            }
+                    } else if model.webStarted {
+                        Button("Save / retry") { model.saveSession() }
+                    }
+                }
                 Section("Linux") {
                     LabeledContent("Availability", value: model.linux)
                     LabeledContent("Bound project", value: model.projects.first { $0.id == model.boundProject }?.name ?? "—")
@@ -73,6 +95,17 @@ struct CandidateView: View {
                 Text("Open a project to start.").foregroundStyle(.secondary)
             }
         }
+        .onChange(of: scenePhase) { phase in if phase != .active { model.saveSession() } }
+    }
+
+    private var sessionStatus: String {
+        switch model.sessionPhase {
+        case "BLOCKED": return "Recovery blocked"
+        case "SAVING": return "Saving · not yet saved"
+        case "UNSAVED": return "Not yet saved"
+        case "SAVED": return "Saved"
+        default: return "Waiting for session"
+        }
     }
 }
 
@@ -84,6 +117,13 @@ struct CapabilitySection: View {
 
     var body: some View {
         Section("Capabilities · \(project.name)") {
+            if project.recoveryComparison == "CHANGED" {
+                Text("Workspace changed during or after this checkpoint was saved.").font(.caption)
+            } else if project.recoveryComparison == "UNAVAILABLE" {
+                Text("Workspace comparison with this checkpoint is unavailable.").font(.caption)
+            }
+            if project.unknownCalls > 0 { Text("Calls with unknown results: \(project.unknownCalls). They will not be replayed.").font(.caption) }
+            if project.drafts > 0 { Text("Retained drafts: \(project.drafts)").font(.caption) }
             if let state = project.pluginState {
                 LabeledContent("Plugin", value: [state, project.reason].compactMap { $0 }.joined(separator: " · "))
             }

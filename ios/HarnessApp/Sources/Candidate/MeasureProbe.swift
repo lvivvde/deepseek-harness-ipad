@@ -18,10 +18,12 @@ import os
 ///   sends the App to the background and back; gaps and failures show what suspension does.
 ///   `background-idle` pauses the commands during `quiet`, so nothing is in flight while the App is away;
 ///   the guest's uptime across the pause shows whether its clock ran while the App was suspended.
+/// - `imported`: a project the same launch imports from an old backup (`project`, by name) brings
+///   Linux up, the guest sees every imported entry, and a guest write lands.
 /// Each phase writes `<root>/probe/measure-<phase>.json` with numbers and fixed codes only, tagged with
 /// the launch's `run` id and marked `done` once final.
 public enum MeasureProbe {
-    public enum Phase: String { case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle" }
+    public enum Phase: String { case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle", imported }
 
     public struct Timing {
         public var ready: TimeInterval = 900
@@ -35,7 +37,8 @@ public enum MeasureProbe {
     }
 
     @discardableResult
-    public static func run(_ phase: Phase, host: CandidateHost, bundle: String? = nil, timing: Timing = .init()) -> [String: Any] {
+    public static func run(_ phase: Phase, host: CandidateHost, bundle: String? = nil, project: String? = nil,
+                           timing: Timing = .init()) -> [String: Any] {
         let started = Date()
         var record: [String: Any] = ["phase": phase.rawValue, "run": runId]
         if let launched = processStart() { record["processToProbeMs"] = ms(started.timeIntervalSince(launched)) }
@@ -46,6 +49,7 @@ public enum MeasureProbe {
             case .lifecycle: try lifecycle(host, timing, &record)
             case .background: try background(host, timing, idle: false, &record)
             case .backgroundIdle: try background(host, timing, idle: true, &record)
+            case .imported: try imported(host, project, timing, &record)
             }
         } catch let error as CandidateError {
             record["failure"] = error.code
@@ -250,6 +254,28 @@ public enum MeasureProbe {
         record["failedTicks"] = ticks.filter { $0["status"] as? String != "COMPLETED" }.count
         record["bootCount"] = host.bootCount
         record["passed"] = record["failedTicks"] as? Int == 0 && host.bootCount == 1
+    }
+
+    private static func imported(_ host: CandidateHost, _ name: String?, _ timing: Timing, _ record: inout [String: Any]) throws {
+        // The import runs on the App's queue alongside this probe; wait for its project record.
+        var found: CandidateProject?
+        _ = wait(timing.ready, timing.poll) { found = host.registry.projects.first { $0.name == name }; return found != nil }
+        guard let project = found else { throw CandidateError("PROJECT_UNKNOWN") }
+        record["pluginEnabled"] = project.pluginEnabled
+        let opened = Date()
+        _ = host.handle(["operation": "project-open", "id": project.id])
+        try waitReady(host, project.id, timing, &record)
+        record["linuxReadyMs"] = ms(Date().timeIntervalSince(opened))
+        let listed = execute(host, "imported-list", project.mount, "find . -mindepth 1 | wc -l")
+        record["list"] = describe(listed)
+        record["guestEntries"] = Int((listed["stdout"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+        record["nativeEntries"] = FileManager.default.enumerator(atPath: host.registry.workspace(project))?.allObjects.count ?? -1
+        let stamp = stamp()
+        let wrote = execute(host, "imported-write", project.mount, "echo \(stamp) > .probe-imported && cat .probe-imported && rm .probe-imported")
+        record["write"] = describe(wrote)
+        record["bootCount"] = host.bootCount
+        record["passed"] = record["list"] as? String == "COMPLETED" && record["guestEntries"] as? Int == record["nativeEntries"] as? Int
+            && wrote["stdout"] as? String == stamp + "\n" && host.bootCount == 1
     }
 
     // MARK: Helpers

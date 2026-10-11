@@ -380,6 +380,10 @@ test('only the official messages endpoint is streamed through Swift', async () =
   const {self: failing} = load(body => body.operation === 'model-open' ? {failure: 'MODEL_KEY_MISSING'} : {});
   await assert.rejects(failing.fetch('https://api.deepseek.com/anthropic/v1/messages', {body: '{}'}),
     error => error.name === 'TypeError' && /MODEL_KEY_MISSING/.test(error.message));
+  const {self: keyless} = load(body => body.operation === 'model-open' ? {failure: 'MODEL_KEY_REQUIRED'} : {});
+  const refused = await keyless.fetch('https://api.deepseek.com/anthropic/v1/messages', {body: '{}'});
+  assert.equal(refused.status, 401);
+  assert.equal((await refused.json()).error.type, 'authentication_error');
 });
 
 test('the index runs the connector before the official entry', () => {

@@ -114,6 +114,7 @@
 - 顺带修正 `QemuMachineTests` 读取未写完参数文件的时序窗口（替身脚本改为写临时文件后 rename）。
 - #14 组件清单已按 iPad r9 收据核对并记下 `system.raw` 构建配方，见 [分发组件](../design/distribution-components.md)。
 
+- 进行中（2026-10-11）：缺 Key 改为 401 `authentication_error`（官方归为 AUTH，不重试；桥接测试已过）；新增探针阶段 `imported`（`HARNESS_CANDIDATE_MEASURE=imported` + `HARNESS_CANDIDATE_MEASURE_PROJECT=<名字>`，Mac 测试已过）。r13 已签名（`build/candidate/ipad-signed-r13/`），正在真机跑旧导出器假 Key 备份导入：`measure-auto-private.py import-old`（备份在 `device/oldexport-fake/`）。下一步：看该次输出（IMPORT/PROBE/WORKSPACE/HOME 行），通过后把结果补进测量文档和 PR #55，并跑一次 `make test-app`。
 - 模型回合与 shell 工具端到端已在 Gate1 通过（`e2e-auto-private.py`，证据 `device/e2e-check-163231`）。顺带发现：导入项目的工作区根目录权限不足时挂载检查失败（已修正，r12 设备上 `migrated-demo` 仍不可用 Linux，先开 Gate1）；缺 Key 被显示为传输失败（未改）。
 
 1. 可选改进：缺 Key 时让官方页面看到明确的需要 Key 错误，而不是重试 5 次后显示传输失败。

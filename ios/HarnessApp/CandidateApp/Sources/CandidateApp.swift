@@ -62,7 +62,7 @@ struct CandidateView: View {
                 Section("Model key") {
                     SecureField("DeepSeek API key", text: $key)
                         .onChange(of: key) { model.setKey($0) }
-                    Text("Held in memory only.").font(.caption).foregroundStyle(.secondary)
+                    Text("Held in memory only; enter it again after the App restarts.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Session") {
                     Text(sessionStatus).foregroundStyle(model.sessionPhase == "BLOCKED" || model.sessionPhase == "UNSAVED" ? .orange : .secondary)

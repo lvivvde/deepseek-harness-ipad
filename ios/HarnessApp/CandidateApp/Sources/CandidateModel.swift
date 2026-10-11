@@ -110,7 +110,8 @@ final class CandidateModel: ObservableObject {
         // A #17 measurement launch runs one phase on its own project; see `MeasureProbe`.
         if let host, let phase = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE"].flatMap(MeasureProbe.Phase.init) {
             let bundle = Bundle.main.bundlePath
-            Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle) }
+            let project = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_PROJECT"]
+            Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle, project: project) }
         }
         // The scripted migration drill imports `<root>/incoming/HarnessBackup.tar` before anything opens;
         // the serial queue keeps the open below behind it. The reply goes to `<root>/probe/import.json`.

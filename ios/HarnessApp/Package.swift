@@ -36,6 +36,7 @@ let package = Package(
         .testTarget(name: "HarnessHostTests", dependencies: ["HarnessHost", "NativeWorkspace", "LinuxPlugin"], path: "HostTests"),
         .target(name: "HarnessCandidate", dependencies: ["HarnessHost", "NativeWorkspace", "NativeTools", "LinuxPlugin", "ModelGateway"],
                 path: "Sources/Candidate"),
+        .executableTarget(name: "home-recovery-probe", dependencies: ["HarnessCandidate", "NativeWorkspace"], path: "Tools/HomeRecoveryProbe"),
         .testTarget(name: "HarnessCandidateTests", dependencies: ["HarnessCandidate", "HarnessHost", "LinuxPlugin"], path: "CandidateTests")
     ]
 )

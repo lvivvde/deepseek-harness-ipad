@@ -85,6 +85,20 @@ Mac 上的私有驱动脚本负责安装、启动、切到“文件”App 再切
 
 HMR 归 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23)，本票不测。
 
+## 模型回合与 shell 工具端到端
+
+2026-10-11，r12，用户在候选 App 内输入 Key，在 Gate1 项目里让模型用 bash 工具运行 `echo DSH-E2E-$(uname -m) > e2e.txt && cat e2e.txt`。私有脚本只核对固定标记和计数：
+
+- 工具结果为 `DSH-E2E-aarch64`，模型原样回报；共两轮，每轮一次 shell 调用。
+- 项目日志每次调用各有一次租约授予、`toolStart`、租约释放、`toolEnd`，没有写者未知。
+- 工作区 `e2e.txt` 内容与标记一致。
+- 会话检查点包含这两轮；强制结束后重开，会话只增不改，标记仍在。
+
+过程中的两个发现：
+
+- **缺 Key 显示成网络失败**：Key 只在内存里，App 重启后清空。此时原生网关返回 `MODEL_KEY_REQUIRED`，桥接把所有模型打开失败都转成 `TypeError`，官方 Worker 把它当传输错误重试 5 次，最后显示“DeepSeek Messages transport failed”。重新输入 Key 后正常。未修改，记为后续改进。
+- **导入的项目 Linux 起不来**：第一次是在合成导入的 `migrated-demo` 项目里运行的，两次 bash 都是 `LINUX_PREPARE_FAILED`（`MOUNT_CHECK_FAILED`），模型如实回报了错误。原因见下文迁移演练的“工作区根目录权限”一条，已修正；设备上的 r12 仍是修正前的构建。
+
 ## 迁移演练（候选 App 实演）
 
 候选 App 接入了 `UserDataMigrator`（[user-data-migration.md](../design/user-data-migration.md)），入口是 `BackupImport`。旧 App 的完整备份（`HarnessBackup.tar` 和 `.sha256`）导入后：
@@ -104,6 +118,7 @@ HMR 归 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23)，本�
 - 候选 App 已有同名项目时，整份备份拒绝导入（`PROJECT_NAME_TAKEN`），什么都不改。
 - home 的并入记录放在 `home-imports/`，并入后 ID 写进 home 检查点的 `imports` 字段，每份只并一次。用户之后删掉的文件不会被再次并回。
 - 路径相同时，候选 App 已有的文件优先。
+- 工作区根目录统一设为 `0755`，与新建项目相同。guest 里不持租的读者（uid 65534，挂载检查就用它）必须能进入 `/workspace`；旧备份里项目目录的权限没有其他执行位时（例如 `0700`），挂载检查失败，这个进程里的 Linux 就起不来。真机脚本演练的合成备份把目录写成了 `0644`（迁移器补齐属主位后是 `0744`），用户在这个项目里实际使用时暴露了问题。导入代码和演练脚本都已修正，新增测试覆盖 `0700` 的旧项目目录。
 - 凭据不迁移，由用户在候选 App 里重新输入。
 - 并入记录读不到、损坏或与现有 home 冲突时，只记诊断（`IMPORT_READ_FAILED`、`IMPORT_CORRUPT`、`IMPORT_CONFLICT`），不阻止恢复。
 

@@ -73,6 +73,8 @@ public final class ProjectRegistry: @unchecked Sendable {
 
     /// Registers a migrated project, plugin enabled, by moving `workspace` into place. The record is
     /// written last, so a crash before it leaves no project and a later call finishes the same one.
+    /// The workspace root gets the mode `create` gives: the guest's unleased reader (uid 65534) must
+    /// traverse it, or the mount check fails and Linux never comes up for the process.
     func adopt(id: String, name: String, workspace source: String) throws {
         try Self.validate(name: name)
         lock.lock(); defer { lock.unlock() }
@@ -86,6 +88,7 @@ public final class ProjectRegistry: @unchecked Sendable {
             guard rename(source, workspace(project)) == 0 else { throw CandidateError("IMPORT_MOVE_FAILED") }
         }
         guard FileManager.default.fileExists(atPath: workspace(project)) else { throw CandidateError("IMPORT_WORKSPACE_MISSING") }
+        guard chmod(workspace(project), 0o755) == 0 else { throw CandidateError("IMPORT_MOVE_FAILED") }
         try Self.durableWrite(try JSONEncoder().encode(project), to: base + "/project.json")
         known.append(project)
     }

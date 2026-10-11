@@ -34,10 +34,10 @@ final class BackupImportTests: XCTestCase {
     let log = "{\"cwd\":\"/root/projects/demo\",\"id\":\"s-1\",\"type\":\"session\",\"version\":4}\n{\"type\":\"user\",\"text\":\"hi\"}\n"
 
     /// One old project with a file and a session, an official config and a credential.
-    func writeBackup(project: String = "demo") throws {
+    func writeBackup(project: String = "demo", projectMode: Int = 0o755) throws {
         var tar = Tar()
         tar.file(".harness-layout-version", "1\n")
-        tar.directory("projects"); tar.directory("projects/" + project)
+        tar.directory("projects"); tar.directory("projects/" + project, mode: projectMode)
         tar.file("projects/\(project)/a.txt", "old bytes\n")
         tar.directory(".dsh"); tar.directory(".dsh/sessions"); tar.directory(".dsh/sessions/--root-projects-demo--")
         tar.directory(".dsh/sessions/--root-projects-demo--/s-1")
@@ -86,6 +86,16 @@ final class BackupImportTests: XCTestCase {
         let again = try self.host().importBackup(archive: archive, checksum: checksum)
         XCTAssertEqual(again["alreadyImported"] as? Bool, true)
         XCTAssertEqual(try ProjectRegistry(root: root).projects.count, 1)
+    }
+
+    /// The old project directory's own mode never reaches the workspace root: the guest's unleased
+    /// reader must traverse it for the mount check.
+    func testAPrivateOldProjectStillGetsAWorkspaceTheGuestCanTraverse() throws {
+        try writeBackup(projectMode: 0o700)
+        XCTAssertNil(try host().importBackup(archive: archive, checksum: checksum)["error"])
+        let registry = try ProjectRegistry(root: root)
+        let info = try FileManager.default.attributesOfItem(atPath: registry.workspace(try XCTUnwrap(registry.projects.first)))
+        XCTAssertEqual((info[.posixPermissions] as? NSNumber)?.intValue, 0o755)
     }
 
     /// Once the Worker saved a home holding the import, the import is never merged again, so a file
@@ -156,7 +166,7 @@ private struct Tar {
     var data = Data()
 
     mutating func file(_ path: String, _ text: String, mode: Int = 0o644) { add(path, 0x30, mode, Data(text.utf8)) }
-    mutating func directory(_ path: String) { add(path + "/", 0x35, 0o755, Data()) }
+    mutating func directory(_ path: String, mode: Int = 0o755) { add(path + "/", 0x35, mode, Data()) }
 
     mutating func add(_ name: String, _ type: UInt8, _ mode: Int, _ body: Data) {
         var header = [UInt8](repeating: 0, count: 512)

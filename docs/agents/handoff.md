@@ -65,7 +65,7 @@
   - 界面操作：项目进入 READY，官方前端在导航锁定下正常加载，原生工作区文件可列出和读取，终端显示 `TERMINAL_UNSUPPORTED`。能力差距行由单元测试覆盖，侧栏未在界面上滚动核对。
   - 退出后没有残留 QEMU。
   - 运行数据在 `build/candidate/run`（启动时设 `HARNESS_CANDIDATE_ROOT`）。
-- 未验：模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key（2026-10-11 r12 上等待 30 分钟未见回合，`TURN_NOT_SEEN`，待用户操作后复核）。
+- 已验证（真机，2026-10-11，r12）：模型回合和 shell 工具端到端。用户输入 Key，在 Gate1 让模型用 bash 写读 `e2e.txt`，工具结果、项目日志、工作区文件和重开后的会话均核对通过，见测量文档。
 - iPad 构建与真机验收已由 PR #51 合入 main（2026-10-11），关口 1 脱敏结果已发到 #17：
   - `build.py --sdk iphoneos` 核对并嵌入 QEMU framework 闭包（22 个，按 `frameworks.json` 核 SHA256）；签名只用私有 `--signing-file`。`make candidate-ipad` 构建未签名版。
   - `EmbeddedMachine` 在 App 进程内运行 QEMU，串口与 QMP 用 socketpair，`stop` 走 QMP `quit`；进程内只启动一次。
@@ -114,8 +114,10 @@
 - 顺带修正 `QemuMachineTests` 读取未写完参数文件的时序窗口（替身脚本改为写临时文件后 rename）。
 - #14 组件清单已按 iPad r9 收据核对并记下 `system.raw` 构建配方，见 [分发组件](../design/distribution-components.md)。
 
-1. 模型回合与 shell 工具端到端：用户在 iPad 候选 App（r12）内输入 Key，让模型用 bash 工具运行 `echo DSH-E2E-$(uname -m) > e2e.txt && cat e2e.txt`；之后运行 `python3 build/candidate/device/e2e-auto-private.py check 1800` 复核（App 重装过，必要时先跑其 start 步骤刷新基线）。
-2. 真实备份导入演练：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
+- 模型回合与 shell 工具端到端已在 Gate1 通过（`e2e-auto-private.py`，证据 `device/e2e-check-163231`）。顺带发现：导入项目的工作区根目录权限不足时挂载检查失败（已修正，r12 设备上 `migrated-demo` 仍不可用 Linux，先开 Gate1）；缺 Key 被显示为传输失败（未改）。
+
+1. 可选改进：缺 Key 时让官方页面看到明确的需要 Key 错误，而不是重试 5 次后显示传输失败。
+2. 真实备份导入演练（先装含工作区权限修正的新构建）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
 3. 本分支（含 #14 清单提交）的 PR 合并需用户另行同意。可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务

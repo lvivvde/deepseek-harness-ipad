@@ -77,6 +77,10 @@ python3 ios/HarnessApp/scripts/device-acceptance.py run \
 
 `UI_AUTOMATION_AUTHORIZATION_TIMEOUT` 表示测试初始化未完成；需要设备端授权或解锁时，给用户一次简短步骤。不把安装、编译、初始化超时登记为恢复失败或测试通过。当前连接 probe 已实际成功；锁屏后的 UI 测试必须等到用户自行正常解锁，不主动催促已取消的验收。
 
+## 读取 App 容器
+
+`devicectl device copy from` 每次只复制一个文件。要拉取整个目录，得先列出目录内容再逐个复制。`devicectl device info files --recurse` 可能漏掉某个目录的内容：2026-10-11 从候选 App 的工作区根递归列出时，两次都列出了目录 `ro` 本身，但没有它里面的文件；单独列 `ro` 能列出。原因未查明，见 [#17 测量](ipad-candidate-measurements.md)“旧导出器备份”。所以逐个目录单独列出，不用 `--recurse`；只有用递归结果核对文件是否齐全时，才可能误报“缺文件”。
+
 ## 验证和隐私
 
 ```sh

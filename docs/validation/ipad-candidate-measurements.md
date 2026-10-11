@@ -1,6 +1,6 @@
 # iPad 候选 App 的 #17 测量与迁移演练
 
-2026-10-11，签名安装到用户的 iPad，分支 `feat/issue17-measure-migrate`（r10–r12 构建，探针相同，只差下文说明的修正）。对应 [#17](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) 的“测量”和“交付与数据”两条。按 #17，这些结果只决定兼容范围的大小，不阻断方向。
+2026-10-11，签名安装到用户的 iPad，分支 `feat/issue17-measure-migrate`（r10–r13 构建，探针相同，只差下文说明的修正；r13 加了探针阶段 `imported`）。对应 [#17](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) 的“测量”和“交付与数据”两条。按 #17，这些结果只决定兼容范围的大小，不阻断方向。
 
 ## 方法
 
@@ -96,8 +96,8 @@ HMR 归 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23)，本�
 
 过程中的两个发现：
 
-- **缺 Key 显示成网络失败**：Key 只在内存里，App 重启后清空。此时原生网关返回 `MODEL_KEY_REQUIRED`，桥接把所有模型打开失败都转成 `TypeError`，官方 Worker 把它当传输错误重试 5 次，最后显示“DeepSeek Messages transport failed”。重新输入 Key 后正常。未修改，记为后续改进。
-- **导入的项目 Linux 起不来**：第一次是在合成导入的 `migrated-demo` 项目里运行的，两次 bash 都是 `LINUX_PREPARE_FAILED`（`MOUNT_CHECK_FAILED`），模型如实回报了错误。原因见下文迁移演练的“工作区根目录权限”一条，已修正；设备上的 r12 仍是修正前的构建。
+- **缺 Key 显示成网络失败**：Key 只在内存里，App 重启后清空。此时原生网关返回 `MODEL_KEY_REQUIRED`，桥接把所有模型打开失败都转成 `TypeError`，官方 Worker 把它当传输错误重试 5 次，最后显示“DeepSeek Messages transport failed”。重新输入 Key 后正常。之后已修改：桥接对 `MODEL_KEY_REQUIRED` 返回 401 `authentication_error`；按官方适配层的错误分类，这是认证失败，只报一次、不重试。Key 输入框下注明 App 重启后要重新输入。桥接测试只核对 401 和错误类型；真机上还没有在缺 Key 时发过一轮。
+- **导入的项目 Linux 起不来**：第一次是在合成导入的 `migrated-demo` 项目里运行的，两次 bash 都是 `LINUX_PREPARE_FAILED`（`MOUNT_CHECK_FAILED`），模型如实回报了错误。原因见下文迁移演练的“工作区根目录权限”一条，已修正；r12 是修正前的构建，r13 上新导入的两个项目 Linux 均就绪（见下文“旧导出器备份”）。`migrated-demo` 是 r12 时导入的；修正只作用于导入，按代码推断它的目录权限仍是旧的，设备上没有复查。
 
 ## 迁移演练（候选 App 实演）
 
@@ -132,6 +132,26 @@ HMR 归 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23)，本�
   - 有官方配置，没有凭据；
   - `imports` 记录了这份备份；
   - Worker 还在该项目中新建了会话。
+
+### 旧导出器备份（r13，假凭据，`passed`）
+
+2026-10-11，r13（含工作区根目录权限修正）。备份由旧 App 自己的导出代码生成（关口 6 用的合成备份），不是正式 App 里的真实数据，里面的凭据都是假的。脚本推入备份，以 `HARNESS_CANDIDATE_IMPORT=1` 启动，再用探针阶段 `imported`（`HARNESS_CANDIDATE_MEASURE_PROJECT=<名字>`）逐个打开项目：
+
+- 备份约 2.6 MB：两个项目 `demo` 和 `演示`，覆盖中文、emoji 加空格的文件名、六层长中文目录、硬链接、两个符号链接（一个悬空）、空目录、`0600` 与 `0755` 文件、源目录为 `0555` 的 `ro`（备份里记为 `0755`）；两个旧会话（一个 zstd 压缩、cwd 为 `/root/projects/demo`，一个没有 cwd）；导出器已排除 `node_modules`、`.cache`、`.git-credentials` 和回收站。
+- 导入用时 83 ms：14 个文件，约 2.6 MB；2 个旧会话中，有 cwd 的 1 个改键，没有 cwd 的留在 `_no-cwd`；排除凭据 4 项、缓存 2 项；没有跳过特殊文件；两个项目都启用插件，ID 与按备份摘要和名字算出的一致。
+- 探针：两个项目 Linux 均就绪（从打开到就绪约 9.7 s；两个项目在两次启动里分别探测，每个进程只启动一次 QEMU）；guest 中 `find` 的条目数与原生枚举一致（`demo` 17，`演示` 7，都含 `.plan500-identity`）；guest 写、读、删一个文件成功。
+- 工作区逐文件比对导出器的清单：`demo` 6/6、`演示` 4/4，SHA256 全部一致；除 `.plan500-identity` 外没有多出的文件，工作区里没有凭据内容。这些是补拉后的结果，见下文。
+- 重开打开 `demo` 后，Worker 保存的 home 检查点：`imports` 记录了这份备份；有官方配置 `settings.json`，没有凭据；压缩的旧会话已改键到 `--dsh-workspace-demo--`，cwd 改为 `/dsh/workspace/demo`；没有 cwd 的会话留在 `_no-cwd`。
+
+比对时发现 devicectl 列目录不全。第一次比对 `demo` 只有 5/6，缺 `ro/inside.txt`。这个文件确实在设备上：
+
+- 按路径直接复制，SHA256 与清单一致；
+- 单独列 `ro` 能列出它；
+- App 自己的原生枚举和 guest 中的 `find` 都数到了它。
+
+漏掉它的是 `devicectl device info files --recurse`：从工作区根列两次，结果相同，都列出了 `ro` 目录本身（APFS 目录大小 96 字节，即有一个子项），但没有列出它的内容。其他目录的内容都列全了，包括六层深的目录。一个猜测是：按字母序，`ro` 排在符号链接 `readme-link` 后面；另一个排在符号链接后面的目录 `empty` 本来就是空的；`演示` 里没有符号链接，列得完整。但输出是按字母序排的，不一定是 devicectl 实际遍历的顺序。只有这一个样本，原因未查明。导入本身没有问题。
+
+私有拉取脚本已改为每个目录单独列一次、不用 `--recurse`（工具注意事项见 [真机自动化](ipad-device-automation.md)“读取 App 容器”）。改后补拉两个项目，再按清单比对，得到上面的 6/6、4/4，并重查了多余文件和凭据内容。
 
 真实备份演练待用户在 iPad 上操作：
 

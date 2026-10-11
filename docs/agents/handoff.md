@@ -85,8 +85,10 @@
   - 桥接 `spawnTerminal` 返回官方终端控制器所需的句柄（输出流用 Worker 自己的 `PassThrough`）。
   - 两轴审查后修正：重复关闭时 guest 按宿主发来的 fence 报告已释放，宿主对关闭后未确认的租约记写者未知，不再留下活动租约；shell 未退出时 guest 关闭失败、不释放；`/terminal/unlease` 返回后先核对租约仍是同一个；宿主只开 `/bin/bash -i`（`/bin/sh` 报告不了空闲提示符，租约会一直占着）。`CONTEXT.md` 新增术语“并入”。
   - 保留未改：`inspectForeground`/`signalForeground` 和 guest 的 `inputWaiting` 目前只有被拒的常驻 bash 会用，作为官方终端句柄接口的完整实现保留；hook 也会并入终端租约，文档已写明。
-  - 缺口：minimal 预设的常驻 bash 被 guest 拒绝（`ARGV_REFUSED`）；iPad 上官方终端面板未验。
+  - 真机修正：打包器的清扫看不到控制器经 `createLazyRequire` 加载的 `@xterm/headless`、`@xterm/addon-serialize`，iPad 上打开终端报 `cannot resolve "@xterm/headless"`；`prepare.mjs` 把两者列入打包入口，构建时核对其主文件在镜像内，并核对打包器未导出的默认种子仍与副本一致；设计文档第 6 条和收据 `adaptations`（增为 11 项）列出这项适配。
+  - 缺口：minimal 预设的常驻 bash 被 guest 拒绝（`ARGV_REFUSED`）；iPad 文件面板显示新文件未由用户确认（macOS 已确认）。
   - 已验证（macOS）：真实 QEMU guest 的 `run.py` 探针（含终端 18 项）通过；`make test-app`（网关 25、候选宿主 15）、`make check`、`make test-candidate`（桥接 15、构建 15）、`make test-plan500-ipad` 通过。
+  - 已验证（真机，2026-10-11，签名 r7）：iPad 上终端打开，用户运行两次命令，项目日志各有一次终端租约授予并以 `COMPLETED` 释放，工作区出现 `f`。`echo hi > f` 本身无输出，所以界面上只是换出新提示符。macOS 候选 App 上同样验证并在文件面板看到 `f`。
 
 **下一步：**
 
@@ -98,7 +100,7 @@
 - 未签名 macOS 与 iPad App 均已构建；最终收据在 `build/candidate/{app,ipad}/build-safe.json`。Xcode 保留已有 Gate1 `Phase` Sendable、传统 headermap 与 AppIntents 元数据提示，不登记为无警告。
 - 未验：这一版 iPad 真机重开、前后台、强制结束与 UI；macOS SIGKILL 不等于断电或真机验收。HTML 扫描报告只在临时目录；知识图谱工具不可用，使用限定源码证据。Linux 执行生命周期、原生工具适配另外两项留待探索。
 
-1. iPad 上验交互式终端（不需要 Key）：在启用插件的项目中打开终端，运行 `echo hi > f`，文件面板应看到 `f`。
+1. PR #53 合并需用户另行同意；合并后 session-recovery（PR #54）同步。
 2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。

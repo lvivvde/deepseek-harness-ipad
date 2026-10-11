@@ -153,7 +153,7 @@ guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写
 - macOS 上 App 退出时停止 QEMU，这次退出不记为 Linux 失败。iPad 上 QEMU 随进程结束；`EmbeddedMachine.stop` 经 QMP 发 `quit`，串口和 QMP 都用 socketpair，不监听路径或额外端口。载入的 QEMU 不能在进程内重启，第二次启动直接拒绝。
 - VM 意外退出时，先保存固定诊断，再在侧栏提示关闭并重开 App。本进程内 Linux 不再恢复。
 - 写者未知时，项目侧栏显示提示和"Release writer…"按钮。用户确认后才调用 `writer-release`：命令留在工作区的内容按原样保留，暂存的草稿在其上变基。
-- shell 命令在 guest 中以 `/bin/sh -c` 运行（Alpine 的 BusyBox ash），不是 bash。官方工具发出的 `bash -c` 只取命令文本，依赖 bash 语法的命令可能失败。
+- shell 命令在 guest 中以 `/bin/sh -c` 运行。guest 根目录是只读的 `system.raw`，其中 `/bin/sh` 指向 Debian 的 bash（2026-10-11 只读挂载核对），所以命令由 bash 以 POSIX 模式执行，不是 BusyBox ash。官方工具发出的 `bash -c` 只取命令文本；少数只在非 POSIX 模式下生效的 bash 行为可能不同。
 - 网页只能停留在回环资源服务的源上，原生调用和日志也只接受这个源的主框架。用户点击的外部链接交给系统浏览器打开。
 - 侧栏显示每个项目的能力声明（`native` / `linux` / `unsupported` 及原因），其中候选 App 的缺口也逐项列出，见 [capability-declaration.md](capability-declaration.md)。
 - Key 只在内存中，由用户在 App 内输入。

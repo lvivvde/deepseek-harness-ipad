@@ -152,11 +152,15 @@ public final class ProjectGateway: @unchecked Sendable {
                              env: [String: String] = [:], terminalType: String? = nil) throws -> Int {
         try execution.openTerminal(access, id: id, argv: argv, cwd: cwd, cols: cols, rows: rows, env: env, terminalType: terminalType)
     }
-    public func writeTerminal(_ id: String, _ data: Data) -> TerminalWrite { access.writeTerminal(id, data) }
-    public func readTerminal(_ id: String, offset: Int, waitMs: Int) throws -> TerminalRead { try access.readTerminal(id, offset: offset, waitMs: waitMs) }
-    public func resizeTerminal(_ id: String, cols: Int, rows: Int) throws { try access.resizeTerminal(id, cols: cols, rows: rows) }
-    public func signalTerminal(_ id: String, signal: String) throws -> Int { try access.signalTerminal(id, signal: signal) }
-    public func inspectTerminal(_ id: String) throws -> (foreground: TerminalForeground?, activity: TerminalActivity) { try access.inspectTerminal(id) }
+    public func writeTerminal(_ id: String, _ data: Data) -> TerminalWrite {
+        do { return try execution.withTerminal(id, owner: access) { $0.writeTerminal(id, data) } }
+        catch let error as TerminalError { return .refused(error.code) }
+        catch { return .refused("GUEST_UNREACHABLE") }
+    }
+    public func readTerminal(_ id: String, offset: Int, waitMs: Int) throws -> TerminalRead { try execution.readTerminal(access, id: id, offset: offset, waitMs: waitMs) }
+    public func resizeTerminal(_ id: String, cols: Int, rows: Int) throws { try execution.withTerminal(id, owner: access) { try $0.resizeTerminal(id, cols: cols, rows: rows) } }
+    public func signalTerminal(_ id: String, signal: String) throws -> Int { try execution.withTerminal(id, owner: access) { try $0.signalTerminal(id, signal: signal) } }
+    public func inspectTerminal(_ id: String) throws -> (foreground: TerminalForeground?, activity: TerminalActivity) { try execution.withTerminal(id, owner: access) { try $0.inspectTerminal(id) } }
     @discardableResult public func closeTerminal(_ id: String, graceMs: Int = 1000) throws -> LeaseRelease? {
         try execution.closeTerminal(access, id: id, graceMs: graceMs)
     }

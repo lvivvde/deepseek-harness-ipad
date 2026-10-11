@@ -115,9 +115,11 @@ public final class LinuxExecution: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return terminals[id] != nil
     }
 
-    private func terminal(_ id: String) throws -> TerminalRegistration {
+    private func terminal(_ id: String, owner: Project? = nil) throws -> TerminalRegistration {
         lock.lock(); defer { lock.unlock() }
-        guard let registration = terminals[id] else { throw TerminalError("TERMINAL_NOT_FOUND") }
+        guard let registration = terminals[id], owner == nil || registration.owner === owner else {
+            throw TerminalError("TERMINAL_NOT_FOUND")
+        }
         return registration
     }
 
@@ -125,8 +127,8 @@ public final class LinuxExecution: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return terminals[id] === registration
     }
 
-    private func withTerminal<T>(_ id: String, _ work: (Project) throws -> T) throws -> T {
-        let registration = try terminal(id)
+    func withTerminal<T>(_ id: String, owner: Project? = nil, _ work: (Project) throws -> T) throws -> T {
+        let registration = try terminal(id, owner: owner)
         registration.lifecycle.lock(); defer { registration.lifecycle.unlock() }
         guard isCurrent(id, registration) else { throw TerminalError("TERMINAL_NOT_FOUND") }
         return try work(registration.owner)
@@ -136,7 +138,17 @@ public final class LinuxExecution: @unchecked Sendable {
         try withTerminal(id) { $0.writeTerminal(id, data) }
     }
     public func readTerminal(_ id: String, offset: Int, waitMs: Int) throws -> TerminalRead {
-        let registration = try terminal(id)
+        try readTerminal(terminal(id), id: id, offset: offset, waitMs: waitMs)
+    }
+    func readTerminal(_ owner: Project, id: String, offset: Int, waitMs: Int) throws -> TerminalRead {
+        try readTerminal(terminal(id, owner: owner), id: id, offset: offset, waitMs: waitMs)
+    }
+    private func readTerminal(_ registration: TerminalRegistration, id: String, offset: Int, waitMs: Int) throws -> TerminalRead {
+        // Wait for opening to finish, but allow a close to interrupt the guest's long poll.
+        registration.lifecycle.lock()
+        let current = isCurrent(id, registration)
+        registration.lifecycle.unlock()
+        guard current else { throw TerminalError("TERMINAL_NOT_FOUND") }
         return try registration.owner.readTerminal(id, offset: offset, waitMs: waitMs)
     }
     public func resizeTerminal(_ id: String, cols: Int, rows: Int) throws {
@@ -153,9 +165,7 @@ public final class LinuxExecution: @unchecked Sendable {
     }
 
     func closeTerminal(_ owner: Project, id: String, graceMs: Int) throws -> LeaseRelease? {
-        lock.lock(); let registration = terminals[id]; lock.unlock()
-        if let registration, registration.owner === owner { return try closeTerminal(registration, id: id, graceMs: graceMs) }
-        return try owner.closeTerminal(id, graceMs: graceMs)
+        try closeTerminal(terminal(id, owner: owner), id: id, graceMs: graceMs)
     }
 
     private func closeTerminal(_ registration: TerminalRegistration, id: String, graceMs: Int) throws -> LeaseRelease? {

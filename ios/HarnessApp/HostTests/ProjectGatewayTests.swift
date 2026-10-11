@@ -318,6 +318,7 @@ final class ProjectGatewayTests: XCTestCase {
         let guest = FakeGuest()
         terminalGuest(guest)
         let (gateway, plugin) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         let granting = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
         var paused = false
         gateway.withStore { store in
@@ -481,6 +482,46 @@ final class ProjectGatewayTests: XCTestCase {
         guest.handlers["/terminal/unlease"] = { _ in ["writerQuiescent": true] }
     }
 
+    func testGatewayTerminalCallsRejectAnotherProjectsOrUnregisteredTerminal() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        guest.handlers["/terminal/close"] = { _ in ["closed": true] }
+        let plugin = LinuxPlugin(availability: present, launcher: { _ in })
+        let execution = LinuxExecution(plugin: plugin, rpc: guest)
+        let a = ProjectGateway(project: "A", store: try WorkspaceStore(workspace: workspace, state: state),
+                               plugin: plugin, rpc: guest, execution: execution)
+        let other = root + "/other"
+        try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+        let b = ProjectGateway(project: "B", store: try WorkspaceStore(workspace: other, state: root + "/other-state"),
+                               plugin: plugin, rpc: guest, execution: execution)
+        _ = plugin.open(project: "A", pluginEnabled: true)
+        let deadline = Date().addingTimeInterval(5)
+        while plugin.phase(of: "A") != .ready, Date() < deadline { usleep(1_000) }
+        _ = try a.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
+        let before = guest.routes
+        for id in ["t1", "absent"] {
+            XCTAssertEqual(b.writeTerminal(id, Data("x".utf8)), .refused("TERMINAL_NOT_FOUND"))
+            let calls: [() throws -> Void] = [
+                { _ = try b.readTerminal(id, offset: 0, waitMs: 0) },
+                { try b.resizeTerminal(id, cols: 90, rows: 30) },
+                { _ = try b.signalTerminal(id, signal: "INT") },
+                { _ = try b.inspectTerminal(id) },
+                { _ = try b.closeTerminal(id) }
+            ]
+            for call in calls {
+                XCTAssertThrowsError(try call()) { XCTAssertEqual($0 as? TerminalError, TerminalError("TERMINAL_NOT_FOUND")) }
+            }
+        }
+        XCTAssertEqual(guest.routes, before, "a rejected owner never sends a guest request")
+        XCTAssertTrue(execution.hasTerminal("t1"))
+        XCTAssertEqual(a.writeTerminal("t1", Data("x".utf8)), .written(leased: false))
+        _ = try a.closeTerminal("t1")
+        XCTAssertFalse(execution.hasTerminal("t1"))
+        let afterClose = guest.routes
+        XCTAssertThrowsError(try a.closeTerminal("t1")) { XCTAssertEqual($0 as? TerminalError, TerminalError("TERMINAL_NOT_FOUND")) }
+        XCTAssertEqual(guest.routes, afterClose, "closed registrations cannot send a later close into a reused ID")
+    }
+
     func testOnlyALineRunAtThePromptTakesTheLeaseAndTheIdlePromptCommitsItsWrites() throws {
         let guest = FakeGuest()
         terminalGuest(guest)
@@ -528,6 +569,7 @@ final class ProjectGatewayTests: XCTestCase {
         let guest = FakeGuest()
         terminalGuest(guest)
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         var appends = 0
         gateway.withStore { store in
             store.fault = { point in
@@ -595,6 +637,7 @@ final class ProjectGatewayTests: XCTestCase {
         let guest = FakeGuest()
         terminalGuest(guest)
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
         let fence = gateway.lease?.fence
         var failed = false
@@ -618,6 +661,7 @@ final class ProjectGatewayTests: XCTestCase {
         terminalGuest(guest)
         guest.handlers["/cancel"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
         let (gateway, _) = try readyGateway(guest, cancelWindow: 0.2)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("npm run dev\r".utf8)), .written(leased: true))
         let result = inBackground { gateway.execute("op-1", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 5000) }
         XCTAssertEqual(guest.started.wait(timeout: .now() + 5), .success)
@@ -652,6 +696,7 @@ final class ProjectGatewayTests: XCTestCase {
         terminalGuest(guest)
         let write = guest.handlers["/terminal/write"]
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         guest.handlers["/terminal/write"] = { [weak gateway] _ in
             gateway?.withStore { store in
                 store.fault = { point in
@@ -674,6 +719,7 @@ final class ProjectGatewayTests: XCTestCase {
         terminalGuest(guest)
         guest.handlers["/terminal/write"] = { _ in throw GuestRPCError.refused("TERMINAL_EXITED") }
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .refused("TERMINAL_EXITED"))
         XCTAssertNil(gateway.lease)
         let reopened = try WorkspaceStore(workspace: workspace, state: state)
@@ -686,6 +732,7 @@ final class ProjectGatewayTests: XCTestCase {
         guest.handlers["/terminal/write"] = { _ in throw GuestRPCError.unreachable("SEVERED") }
         guest.handlers["/revoke"] = { _ in ["revoked": true, "lastFence": 1] }
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .writerUnknown)
         XCTAssertEqual(gateway.lease?.state, .writerUnknown)
         XCTAssertEqual(gateway.execute("op-1", task: .shell("ls"), argv: ["/bin/ls"], timeoutMs: 1000), .refused("WRITER_UNKNOWN"),
@@ -703,12 +750,14 @@ final class ProjectGatewayTests: XCTestCase {
         terminalGuest(guest)
         guest.handlers["/terminal/close"] = { _ in ["closed": true, "releasedFence": 1] }
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("sleep 30\r".utf8)), .written(leased: true))
         try "x".write(toFile: workspace + "/out.txt", atomically: false, encoding: .utf8)
         XCTAssertEqual(try gateway.closeTerminal("t1")?.changed, [RelativePath("out.txt")])
         XCTAssertNil(gateway.lease)
 
         guest.handlers["/terminal/close"] = { _ in ["closed": false, "releasedFence": NSNull()] }
+        _ = try gateway.openTerminal("t2", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t2", Data("sleep 30\r".utf8)), .written(leased: true))
         XCTAssertThrowsError(try gateway.closeTerminal("t2")) { XCTAssertEqual($0 as? TerminalError, TerminalError("TERMINAL_BUSY")) }
         XCTAssertEqual(gateway.lease?.operation, "terminal:t2:1")
@@ -720,12 +769,14 @@ final class ProjectGatewayTests: XCTestCase {
         // The first close's answer was lost; the repeat finds no terminal and reports the fence it was sent.
         guest.handlers["/terminal/close"] = { body in ["closed": true, "releasedFence": body?["fence"] ?? NSNull()] }
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("sleep 30\r".utf8)), .written(leased: true))
         XCTAssertNotNil(try gateway.closeTerminal("t1"))
         XCTAssertEqual(guest.bodies("/terminal/close").last?["fence"] as? Int, 1)
         XCTAssertNil(gateway.lease)
 
         guest.handlers["/terminal/close"] = { _ in ["closed": true, "releasedFence": NSNull()] }
+        _ = try gateway.openTerminal("t2", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t2", Data("sleep 30\r".utf8)), .written(leased: true))
         XCTAssertNil(try gateway.closeTerminal("t2"))
         XCTAssertEqual(gateway.lease?.state, .writerUnknown, "a lease nothing confirmed ended never stays active")
@@ -737,6 +788,7 @@ final class ProjectGatewayTests: XCTestCase {
         let unleasing = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
         guest.handlers["/terminal/unlease"] = { _ in unleasing.signal(); proceed.wait(); return ["writerQuiescent": true] }
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
         let read = inBackground { try? gateway.readTerminal("t1", offset: 0, waitMs: 0) }
         XCTAssertEqual(unleasing.wait(timeout: .now() + 5), .success)
@@ -756,6 +808,7 @@ final class ProjectGatewayTests: XCTestCase {
         let guest = FakeGuest()
         terminalGuest(guest)
         let (gateway, _) = try readyGateway(guest)
+        _ = try gateway.openTerminal("t1", argv: ["/bin/bash", "-i"], cwd: "/workspace", cols: 80, rows: 24)
         XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .written(leased: true))
         gateway.guestExited(status: 9)
         XCTAssertNil(gateway.lease)

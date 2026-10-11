@@ -120,7 +120,7 @@
 
 **下一步：**
 
-1. PR #53、#54、#56 已合并；本分支（含 #14 清单提交）的 [PR55](https://github.com/lvivvde/deepseek-harness-ipad/pull/55) 已同步 main，用户已同意以 merge commit 合入 main。Linux 执行生命周期（PR #56）的真机验收待安排。
+1. PR #53、#54、#56 已合并；本分支（含 #14 清单提交）的 [PR55](https://github.com/lvivvde/deepseek-harness-ipad/pull/55) 已同步 main（同步后 `make test-app` 8 个测试包共 235 项无失败、跳过或警告，`make check` 通过），用户已同意以 merge commit 合入 main。Linux 执行生命周期（PR #56）的真机验收待安排。
 2. 真实备份导入演练（设备上的 r13 已含工作区权限修正）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 

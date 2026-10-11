@@ -12,6 +12,8 @@ final class SessionRecovery {
         let initialization: String
         let id: String; let sequence: Int; let revision: Int; let savedAt: Double
         let home: HomeSnapshot; let projects: [String: Baseline]
+        /// Backup imports (`home-imports/<id>.json`) already merged into `home`; nil before imports existed.
+        let imports: [String]?
     }
     private struct Envelope: Codable { let formatVersion: Int; let body: Data; let checksum: String }
     private struct Marker: Codable {
@@ -33,6 +35,8 @@ final class SessionRecovery {
     private var baseline: [String: Baseline] = [:]
     private var phase = "NOT_STARTED", diagnosis: String?, saveError: String?
     private var savedAt: Double?
+    /// Imports merged into the home this Worker restored; recorded with its next save.
+    private var imports: [String] = []
     init(root: String, fault: FaultHook? = nil) { self.root = root; self.fault = fault }
 
     private func path(_ name: String) -> String { root + "/" + name }
@@ -70,7 +74,7 @@ final class SessionRecovery {
     func restore() throws -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         worker = UUID().uuidString; revision = 0; savedRevision = 0; capture = nil
-        selected = nil; baseline = [:]; savedAt = nil; saveError = nil; diagnosis = nil
+        selected = nil; baseline = [:]; savedAt = nil; saveError = nil; diagnosis = nil; imports = []
         do {
             let markerBytes = try read("home-initialized.json")
             let marker = try markerBytes.map { try JSONDecoder().decode(Marker.self, from: $0) }
@@ -100,24 +104,48 @@ final class SessionRecovery {
                 phase = "SAVED"; if damaged { diagnosis = "CHECKPOINT_FALLBACK" }
                 // Persist initialized status even if an earlier save died after replacing the home.
                 try write(try JSONEncoder().encode(Marker(formatVersion: 1, initialization: initialization, empty: false, diagnosis: diagnosis, preserved: nil)), "home-initialized.json")
-                return reply(latest.body.home)
+                return reply(merged(latest.body.home, done: latest.body.imports ?? []))
             }
-            if marker?.empty == true && !damaged { phase = "UNSAVED"; return reply(nil) }
+            if marker?.empty == true && !damaged { phase = "UNSAVED"; return reply(merged(nil, done: [])) }
             if marker == nil, let legacy = try read(CandidateHost.homeCheckpoint) {
                 do {
                     let home = try HomeSnapshot.decode(JSONSerialization.jsonObject(with: legacy))
                     phase = "UNSAVED"; diagnosis = "LEGACY_CHECKPOINT"
-                    return reply(home)
+                    return reply(merged(home, done: []))
                 } catch { try quarantine(legacy, CandidateHost.homeCheckpoint); throw error }
             }
             guard marker == nil && !damaged else { throw CandidateError("CHECKPOINT_MISSING_OR_CORRUPT") }
             try write(try JSONEncoder().encode(Marker(formatVersion: 1, initialization: initialization, empty: true, diagnosis: nil, preserved: nil)), "home-initialized.json")
-            phase = "UNSAVED"; return reply(nil)
+            phase = "UNSAVED"; return reply(merged(nil, done: []))
         } catch {
             phase = "BLOCKED"; diagnosis = (error as? CandidateError)?.code ?? "CHECKPOINT_READ_FAILED"
             return ["error": "RECOVERY_BLOCKED", "diagnosis": diagnosis!, "worker": worker]
         }
     }
+    /// Adds each pending backup import's entries that the home does not have yet; an entry the home
+    /// already holds keeps the home's bytes. A merged import leaves the home unsaved until the Worker saves it.
+    private func merged(_ home: HomeSnapshot?, done: [String]) -> HomeSnapshot? {
+        imports = done
+        let directory = path(Self.importDirectory)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []).filter { $0.hasSuffix(".json") }.sorted()
+        var result = home
+        for name in names {
+            let id = String(name.dropLast(5))
+            guard !done.contains(id) else { continue }
+            // An unreadable import never blocks the home; it stays pending with its code shown.
+            guard let bytes = FileManager.default.contents(atPath: directory + "/" + name) else { diagnosis = "IMPORT_READ_FAILED"; continue }
+            guard let addition = try? HomeSnapshot.decode(try? JSONSerialization.jsonObject(with: bytes)) else { diagnosis = "IMPORT_CORRUPT"; continue }
+            // A file where the home has a directory (or the reverse) cannot merge; the import stays pending.
+            let next = (result ?? HomeSnapshot(formatVersion: 1, directories: [], files: [])).adding(addition)
+            guard (try? next.validate()) != nil else { diagnosis = "IMPORT_CONFLICT"; continue }
+            result = next
+            imports.append(id)
+        }
+        if imports.count > done.count { phase = "UNSAVED" }
+        return result
+    }
+    static let importDirectory = "home-imports"
+
     private func reply(_ home: HomeSnapshot?) -> [String: Any] {
         ["snapshot": home.map(CandidateHost.json) ?? NSNull(), "worker": worker,
          "diagnosis": diagnosis as Any? ?? NSNull(), "savedAt": savedAt as Any? ?? NSNull()]
@@ -172,7 +200,8 @@ final class SessionRecovery {
         defer { capture = nil }
         do {
             let body = Body(initialization: initialization, id: UUID().uuidString, sequence: (selected?.body.sequence ?? 0) + 1, revision: value,
-                            savedAt: Date().timeIntervalSince1970, home: home, projects: ticket.projects)
+                            savedAt: Date().timeIntervalSince1970, home: home, projects: ticket.projects,
+                            imports: imports.isEmpty ? nil : imports.sorted())
             let bytes = try JSONEncoder().encode(body)
             let envelope = try JSONEncoder().encode(Envelope(formatVersion: 2, body: bytes, checksum: Self.hash(bytes)))
             // With no selected copy (first save, legacy migration or explicit fresh), replace both slots.

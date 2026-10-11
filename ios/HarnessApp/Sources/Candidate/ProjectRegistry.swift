@@ -52,10 +52,7 @@ public final class ProjectRegistry: @unchecked Sendable {
     /// Names are one visible path component: no `/`, NUL or control characters, no leading dot, at
     /// most 64 bytes.
     public func create(name: String, pluginEnabled: Bool) throws -> CandidateProject {
-        guard (1...64).contains(name.utf8.count), !name.hasPrefix("."), !name.contains("/"),
-              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw CandidateError("PROJECT_NAME_REFUSED")
-        }
+        try Self.validate(name: name)
         lock.lock(); defer { lock.unlock() }
         guard !known.contains(where: { $0.name == name }) else { throw CandidateError("PROJECT_NAME_TAKEN") }
         let project = CandidateProject(id: UUID().uuidString, name: name, pluginEnabled: pluginEnabled)
@@ -65,6 +62,35 @@ public final class ProjectRegistry: @unchecked Sendable {
         try Self.durableWrite(try JSONEncoder().encode(project), to: base + "/project.json")
         known.append(project)
         return project
+    }
+
+    static func validate(name: String) throws {
+        guard (1...64).contains(name.utf8.count), !name.hasPrefix("."), !name.contains("/"),
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw CandidateError("PROJECT_NAME_REFUSED")
+        }
+    }
+
+    /// Registers a migrated project, plugin enabled, by moving `workspace` into place. The record is
+    /// written last, so a crash before it leaves no project and a later call finishes the same one.
+    /// The workspace root gets the mode `create` gives: the guest's unleased reader (uid 65534) must
+    /// traverse it, or the mount check fails and Linux never comes up for the process.
+    func adopt(id: String, name: String, workspace source: String) throws {
+        try Self.validate(name: name)
+        lock.lock(); defer { lock.unlock() }
+        guard !known.contains(where: { $0.id == id }) else { return }
+        guard !known.contains(where: { $0.name == name }) else { throw CandidateError("PROJECT_NAME_TAKEN") }
+        let project = CandidateProject(id: id, name: name, pluginEnabled: true)
+        let base = directory(project)
+        try FileManager.default.createDirectory(atPath: state(project), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: source) {
+            guard !FileManager.default.fileExists(atPath: workspace(project)) else { throw CandidateError("IMPORT_WORKSPACE_EXISTS") }
+            guard rename(source, workspace(project)) == 0 else { throw CandidateError("IMPORT_MOVE_FAILED") }
+        }
+        guard FileManager.default.fileExists(atPath: workspace(project)) else { throw CandidateError("IMPORT_WORKSPACE_MISSING") }
+        guard chmod(workspace(project), 0o755) == 0 else { throw CandidateError("IMPORT_MOVE_FAILED") }
+        try Self.durableWrite(try JSONEncoder().encode(project), to: base + "/project.json")
+        known.append(project)
     }
 
     /// The workspace store's durable replace; the record is private to the App.

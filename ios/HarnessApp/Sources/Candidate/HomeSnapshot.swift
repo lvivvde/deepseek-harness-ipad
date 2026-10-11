@@ -24,6 +24,13 @@ struct HomeSnapshot: Codable {
         catch { throw CandidateError("SNAPSHOT_REFUSED") }
     }
 
+    /// This home plus every entry of `other` at a path this home does not have.
+    func adding(_ other: HomeSnapshot) -> HomeSnapshot {
+        let taken = Set(directories.map(\.path) + files.map(\.path))
+        return HomeSnapshot(formatVersion: formatVersion, directories: directories + other.directories.filter { !taken.contains($0.path) },
+                            files: files + other.files.filter { !taken.contains($0.path) })
+    }
+
     static func validatePath(_ path: String) throws {
         guard path == "/dsh/home" || path.hasPrefix("/dsh/home/"), !path.contains("\0"),
               !path.dropFirst().split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0.isEmpty || $0 == "." || $0 == ".." })

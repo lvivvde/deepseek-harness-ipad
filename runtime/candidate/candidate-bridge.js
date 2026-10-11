@@ -815,7 +815,14 @@ globalThis.fetch = async (input, options = {}) => {
   new Headers(options.headers).forEach((value, name) => { headers[name] = value; });
   const opened = await candidateNative('model-open', {streamId, url, headers, body: options.body});
   if (signal?.aborted) { cancel(); throw aborted(); }
-  if (opened.failure) { settled = true; signal?.removeEventListener('abort', cancel); throw failed(opened.failure); }
+  if (opened.failure) { settled = true; signal?.removeEventListener('abort', cancel); }
+  // No Key in memory (the App restarted) is an authentication failure, which the adapter reports
+  // once instead of retrying it as a lost connection.
+  if (opened.failure === 'MODEL_KEY_REQUIRED') {
+    return new Response(JSON.stringify({type: 'error', error: {type: 'authentication_error', message: 'MODEL_KEY_REQUIRED: enter the DeepSeek API key under Model key in the projects sidebar'}}),
+      {status: 401, headers: {'content-type': 'application/json'}});
+  }
+  if (opened.failure) throw failed(opened.failure);
   const finish = () => { settled = true; signal?.removeEventListener('abort', cancel); };
   const body = new ReadableStream({
     async pull(controller) {

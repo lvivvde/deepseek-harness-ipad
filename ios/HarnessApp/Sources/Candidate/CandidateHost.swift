@@ -37,6 +37,7 @@ public final class CandidateHost: @unchecked Sendable {
     /// The launcher stopped the VM itself; its exit must not replace the preparation failure's cause.
     private var stopping = false
     private var diagnostic: LinuxPlugin.Diagnostic?
+    private var boots = 0
 
     public init(registry: ProjectRegistry, machine: GuestMachine, availability: LinuxAvailability = .detect(),
                 gitScripts: [(name: String, source: String)], model: ModelGateway? = nil,
@@ -161,7 +162,9 @@ public final class CandidateHost: @unchecked Sendable {
 
     /// Where the candidate falls short of the formal scope, declared instead of hidden. A narrower path
     /// qualifies an item that is available; hooks run on Linux, but the official web profile loads no hook plugin.
-    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY", "hook.command": "NO_OFFICIAL_CALLER"]
+    /// Shell commands in one project are not queued: while one holds the write lease the others are refused.
+    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY", "hook.command": "NO_OFFICIAL_CALLER",
+                           "shell": "ONE_COMMAND_AT_A_TIME"]
 
     static func candidateDeclaration(_ declaration: CapabilityDeclaration) -> [String: Any] {
         var value = json(declaration) as? [String: Any] ?? [:]
@@ -365,7 +368,10 @@ public final class CandidateHost: @unchecked Sendable {
         let workspace = registry.workspace(target.project)
         do { try Self.writeIdentity(id, workspace) } catch { throw LinuxPlugin.LaunchFailure("IDENTITY_WRITE_FAILED") }
         let rpc = machine.rpc
-        try LinuxBringUp(rpc: rpc, boot: { [machine] _ in try machine.boot(workspace: workspace) },
+        try LinuxBringUp(rpc: rpc, boot: { [self] _ in
+                             lock.lock(); boots += 1; lock.unlock()
+                             try machine.boot(workspace: workspace)
+                         },
                          exited: { [machine] in machine.exited }, attach: target.gateway.attach,
                          check: MountCheck(rpc: rpc, workspace: workspace, project: id).verify,
                          stop: { [self] in
@@ -374,6 +380,27 @@ public final class CandidateHost: @unchecked Sendable {
                          },
                          readyTimeout: readyTimeout, pollInterval: pollInterval).launch(id)
     }
+
+    /// Imports the old App's full backup (`BackupImport`). Only the App's own importer calls this; the
+    /// Worker has no operation for it. The old home reaches the Worker at its next restore.
+    public func importBackup(archive: String, checksum: String) -> [String: Any] {
+        do {
+            var value = Self.json(try BackupImport.run(archive: archive, checksum: checksum, registry: registry)) as? [String: Any] ?? [:]
+            value["projectsNow"] = projects()
+            return value
+        } catch let error as CandidateError {
+            return ["error": error.code]
+        } catch {
+            return ["error": "IMPORT_FAILED"]
+        }
+    }
+
+    /// How many times this process booted the VM; the contract allows at most one (`MeasureProbe`).
+    public var bootCount: Int { lock.lock(); defer { lock.unlock() }; return boots }
+
+    /// Stops the VM the way an unexpected exit would reach the host: not marked as stopping, so it is
+    /// recorded as a Linux failure. Only the lifecycle measurement calls this.
+    func stopVMUnexpectedly() { machine.stop() }
 
     /// The App is quitting: the VM must not outlive it, and its exit is not a Linux failure.
     public func shutdown() {

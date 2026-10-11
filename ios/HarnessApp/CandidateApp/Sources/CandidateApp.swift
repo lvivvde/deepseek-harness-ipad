@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 @main
@@ -23,6 +24,7 @@ struct CandidateView: View {
     @State private var key = ""
     @State private var selected: String?
     @State private var confirmingFresh = false
+    @State private var importing = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -48,10 +50,19 @@ struct CandidateView: View {
                     Button("Create") { model.create(name: name, pluginEnabled: pluginEnabled); name = "" }
                         .disabled(name.isEmpty)
                 }
+                Section("Old App backup") {
+                    Button("Import backup…") { importing = true }
+                        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                            if case .success(let urls) = result { model.importBackup(urls) }
+                        }
+                    Text("Pick HarnessBackup.tar and its .sha256. The old App and its data stay untouched.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let status = model.importStatus { Text(status).font(.caption) }
+                }
                 Section("Model key") {
                     SecureField("DeepSeek API key", text: $key)
                         .onChange(of: key) { model.setKey($0) }
-                    Text("Held in memory only.").font(.caption).foregroundStyle(.secondary)
+                    Text("Held in memory only; enter it again after the App restarts.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Session") {
                     Text(sessionStatus).foregroundStyle(model.sessionPhase == "BLOCKED" || model.sessionPhase == "UNSAVED" ? .orange : .secondary)

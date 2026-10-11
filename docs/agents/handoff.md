@@ -94,7 +94,7 @@
 
 **下一步：**
 
-1. PR #53 合并需用户另行同意；合并后 session-recovery（PR #54）同步。
+1. PR #53 已合并；session-recovery（PR #54）与本项独立推进，各 PR 合并均另获用户同意。
 2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App 内输入 Key 后验证。
 3. #17 要求的测量和迁移演练。
 4. 用 iPad 候选构建收据补全 #14 清单，包括 `system.raw` 的构建配方。

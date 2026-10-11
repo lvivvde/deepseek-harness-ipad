@@ -168,6 +168,27 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertNil(gateway.lease)
     }
 
+    func testGuestRefusalReportsAStorageFailureUntilItsUnsentLeaseCanBeReleased() throws {
+        let guest = FakeGuest()
+        let (gateway, _) = try readyGateway(guest)
+        guest.handlers["/execute"] = { [weak gateway] _ in
+            gateway?.withStore { store in
+                store.fault = { point in
+                    if point == FaultPoint(.journal, .beforeSync) { throw WorkspaceError.io("write", ENOSPC) }
+                }
+            }
+            throw GuestRPCError.refused("ARGV_REFUSED")
+        }
+        XCTAssertEqual(gateway.execute("refused", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000), .refused("STORE_FAILED"))
+        XCTAssertNotNil(gateway.lease)
+        gateway.withStore { $0.fault = nil }
+        guest.handlers["/execute"] = nil
+        guest.finish.signal()
+        guard case .completed = gateway.execute("next", task: .shell("x"), argv: ["/bin/sh"], timeoutMs: 1000) else { return XCTFail("new operation after cleanup") }
+        XCTAssertEqual(guest.bodies("/execute").map { $0["id"] as? String }, ["refused", "next"])
+        XCTAssertNil(gateway.lease)
+    }
+
     func testGuestRefusalBeforeSpawnReleasesTheLeaseWithNothingChanged() throws {
         let guest = FakeGuest()
         guest.handlers["/execute"] = { _ in throw GuestRPCError.refused("ARGV_REFUSED") }
@@ -623,6 +644,28 @@ final class ProjectGatewayTests: XCTestCase {
         XCTAssertNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
         XCTAssertEqual(gateway.lease?.state, .active, "an unanswered release is asked again on the next read")
         guest.handlers["/terminal/unlease"] = { _ in ["writerQuiescent": true] }
+        XCTAssertNotNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
+    }
+
+    func testTerminalRefusalReportsAStorageFailureUntilItsUnsentGrantCanBeReleased() throws {
+        let guest = FakeGuest()
+        terminalGuest(guest)
+        let write = guest.handlers["/terminal/write"]
+        let (gateway, _) = try readyGateway(guest)
+        guest.handlers["/terminal/write"] = { [weak gateway] _ in
+            gateway?.withStore { store in
+                store.fault = { point in
+                    if point == FaultPoint(.journal, .beforeSync) { throw WorkspaceError.io("write", ENOSPC) }
+                }
+            }
+            throw GuestRPCError.refused("WRITE_REFUSED")
+        }
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("ls\r".utf8)), .refused("STORE_FAILED"))
+        XCTAssertNotNil(gateway.lease)
+        gateway.withStore { $0.fault = nil }
+        guest.handlers["/terminal/write"] = write
+        XCTAssertEqual(gateway.writeTerminal("t1", Data("pwd\r".utf8)), .written(leased: true))
+        XCTAssertEqual(guest.bodies("/terminal/write").count, 2)
         XCTAssertNotNil(try gateway.readTerminal("t1", offset: 0, waitMs: 0).release)
     }
 

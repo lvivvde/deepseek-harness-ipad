@@ -13,7 +13,14 @@ public final class LinuxExecution: @unchecked Sendable {
     private var cancelled = Set<String>()
     private var guestGone = false
     private var projects: [String: Project] = [:]
-    private var terminals: [String: Project] = [:]
+    private final class TerminalRegistration {
+        let owner: Project
+        // Serializes open/close and short calls across reuse of the same terminal ID. Long reads
+        // stay outside it so closing a terminal can interrupt an output poll.
+        let lifecycle = NSLock()
+        init(_ owner: Project) { self.owner = owner }
+    }
+    private var terminals: [String: TerminalRegistration] = [:]
     private let plugin: LinuxPlugin
     private let rpc: GuestRPC
 
@@ -85,10 +92,12 @@ public final class LinuxExecution: @unchecked Sendable {
 
     func openTerminal(_ owner: Project, id: String, argv: [String], cwd: String, cols: Int, rows: Int,
                       env: [String: String], terminalType: String?) throws -> Int {
+        let registration = TerminalRegistration(owner)
+        registration.lifecycle.lock(); defer { registration.lifecycle.unlock() }
         lock.lock()
         guard !guestGone else { lock.unlock(); throw TerminalError(LinuxPlugin.vmExitedCode) }
         guard terminals[id] == nil else { lock.unlock(); throw TerminalError("DUPLICATE_TERMINAL") }
-        terminals[id] = owner
+        terminals[id] = registration
         lock.unlock()
         do {
             let pid = try owner.openTerminal(id, argv: argv, cwd: cwd, cols: cols, rows: rows, env: env, terminalType: terminalType)
@@ -97,7 +106,7 @@ public final class LinuxExecution: @unchecked Sendable {
             return pid
         } catch {
             let uncertain = (error as? TerminalError)?.code == "GUEST_UNREACHABLE"
-            if !uncertain || closeIfConfirmed(id, owner) { forgetTerminal(id, owner) }
+            if !uncertain || closeIfConfirmed(id, owner) { forgetTerminal(id, registration) }
             throw error
         }
     }
@@ -106,33 +115,67 @@ public final class LinuxExecution: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return terminals[id] != nil
     }
 
-    private func terminal(_ id: String) throws -> Project {
+    private func terminal(_ id: String) throws -> TerminalRegistration {
         lock.lock(); defer { lock.unlock() }
-        guard let owner = terminals[id] else { throw TerminalError("TERMINAL_NOT_FOUND") }
-        return owner
+        guard let registration = terminals[id] else { throw TerminalError("TERMINAL_NOT_FOUND") }
+        return registration
     }
 
-    public func writeTerminal(_ id: String, _ data: Data) throws -> TerminalWrite { try terminal(id).writeTerminal(id, data) }
-    public func readTerminal(_ id: String, offset: Int, waitMs: Int) throws -> TerminalRead { try terminal(id).readTerminal(id, offset: offset, waitMs: waitMs) }
-    public func resizeTerminal(_ id: String, cols: Int, rows: Int) throws { try terminal(id).resizeTerminal(id, cols: cols, rows: rows) }
-    public func signalTerminal(_ id: String, signal: String) throws -> Int { try terminal(id).signalTerminal(id, signal: signal) }
-    public func inspectTerminal(_ id: String) throws -> (foreground: TerminalForeground?, activity: TerminalActivity) { try terminal(id).inspectTerminal(id) }
+    private func isCurrent(_ id: String, _ registration: TerminalRegistration) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return terminals[id] === registration
+    }
+
+    private func withTerminal<T>(_ id: String, _ work: (Project) throws -> T) throws -> T {
+        let registration = try terminal(id)
+        registration.lifecycle.lock(); defer { registration.lifecycle.unlock() }
+        guard isCurrent(id, registration) else { throw TerminalError("TERMINAL_NOT_FOUND") }
+        return try work(registration.owner)
+    }
+
+    public func writeTerminal(_ id: String, _ data: Data) throws -> TerminalWrite {
+        try withTerminal(id) { $0.writeTerminal(id, data) }
+    }
+    public func readTerminal(_ id: String, offset: Int, waitMs: Int) throws -> TerminalRead {
+        let registration = try terminal(id)
+        return try registration.owner.readTerminal(id, offset: offset, waitMs: waitMs)
+    }
+    public func resizeTerminal(_ id: String, cols: Int, rows: Int) throws {
+        try withTerminal(id) { try $0.resizeTerminal(id, cols: cols, rows: rows) }
+    }
+    public func signalTerminal(_ id: String, signal: String) throws -> Int {
+        try withTerminal(id) { try $0.signalTerminal(id, signal: signal) }
+    }
+    public func inspectTerminal(_ id: String) throws -> (foreground: TerminalForeground?, activity: TerminalActivity) {
+        try withTerminal(id) { try $0.inspectTerminal(id) }
+    }
     @discardableResult public func closeTerminal(_ id: String, graceMs: Int = 1000) throws -> LeaseRelease? {
-        let owner = try terminal(id)
-        return try closeTerminal(owner, id: id, graceMs: graceMs)
+        try closeTerminal(terminal(id), id: id, graceMs: graceMs)
     }
 
     func closeTerminal(_ owner: Project, id: String, graceMs: Int) throws -> LeaseRelease? {
-        let release = try owner.closeTerminal(id, graceMs: graceMs)
-        forgetTerminal(id, owner)
+        lock.lock(); let registration = terminals[id]; lock.unlock()
+        if let registration, registration.owner === owner { return try closeTerminal(registration, id: id, graceMs: graceMs) }
+        return try owner.closeTerminal(id, graceMs: graceMs)
+    }
+
+    private func closeTerminal(_ registration: TerminalRegistration, id: String, graceMs: Int) throws -> LeaseRelease? {
+        registration.lifecycle.lock(); defer { registration.lifecycle.unlock() }
+        guard isCurrent(id, registration) else { throw TerminalError("TERMINAL_NOT_FOUND") }
+        let release = try registration.owner.closeTerminal(id, graceMs: graceMs)
+        forgetTerminal(id, registration)
         return release
     }
 
     public func resetTerminals() -> (closed: Int, remaining: [String]) {
         lock.lock(); let left = terminals; lock.unlock()
         var remaining: [String] = []
-        for (id, owner) in left {
-            if closeIfConfirmed(id, owner) { forgetTerminal(id, owner) } else { remaining.append(id) }
+        for (id, registration) in left {
+            do { _ = try closeTerminal(registration, id: id, graceMs: 0) }
+            catch {
+                // A concurrent close already removed this registration; a new one with the same ID
+                // belongs to a later open and must not be closed by this reset.
+                if isCurrent(id, registration) { remaining.append(id) }
+            }
         }
         return (left.count - remaining.count, remaining.sorted())
     }
@@ -141,8 +184,8 @@ public final class LinuxExecution: @unchecked Sendable {
         do { try owner.closeTerminal(id, graceMs: 0); return true } catch { return false }
     }
 
-    private func forgetTerminal(_ id: String, _ owner: Project) {
-        lock.lock(); if terminals[id] === owner { terminals[id] = nil }; lock.unlock()
+    private func forgetTerminal(_ id: String, _ registration: TerminalRegistration) {
+        lock.lock(); if terminals[id] === registration { terminals[id] = nil }; lock.unlock()
     }
 
     final class Project: @unchecked Sendable {
@@ -280,8 +323,10 @@ public final class LinuxExecution: @unchecked Sendable {
             catch GuestRPCError.refused(let code) {
                 // Every agent refusal happens before spawn: nothing can hold the writable view.
                 storeLock.lock(); defer { storeLock.unlock() }
-                if join == nil { try? releaseUnsent(lease.fence) } else { terminalLease?.joined.remove(id) }
-                try? store.toolFinished(id, outcome: "REFUSED")
+                do {
+                    if join == nil { try releaseUnsent(lease.fence) } else { terminalLease?.joined.remove(id) }
+                    try store.toolFinished(id, outcome: "REFUSED")
+                } catch { return .refused("STORE_FAILED") }
                 return .refused(code ?? "GUEST_REFUSED")
             } catch {
                 storeLock.lock(); defer { storeLock.unlock() }
@@ -417,8 +462,10 @@ public final class LinuxExecution: @unchecked Sendable {
                 if let granted {
                     storeLock.lock(); defer { storeLock.unlock() }
                     terminalLease = nil
-                    try? releaseUnsent(granted.fence)
-                    try? store.toolFinished(granted.call, outcome: "REFUSED")
+                    do {
+                        try releaseUnsent(granted.fence)
+                        try store.toolFinished(granted.call, outcome: "REFUSED")
+                    } catch { return .refused("STORE_FAILED") }
                 }
                 return .refused(code ?? "GUEST_REFUSED")
             } catch {

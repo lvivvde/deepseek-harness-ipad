@@ -29,6 +29,9 @@ public final class CandidateHost: @unchecked Sendable {
     /// Guards `open`, `stopping` and `diagnostic`. Never held while a
     /// gateway, the plugin or the guest is called.
     private let lock = NSLock()
+    /// Only one opener constructs a project's durable store; a second recovery must not journal
+    /// against a store that another opener has already made live.
+    private let openingLock = NSLock()
     private var open: [String: Open] = [:]
     /// The launcher stopped the VM itself; its exit must not replace the preparation failure's cause.
     private var stopping = false
@@ -112,14 +115,18 @@ public final class CandidateHost: @unchecked Sendable {
 
     /// Opening never waits for Linux: a plugin project starts its preparation in the background.
     private func openProject(_ project: CandidateProject) throws -> CandidateProject {
-        if opened(project.id) == nil {
-            let store = try WorkspaceStore(workspace: registry.workspace(project), state: registry.state(project))
-            let gateway = ProjectGateway(project: project.id, store: store, plugin: plugin, rpc: machine.rpc, execution: execution)
-            let tools = try ProjectTools(gateway: gateway, workspace: registry.workspace(project), mount: project.mount,
-                                         scratch: registry.scratch, gitScripts: gitScripts)
-            lock.lock()
-            if open[project.id] == nil { open[project.id] = Open(project: project, gateway: gateway, tools: tools) }
-            lock.unlock()
+        openingLock.lock()
+        do {
+            defer { openingLock.unlock() }
+            if opened(project.id) == nil {
+                let store = try WorkspaceStore(workspace: registry.workspace(project), state: registry.state(project))
+                let gateway = ProjectGateway(project: project.id, store: store, plugin: plugin, rpc: machine.rpc, execution: execution)
+                let tools = try ProjectTools(gateway: gateway, workspace: registry.workspace(project), mount: project.mount,
+                                             scratch: registry.scratch, gitScripts: gitScripts)
+                lock.lock()
+                if open[project.id] == nil { open[project.id] = Open(project: project, gateway: gateway, tools: tools) }
+                lock.unlock()
+            }
         }
         plugin.open(project: project.id, pluginEnabled: project.pluginEnabled)
         return project

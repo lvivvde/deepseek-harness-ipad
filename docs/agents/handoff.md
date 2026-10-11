@@ -92,7 +92,7 @@
 
 **下一步：**
 
-2026-10-11 架构扫描选定会话检查点与恢复，用户已确认设计并在 [草稿 PR54](https://github.com/lvivvde/deepseek-harness-ipad/pull/54) 的 `codex/session-recovery` 实现（终端 PR53 已于 2026-10-11 合并，PR54 的 base 已改为 main 并同步）。详见 [会话恢复](../design/session-recovery.md)。Worker 与 Swift 共同收拢恢复、采集前项目基线、home 完整验证及耐久确认；保留当前/上一份和初始化身份，损坏隔离后可回退，无可用副本则阻止恢复。新建须明确确认并保留诊断与旧字节；失败持续显示未保存，自动和手动重试。项目提示读取正常打开后的状态，不清理调用账本，不预热其他项目，不回滚工作区或释放未知租约。
+2026-10-11 架构扫描选定会话检查点与恢复，用户已确认设计并在 [PR54](https://github.com/lvivvde/deepseek-harness-ipad/pull/54) 实现，已于 2026-10-11 合并。详见 [会话恢复](../design/session-recovery.md)。Worker 与 Swift 共同收拢恢复、采集前项目基线、home 完整验证及耐久确认；保留当前/上一份和初始化身份，损坏隔离后可回退，无可用副本则阻止恢复。新建须明确确认并保留诊断与旧字节；失败持续显示未保存，自动和手动重试。项目提示读取正常打开后的状态，不清理调用账本，不预热其他项目，不回滚工作区或释放未知租约。
 
 - 审查：规范轴无发现；规格轴的首次保存被空标记忽略、新建后诊断丢失两项已修复并复核。另补上无新事件时手动保存失败仍自动重试，并由真实 VFS 往返核对目录时间在恢复后保持。
 - 验证（macOS）：真实 Worker VFS/官方 JSONL flush→Swift handler→新 Worker 往返；恢复合同 9 项，包含已有副本 15 种及首次/新建 30 种 SIGKILL 组合；桥接 20 项无跳过；构建闸门 15 项。工作区 27、宿主 44、候选 28 项回归通过；审查修正后候选宿主 19 项复测通过；`make check` 通过。
@@ -112,12 +112,11 @@
 - 候选 App 接入 `UserDataMigrator`（`BackupImport`、设置页“Import backup…”、`HARNESS_CANDIDATE_IMPORT=1`）；合成备份真机导入 `passed`，旧 home 经 Worker 恢复并入一次。
 - 已验证（macOS）：`make test-app`（候选宿主 19、导入 6、测量 5 项等全部通过）、`make check`、`make test-candidate`（桥接 20、构建 15）通过。
 - 顺带修正 `QemuMachineTests` 读取未写完参数文件的时序窗口（替身脚本改为写临时文件后 rename）。
-- #14 组件清单与 `system.raw` 配方在分支 `docs/issue17-e2e-components`。
+- #14 组件清单已按 iPad r9 收据核对并记下 `system.raw` 构建配方，见 [分发组件](../design/distribution-components.md)。
 
-1. 会话恢复（PR #54）已完成 iPad 真机验证，合并需用户另行同意。
-2. 模型回合与 shell 工具端到端：用户在 iPad 候选 App（r12）内输入 Key，让模型用 bash 工具运行 `echo DSH-E2E-$(uname -m) > e2e.txt && cat e2e.txt`；之后运行 `python3 build/candidate/device/e2e-auto-private.py check 1800` 复核（App 重装过，必要时先跑其 start 步骤刷新基线）。
-3. 真实备份导入演练：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
-4. 测量与迁移、#14 清单两个分支的 PR 合并需用户另行同意。可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
+1. 模型回合与 shell 工具端到端：用户在 iPad 候选 App（r12）内输入 Key，让模型用 bash 工具运行 `echo DSH-E2E-$(uname -m) > e2e.txt && cat e2e.txt`；之后运行 `python3 build/candidate/device/e2e-auto-private.py check 1800` 复核（App 重装过，必要时先跑其 start 步骤刷新基线）。
+2. 真实备份导入演练：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
+3. 本分支（含 #14 清单提交）的 PR 合并需用户另行同意。可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 

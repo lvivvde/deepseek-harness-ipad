@@ -20,10 +20,19 @@ import os
 ///   the guest's uptime across the pause shows whether its clock ran while the App was suspended.
 /// - `imported`: a project the same launch imports from an old backup (`project`, by name) brings
 ///   Linux up, the guest sees every imported entry, and a guest write lands.
+/// - `execution` (PR #56): a cancel that arrives first ends its ID for good, a running command is
+///   cancelled and its lease ends, a terminal holds the lease only while a line runs and a command joins
+///   it, a closed terminal ID is gone, and a VM exit during a command settles the lease this process sent.
+/// - `execution-hold` leaves a command running in a new project for the driver to end the App;
+///   `execution-stale` opens that project (`project`) in the next launch: the writer the earlier launch
+///   left stays unknown across this launch's VM exit until it is released explicitly.
 /// Each phase writes `<root>/probe/measure-<phase>.json` with numbers and fixed codes only, tagged with
 /// the launch's `run` id and marked `done` once final.
 public enum MeasureProbe {
-    public enum Phase: String { case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle", imported }
+    public enum Phase: String {
+        case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle", imported
+        case execution, executionHold = "execution-hold", executionStale = "execution-stale"
+    }
 
     public struct Timing {
         public var ready: TimeInterval = 900
@@ -33,6 +42,8 @@ public enum MeasureProbe {
         /// `background-idle` sends no command in this window (seconds after the first tick), so the App
         /// goes to the background with nothing in flight.
         public var quiet: ClosedRange<TimeInterval> = 20...170
+        /// How long `execution-hold`'s command runs; the driver ends the App well before.
+        public var hold: TimeInterval = 590
         public init() {}
     }
 
@@ -50,6 +61,9 @@ public enum MeasureProbe {
             case .background: try background(host, timing, idle: false, &record)
             case .backgroundIdle: try background(host, timing, idle: true, &record)
             case .imported: try imported(host, project, timing, &record)
+            case .execution: try execution(host, timing, &record)
+            case .executionHold: try executionHold(host, timing, &record)
+            case .executionStale: try executionStale(host, project, timing, &record)
             }
         } catch let error as CandidateError {
             record["failure"] = error.code
@@ -206,11 +220,7 @@ public enum MeasureProbe {
         record["exit.diagnostic"] = diagnostic?["code"] as? String
         record["exit.diagnosticSaved"] = FileManager.default.fileExists(atPath: host.registry.root + "/" + CandidateHost.diagnosticRecord)
         record["exit.command"] = describe(execute(host, "life-after-exit", firstMount, "true"))
-        let data = Data("after exit\n".utf8).base64EncodedString()
-        let written = host.handle(["operation": "fs", "method": "write",
-                                   "args": ["path": firstMount + "/after-exit.txt", "data": data, "expected": ["kind": "createIfAbsent"]]])
-        record["exit.nativeWrite"] = (written["value"] as? [String: Any])?["operation"] as? String
-            ?? ((written["failure"] as? [String: Any])?["code"] as? String) ?? "NONE"
+        record["exit.nativeWrite"] = nativeWrite(host, firstMount + "/after-exit.txt")
         record["boots.afterExit"] = host.bootCount
         record["passed"] = record["native.phase"] as? String == "DISABLED" && record["native.boots"] as? Int == 0
             && (record["native.command"] as? String ?? "").hasPrefix("REFUSED")
@@ -258,9 +268,7 @@ public enum MeasureProbe {
 
     private static func imported(_ host: CandidateHost, _ name: String?, _ timing: Timing, _ record: inout [String: Any]) throws {
         // The import runs on the App's queue alongside this probe; wait for its project record.
-        var found: CandidateProject?
-        _ = wait(timing.ready, timing.poll) { found = host.registry.projects.first { $0.name == name }; return found != nil }
-        guard let project = found else { throw CandidateError("PROJECT_UNKNOWN") }
+        let project = try named(host, name, timing)
         record["pluginEnabled"] = project.pluginEnabled
         let opened = Date()
         _ = host.handle(["operation": "project-open", "id": project.id])
@@ -278,7 +286,131 @@ public enum MeasureProbe {
             && wrote["stdout"] as? String == stamp + "\n" && host.bootCount == 1
     }
 
+    private static func execution(_ host: CandidateHost, _ timing: Timing, _ record: inout [String: Any]) throws {
+        let (id, mount) = try project(host, "measure-execution-\(stamp())", plugin: true)
+        _ = host.handle(["operation": "project-open", "id": id])
+        try waitReady(host, id, timing, &record)
+        let workspace = host.registry.workspace(try registered(host, id))
+        func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: workspace + "/" + name) }
+
+        // A cancel that arrives first ends its ID for good: neither the command nor a resubmit runs.
+        record["early.cancel"] = cancel(host, "exec-early")
+        record["early.first"] = describe(execute(host, "exec-early", mount, "echo ran > early.txt"))
+        record["early.again"] = describe(execute(host, "exec-early", mount, "echo ran > early.txt"))
+        record["early.lateCancel"] = cancel(host, "exec-early")
+        record["early.ran"] = exists("early.txt")
+
+        // Cancelling a running command stops it, and its lease ends with it. A finished ID never runs again.
+        let running = onThread { execute(host, "exec-running", mount, "sleep 20; echo ran > running.txt") }
+        Thread.sleep(forTimeInterval: 1.5)
+        record["running.cancel"] = cancel(host, "exec-running")
+        let stopped = running()
+        record["running.status"] = describe(stopped)
+        record["running.cancelled"] = stopped["cancelled"] as? Bool ?? false
+        record["running.ran"] = exists("running.txt")
+        record["running.writerUnknown"] = entry(host, id)?["writerUnknown"] as? Bool
+        record["running.next"] = describe(execute(host, "exec-next", mount, "true"))
+        record["repeat"] = describe(execute(host, "exec-next", mount, "echo ran > repeat.txt"))
+        record["repeat.ran"] = exists("repeat.txt")
+
+        // An idle terminal is read-only. A line run in it takes the lease until the prompt is idle again,
+        // and a command sent meanwhile joins that lease instead of being refused.
+        let terminal = "exec-term-" + runId
+        var offset = 0
+        record["terminal.open"] = terminalOpen(host, terminal, mount)
+        record["terminal.prompt"] = terminalUntil(host, terminal, &offset, timing) { ($0["activity"] as? [String: Any])?["state"] as? String == "idle" }
+        record["terminal.write"] = terminalWrite(host, terminal, "echo hi > term.txt\n")
+        record["terminal.released"] = terminalUntil(host, terminal, &offset, timing) { $0["released"] as? Bool == true }
+        record["terminal.file"] = (try? String(contentsOfFile: workspace + "/term.txt", encoding: .utf8)) == "hi\n"
+        record["terminal.after"] = describe(execute(host, "exec-after-terminal", mount, "true"))
+
+        record["join.write"] = terminalWrite(host, terminal, "sleep 4; echo t > join-terminal.txt\n")
+        Thread.sleep(forTimeInterval: 0.5)
+        record["join.command"] = describe(execute(host, "exec-join", mount, "echo c > join-command.txt"))
+        record["join.stillLeased"] = terminalRead(host, terminal, &offset, waitMs: 0)["leased"] as? Bool ?? false
+        record["join.released"] = terminalUntil(host, terminal, &offset, timing) { $0["released"] as? Bool == true }
+        record["join.files"] = ["join-terminal.txt", "join-command.txt"].filter(exists).count
+        record["join.after"] = describe(execute(host, "exec-after-join", mount, "true"))
+
+        // A closed terminal's ID is gone; the same ID then opens a new terminal.
+        let closed = host.handle(["operation": "terminal-close", "terminalId": terminal])
+        record["close"] = closed["closed"] as? Bool == true ? "CLOSED" : describe(closed)
+        record["close.lateWrite"] = terminalWrite(host, terminal, "true\n")
+        record["close.reopen"] = terminalOpen(host, terminal, mount)
+
+        // A VM exit during a command settles the lease this process sent: native writes commit at once,
+        // while the command's own result stays unknown. Open terminals end with the VM.
+        let lost = onThread { execute(host, "exec-exit", mount, "sleep 60; echo ran > exit.txt") }
+        Thread.sleep(forTimeInterval: 1.5)
+        host.stopVMUnexpectedly()
+        record["exit.command"] = describe(lost())
+        _ = wait(60, timing.poll) { entry(host, id)?["phase"] as? String == "FAILED" }
+        record["exit.phase"] = entry(host, id)?["phase"] as? String
+        record["exit.writerUnknown"] = entry(host, id)?["writerUnknown"] as? Bool
+        record["exit.terminal"] = terminalWrite(host, terminal, "true\n")
+        record["exit.nativeWrite"] = nativeWrite(host, mount + "/after-exit.txt")
+        record["bootCount"] = host.bootCount
+
+        let expected: [String: String] = [
+            "early.cancel": "CANCELLED_BEFORE_DISPATCH", "early.first": "CANCELLED_BEFORE_DISPATCH",
+            "early.again": "REFUSED:DUPLICATE_OPERATION", "early.lateCancel": "FINISHED",
+            "running.cancel": "CANCEL_REQUESTED", "running.status": "COMPLETED", "running.next": "COMPLETED",
+            "repeat": "REFUSED:DUPLICATE_OPERATION",
+            "terminal.open": "OPEN", "terminal.write": "WRITTEN:LEASED", "terminal.after": "COMPLETED",
+            "join.write": "WRITTEN:LEASED", "join.command": "COMPLETED", "join.after": "COMPLETED",
+            "close": "CLOSED", "close.lateWrite": "TERMINAL_NOT_FOUND", "close.reopen": "OPEN",
+            "exit.phase": "FAILED", "exit.terminal": "TERMINAL_NOT_FOUND", "exit.nativeWrite": "create"]
+        let flags: [String: Bool] = [
+            "early.ran": false, "running.cancelled": true, "running.ran": false, "running.writerUnknown": false, "repeat.ran": false,
+            "terminal.prompt": true, "terminal.released": true, "terminal.file": true,
+            "join.stillLeased": true, "join.released": true, "exit.writerUnknown": false]
+        let missed = expected.filter { record[$0.key] as? String != $0.value }.map(\.key)
+            + flags.filter { record[$0.key] as? Bool != $0.value }.map(\.key)
+        record["missed"] = missed.sorted()
+        record["passed"] = missed.isEmpty && record["join.files"] as? Int == 2 && host.bootCount == 1
+    }
+
+    private static func executionHold(_ host: CandidateHost, _ timing: Timing, _ record: inout [String: Any]) throws {
+        let name = "measure-exec-stale-\(stamp())"
+        let (id, mount) = try project(host, name, plugin: true)
+        _ = host.handle(["operation": "project-open", "id": id])
+        try waitReady(host, id, timing, &record)
+        record["project"] = name
+        _ = onThread { execute(host, "exec-hold", mount, "sleep \(Int(timing.hold))", timeoutMs: maxTimeoutMs) }
+        Thread.sleep(forTimeInterval: 2)
+        // The running command holds the lease, so another one is refused.
+        record["hold.other"] = describe(execute(host, "exec-hold-other", mount, "true"))
+        record["passed"] = record["hold.other"] as? String == "REFUSED:LEASE_BUSY" && host.bootCount == 1
+    }
+
+    private static func executionStale(_ host: CandidateHost, _ name: String?, _ timing: Timing, _ record: inout [String: Any]) throws {
+        let project = try named(host, name, timing)
+        _ = host.handle(["operation": "project-open", "id": project.id])
+        try waitReady(host, project.id, timing, &record)
+        record["stale.writerUnknown"] = entry(host, project.id)?["writerUnknown"] as? Bool
+        record["stale.command"] = describe(execute(host, "exec-stale", project.mount, "true"))
+        host.stopVMUnexpectedly()
+        _ = wait(60, timing.poll) { entry(host, project.id)?["phase"] as? String == "FAILED" }
+        record["exit.phase"] = entry(host, project.id)?["phase"] as? String
+        record["exit.writerUnknown"] = entry(host, project.id)?["writerUnknown"] as? Bool
+        record["release"] = host.handle(["operation": "writer-release", "id": project.id])["status"] as? String ?? "NONE"
+        record["after.writerUnknown"] = entry(host, project.id)?["writerUnknown"] as? Bool
+        record["after.nativeWrite"] = nativeWrite(host, project.mount + "/after-release.txt")
+        record["bootCount"] = host.bootCount
+        record["passed"] = record["stale.writerUnknown"] as? Bool == true && record["stale.command"] as? String == "REFUSED:WRITER_UNKNOWN"
+            && record["exit.phase"] as? String == "FAILED" && record["exit.writerUnknown"] as? Bool == true
+            && record["release"] as? String == "RELEASED" && record["after.writerUnknown"] as? Bool == false
+            && record["after.nativeWrite"] as? String == "create" && host.bootCount == 1
+    }
+
     // MARK: Helpers
+
+    private static func named(_ host: CandidateHost, _ name: String?, _ timing: Timing) throws -> CandidateProject {
+        var found: CandidateProject?
+        _ = wait(timing.ready, timing.poll) { found = host.registry.projects.first { $0.name == name }; return found != nil }
+        guard let found else { throw CandidateError("PROJECT_UNKNOWN") }
+        return found
+    }
 
     private static func project(_ host: CandidateHost, _ name: String, plugin: Bool) throws -> (String, String) {
         if let known = host.registry.projects.first(where: { $0.name == name }) { return (known.id, known.mount) }
@@ -301,6 +433,68 @@ public enum MeasureProbe {
     private static func execute(_ host: CandidateHost, _ id: String, _ cwd: String, _ command: String, timeoutMs: Int = 120_000) -> [String: Any] {
         host.handle(["operation": "execute", "operationId": id + "-" + runId, "command": command, "cwd": cwd,
                      "timeoutMs": timeoutMs, "trigger": "shell"])
+    }
+
+    private static let maxTimeoutMs = 600_000
+
+    private static func cancel(_ host: CandidateHost, _ id: String) -> String {
+        describe(host.handle(["operation": "cancel", "operationId": id + "-" + runId]))
+    }
+
+    /// `create` when a native write commits at once; the failure code otherwise.
+    private static func nativeWrite(_ host: CandidateHost, _ path: String) -> String {
+        let data = Data("native\n".utf8).base64EncodedString()
+        let written = host.handle(["operation": "fs", "method": "write",
+                                   "args": ["path": path, "data": data, "expected": ["kind": "createIfAbsent"]]])
+        return (written["value"] as? [String: Any])?["operation"] as? String
+            ?? ((written["failure"] as? [String: Any])?["code"] as? String) ?? "NONE"
+    }
+
+    private static func terminalOpen(_ host: CandidateHost, _ id: String, _ cwd: String) -> String {
+        let reply = host.handle(["operation": "terminal-open", "terminalId": id, "cwd": cwd, "argv": ["/bin/bash", "-i"],
+                                 "cols": 80, "rows": 24, "env": [String: String](), "terminalType": "xterm-256color"])
+        return reply["pid"] != nil ? "OPEN" : describe(reply)
+    }
+
+    private static func terminalWrite(_ host: CandidateHost, _ id: String, _ text: String) -> String {
+        let reply = host.handle(["operation": "terminal-write", "terminalId": id, "data": Data(text.utf8).base64EncodedString()])
+        guard reply["status"] as? String == "WRITTEN" else { return describe(reply) }
+        return reply["leased"] as? Bool == true ? "WRITTEN:LEASED" : "WRITTEN"
+    }
+
+    private static func terminalRead(_ host: CandidateHost, _ id: String, _ offset: inout Int, waitMs: Int) -> [String: Any] {
+        let reply = host.handle(["operation": "terminal-read", "terminalId": id, "offset": offset, "waitMs": waitMs])
+        offset = reply["next"] as? Int ?? offset
+        return reply
+    }
+
+    /// Reads the terminal until a reply satisfies `done`, for at most 30 s.
+    private static func terminalUntil(_ host: CandidateHost, _ id: String, _ offset: inout Int, _ timing: Timing,
+                                      _ done: ([String: Any]) -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            let reply = terminalRead(host, id, &offset, waitMs: 1000)
+            if done(reply) { return true }
+            if reply["error"] != nil { return false }
+            Thread.sleep(forTimeInterval: timing.poll)
+        }
+        return false
+    }
+
+    /// Runs `work` on its own thread; the returned function waits for its reply, for at most 120 s.
+    private static func onThread(_ work: @escaping () -> [String: Any]) -> () -> [String: Any] {
+        let group = DispatchGroup(), lock = NSLock()
+        var value: [String: Any] = ["status": "NO_REPLY"]
+        group.enter()
+        Thread.detachNewThread {
+            let reply = work()
+            lock.lock(); value = reply; lock.unlock()
+            group.leave()
+        }
+        return {
+            _ = group.wait(timeout: .now() + 120)
+            lock.lock(); defer { lock.unlock() }; return value
+        }
     }
 
     private static func describe(_ reply: [String: Any]) -> String {

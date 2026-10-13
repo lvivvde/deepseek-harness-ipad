@@ -99,3 +99,7 @@ Gateway 的全部终端兼容入口现在校验同一进程登记及项目归属
 用户询问合并条件时，main 已合入会话恢复 PR #54（`021959c`）。本项以 merge 同步 main，仅交接文档发生冲突，已保留两项记录并更新合并状态；CandidateHost 及测试自动合并，LinuxExecution/Gateway 保持已审查实现。组合两轴审查无新发现，Host 基线采集仍通过同一 Gateway.storeLock，Host 锁不跨存储或恢复调用。
 
 组合后 `make check`、`make test-app` 全量测试通过（网关 35、候选宿主 20 项）；`make test-candidate` 恢复合同 9、桥接 20、构建闸门 15 项全通过，无跳过。重新生成固定依赖网页，macOS/iPad 未签名构建复验成功；脱敏收据在忽略的 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`。未安装、未上真机。用户已具体授权将本 PR 转为待合并并用 merge commit 合入 main。
+
+## 真机验收
+
+2026-10-13，签名 r14 在用户的 iPad 上自动验收，结果见 [Linux 执行生命周期验收](../validation/ipad-linux-execution.md)。先到取消与重复 ID、运行中取消、终端租约的取得、释放与并入、关闭的终端 ID、命令期间 VM 退出，以及上一进程留下的写者跨本进程 VM 退出保持未知，都已在真机通过。存储失败注入、VM 退出的确定时序、断连与迟到停止证明只有 macOS 测试覆盖，真机未验证。

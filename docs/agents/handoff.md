@@ -90,7 +90,7 @@
   - 两轴审查后修正：重复关闭时 guest 按宿主发来的 fence 报告已释放，宿主对关闭后未确认的租约记写者未知，不再留下活动租约；shell 未退出时 guest 关闭失败、不释放；`/terminal/unlease` 返回后先核对租约仍是同一个；宿主只开 `/bin/bash -i`（`/bin/sh` 报告不了空闲提示符，租约会一直占着）。`CONTEXT.md` 新增术语“并入”。
   - 保留未改：`inspectForeground`/`signalForeground` 和 guest 的 `inputWaiting` 目前只有被拒的常驻 bash 会用，作为官方终端句柄接口的完整实现保留；hook 也会并入终端租约，文档已写明。
   - 真机修正：打包器的清扫看不到控制器经 `createLazyRequire` 加载的 `@xterm/headless`、`@xterm/addon-serialize`，iPad 上打开终端报 `cannot resolve "@xterm/headless"`；`prepare.mjs` 把两者列入打包入口，构建时核对其主文件在镜像内，并核对打包器未导出的默认种子仍与副本一致；设计文档第 6 条和收据 `adaptations`（增为 11 项）列出这项适配。
-  - 缺口：minimal 预设的常驻 bash 被 guest 拒绝（`ARGV_REFUSED`）；iPad 文件面板显示新文件未由用户确认（macOS 已确认）。
+  - 缺口：minimal 预设的常驻 bash 被 guest 拒绝（`ARGV_REFUSED`）。iPad 文件面板显示终端新建的文件，2026-10-14 已由用户确认（r16）。
   - 已验证（macOS）：真实 QEMU guest 的 `run.py` 探针（含终端 18 项）通过；`make test-app`（网关 25、候选宿主 15）、`make check`、`make test-candidate`（桥接 15、构建 15）、`make test-plan500-ipad` 通过。
   - 已验证（真机，2026-10-11，签名 r7）：iPad 上终端打开，用户运行两次命令，项目日志各有一次终端租约授予并以 `COMPLETED` 释放，工作区出现 `f`。`echo hi > f` 本身无输出，所以界面上只是换出新提示符。macOS 候选 App 上同样验证并在文件面板看到 `f`。
 
@@ -126,15 +126,17 @@
 - 用户从正式 Harness 导出备份，在候选 App 导入。“文件”App 给重复保存的文件加了编号（`HarnessBackup 2.tar`、`HarnessBackup.tar.sha256 2`），r14 配不上对。r15 改为按扩展名配对，r16 再去掉末尾编号；r16 导入成功。
 - 已验证（真机，r16）：2 个项目、73 个文件、8 个会话（3 个改键），凭据 1 个和缓存 10 条被排除。打开 `Test` 后 Linux READY，home 检查点记下这份导入，23 个 home 文件、8 个会话都在。
 - 回退通过：用户确认正式 Harness 页面正常、项目和会话都在。它在后台约 80 分钟后第一次恢复失败（修复页面端口转发未成，“页面连接暂不可用”），同一进程再次恢复后 `ready`，原因未查明，状态文件只记阶段。
+- PR #59 已合并（`fb34cfa`）。
 - 未查明：修复前有一次一直显示“Importing…”，线程栈无活动、无写入。导入的会话文件修改时间变成了导入时间。
 - 已验证（macOS，`01a7f7c` 之后）：`make test-app` 全量 239 项，无失败或警告；`make check` 通过。第一次全量时 `EmbeddedMachineTests` 有 1 项在 5 秒内没读到串口日志而失败，单独跑 3 次和随后全量都通过，按时序抖动记，没有改它。
 - 工具：lldb attach 设备 App 后，进程未停住就退出会杀掉 App。私有 `build/candidate/device/stack-private.py` 用 Python API 停住、取栈、detach，不杀进程。
 
 **下一步：**
 
-1. 分支 `fix/import-pairing-suffix`（导入配对认“文件”App 的重复编号）的 PR 等用户同意后合并。
-2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
-3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
+1. #17 收尾：[完成条件核对](../validation/issue17-closeout.md) 在分支 `docs/issue17-closeout`，结论是完成条件都有证据。iPad 文件面板显示终端新建的文件已由用户确认（2026-10-14）。待用户决定：缺口按核对表放行、是否关闭 #17。文件面板是右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。PR 合并需用户另行同意。
+2. #17 关闭后开始 #18：先定范围（仍带 `needs-triage`）和用户授权的测试远端。
+3. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
+4. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 

@@ -87,7 +87,7 @@ guest 断连、没回报 `writerQuiescent`，或者取消没能确认时，网�
 
 QEMU 退出后：
 
-1. 先保存固定诊断：错误码、项目、阶段（`PREPARING` 或 `READY`）、退出状态，以及准备失败时的原因。保存完成后，阶段才变为 `failed`。只保存第一条：之后的失败、重复的退出和迟到的启动结果都被忽略。因此，准备已因 `READY_TIMEOUT` 或证明被拒而失败后，QEMU 再退出不会另存一条；此时仍在运行的 QEMU 由 App 接线负责停止，见文末“未完成”。
+1. 先保存固定诊断：错误码、项目、阶段（`PREPARING` 或 `READY`）、退出状态，以及准备失败时的原因。保存完成后，阶段才变为 `failed`。只保存第一条：之后的失败、重复的退出和迟到的启动结果都被忽略。因此，准备已因 `READY_TIMEOUT` 或证明被拒而失败后，QEMU 再退出不会另存一条；此时仍在运行的 QEMU 由 App 接线负责停止，见下文“候选 App”的接线行为。
 2. 阶段变为 `failed(LINUX_VM_EXITED)`，等待中的任务立即被拒。
 3. 释放本进程派发的写者所持的租约（`GUEST_TERMINATED`）。更早进程留下的写者未知租约不受影响，仍等用户确认。
 4. 同一进程内不重新初始化 QEMU。界面提示关闭并重开 App。
@@ -166,7 +166,7 @@ macOS 实测（2026-10-10，Homebrew QEMU，数据根指向忽略的 `build/cand
 - 官方终端显示固定错误 `TERMINAL_UNSUPPORTED`（当时终端尚未接入，见下文交互式终端）。
 - 正常退出后不残留 QEMU，重开后没有遗留诊断。
 
-iPad 实测（2026-10-10，签名安装到用户的 iPad；设备验收部分完成，模型与 shell 端到端见下文缺口）：
+iPad 实测（2026-10-10，签名安装到用户的 iPad；模型与 shell 端到端在 2026-10-11 补验，见测量文档）：
 
 - `.app` 约 1.1 GB，其中 Linux 输入约 1.0 GB、执行器 22 个 framework 约 100 MB。
 - 进程内 QEMU 启动 guest，项目进入 READY，官方页面正常加载（用户在设备上确认）。
@@ -196,9 +196,9 @@ iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No
 **候选 App 已知缺口：**
 
 - 常驻 bash（`dsh-terminal-bash`，只在非默认的 minimal 预设中启用）：它的 argv 由 Worker 的沙箱启动器生成，guest 拒绝（`ARGV_REFUSED`），不能用。默认预设的 bash 工具走 `bash -c`，不受影响。
-- 交互式终端只在 Mac 上的 QEMU guest 中逐项验证（pty、运行键取租约、并入、空闲释放、关闭），iPad 上的官方终端面板端到端未验。macOS 候选 App 中 Linux 不可用（私有符号缺失），只能在 iPad 上验。
+- 交互式终端在 Mac 上的 QEMU guest 中逐项验证（pty、运行键取租约、并入、空闲释放、关闭）。iPad 上用户在官方终端面板运行过命令，租约授予并释放，工作区出现新文件（r7）；终端租约、并入和关闭另由探针 `execution` 在真机核对（r14）。2026-10-14 用户在 iPad 上用终端新建 `panel-check.txt`，文件面板里能看到（r16）。
 - 官方 Worker 发起的 Git 写操作：官方网页版没有这样的调用方。Worker 自己调用的 git（变更审阅）解析到原生只读 Git，超出子集以退出码 128 拒绝；会修改仓库的 git 命令在 shell 工具里运行，走 Linux。
-- 模型回合和 shell 工具的端到端，需要用户在 App 内输入 Key 后验证（macOS 和 iPad 都未验）。
+- 模型回合和 shell 工具的端到端：iPad 上已验证（r12，见测量文档）。macOS 候选 App 中 Linux 不可用（私有符号缺失），没法验。
 - App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。
 
 **测量与迁移演练**（2026-10-11，真机）：见 [iPad 候选 App 的 #17 测量与迁移演练](../validation/ipad-candidate-measurements.md)。两条兼容限制：
@@ -206,6 +206,4 @@ iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No
 - 同一项目的 Linux 命令不排队：写租约被占用时，其余命令立即被拒（`LEASE_BUSY`）。
 - App 进入后台时如果有 Linux 命令在运行，项目会变成写者未知，需要用户释放。
 
-**未完成**（不算通过，见[开发交接](../agents/handoff.md)）：
-
-- 迁移演练的真实备份部分：需要用户在 iPad 上经“文件”App 导出备份副本，再导入候选 App。
+**完成条件核对**：见 [#17 完成条件核对](../validation/issue17-closeout.md)。迁移演练的真实备份部分已在 2026-10-13 完成。

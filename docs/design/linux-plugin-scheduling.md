@@ -196,7 +196,7 @@ iPad 签名的注意事项：新 bundle ID 第一次用命令行签名会报 "No
 **候选 App 已知缺口：**
 
 - 常驻 bash（`dsh-terminal-bash`，只在非默认的 minimal 预设中启用）：它的 argv 由 Worker 的沙箱启动器生成，guest 拒绝（`ARGV_REFUSED`），不能用。默认预设的 bash 工具走 `bash -c`，不受影响。
-- 交互式终端在 Mac 上的 QEMU guest 中逐项验证（pty、运行键取租约、并入、空闲释放、关闭）。iPad 上用户在官方终端面板运行过命令，租约授予并释放，工作区出现新文件（r7）；终端租约、并入和关闭另由探针 `execution` 在真机核对（r14）。iPad 文件面板能否显示这个新文件，用户还没确认。
+- 交互式终端在 Mac 上的 QEMU guest 中逐项验证（pty、运行键取租约、并入、空闲释放、关闭）。iPad 上用户在官方终端面板运行过命令，租约授予并释放，工作区出现新文件（r7）；终端租约、并入和关闭另由探针 `execution` 在真机核对（r14）。2026-10-14 用户在 iPad 上用终端新建 `panel-check.txt`，文件面板里能看到（r16）。
 - 官方 Worker 发起的 Git 写操作：官方网页版没有这样的调用方。Worker 自己调用的 git（变更审阅）解析到原生只读 Git，超出子集以退出码 128 拒绝；会修改仓库的 git 命令在 shell 工具里运行，走 Linux。
 - 模型回合和 shell 工具的端到端：iPad 上已验证（r12，见测量文档）。macOS 候选 App 中 Linux 不可用（私有符号缺失），没法验。
 - App 崩溃或被强制结束时，macOS 上的 QEMU 子进程仍可能残留；iPad 上 VM 在进程内运行，不存在这一问题。

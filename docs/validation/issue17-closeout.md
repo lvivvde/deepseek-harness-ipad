@@ -19,7 +19,7 @@
 | 启动失败有明确结果并保留诊断 | 通过（真机），部分只在 macOS | r12 导入的项目因工作区根权限挂载检查失败，项目进入 `LINUX_PREPARE_FAILED`，诊断 `MOUNT_CHECK_FAILED`，模型如实回报（已修正）。`VM_START_FAILED`、`READY_TIMEOUT`、证明被拒等原因只有 `LinuxBringUpTests` |
 | VM 退出有明确结果并保留诊断 | 通过（真机） | G6 与 `execution`：项目 `FAILED(LINUX_VM_EXITED)`，诊断已保存，之后命令被拒，原生写入照常，VM 不重启 |
 | 原生修改能被 Linux 读到 | 通过（真机） | 冷启动阶段：原生写入的文件 guest 立刻读到 |
-| Linux 修改和产物能被原生读到 | 通过（真机） | 冷启动阶段：guest 写入的文件命令结束即原生可见；Gate1 模型 bash 写的 `e2e.txt` 原生核对一致；终端写的 `f` 出现在工作区 |
+| Linux 修改和产物能被原生读到 | 通过（真机） | 冷启动阶段：guest 写入的文件命令结束即原生可见；Gate1 模型 bash 写的 `e2e.txt` 原生核对一致；终端写的 `f` 出现在工作区；2026-10-14 终端写的 `panel-check.txt` 在 iPad 文件面板里显示，租约以 `COMPLETED` 释放并记下这个文件 |
 | 能力声明文档已提交 | 通过 | [能力声明](../design/capability-declaration.md)，与代码一致由 `LinuxPluginTests` 检查；候选缺口逐项列出，App 侧栏显示 |
 | 测量记录已提交 | 通过 | [测量与迁移演练](ipad-candidate-measurements.md)：性能、G4、G6、内存、存储、后台恢复、watcher；HMR 归 #23 |
 | #14 组件清单已提交 | 通过 | [分发组件](../design/distribution-components.md)。本次又按 r16 收据核对：guest 输入 3 个、framework 22 个、网页根目录 139 个文件、npm 包 318 个、适配 12 项，摘要都与 r9 相同 |
@@ -36,8 +36,6 @@
 - minimal 预设的常驻 bash 被拒（`ARGV_REFUSED`）。默认预设不受影响。
 
 **只有 macOS 测试、真机未验：** 存储失败注入、VM 退出的确定时序、断连与迟到的停止证明、显式 revoke、终端只接受 `/bin/bash -i`、空闲终端在第一行前不持租约。清单见 [执行验收](ipad-linux-execution.md)“未在真机验证”。
-
-**真机待用户确认：** iPad 上文件面板能否显示 Linux 新建的文件（macOS 已确认，iPad 上只确认了工作区里有这个文件）。
 
 **#17 保留的插件技术债：** 设备安装占用、峰值内存、8 GB 下限、真实低空间和删除回收没有完整验证。后台只测了约 2 分钟。
 

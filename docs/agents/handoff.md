@@ -131,22 +131,22 @@
 - 已验证（macOS，`01a7f7c` 之后）：`make test-app` 全量 239 项，无失败或警告；`make check` 通过。第一次全量时 `EmbeddedMachineTests` 有 1 项在 5 秒内没读到串口日志而失败，单独跑 3 次和随后全量都通过，按时序抖动记，没有改它。
 - 工具：lldb attach 设备 App 后，进程未停住就退出会杀掉 App。私有 `build/candidate/device/stack-private.py` 用 Python API 停住、取栈、detach，不杀进程。
 
+#17 已于 2026-10-14 关闭。[完成条件核对](../validation/issue17-closeout.md) 由 PR #60 合入（`cf28b7c`），用户同意缺口按核对表放行。iPad 文件面板能显示终端新建的文件，用户已确认（r16）。文件面板在右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。
+
 **下一步：**
 
-1. #17 收尾：[完成条件核对](../validation/issue17-closeout.md) 在分支 `docs/issue17-closeout`，结论是完成条件都有证据。iPad 文件面板显示终端新建的文件已由用户确认（2026-10-14）。待用户决定：缺口按核对表放行、是否关闭 #17。文件面板是右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。PR 合并需用户另行同意。
-2. #17 关闭后开始 #18：先定范围（仍带 `needs-triage`）和用户授权的测试远端。
-3. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
-4. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
+1. 开始 #18：先定范围（仍带 `needs-triage`）和用户授权的测试远端。#14 现在也可以开始，依据是 #17 的组件清单。
+2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
+3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 
 | Issue | 依赖与边界 |
 | --- | --- |
-| [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#19、#32、#39 已关闭，作为历史保留。 |
-| [#17 实现](https://github.com/lvivvde/deepseek-harness-ipad/issues/17) | 当前任务，进度见上文“#17 进展”。实现原生 Harness 宿主、同一项目工作区、Linux 预热及准备/就绪/取消/失败调度；保留旧 Linux 和用户盘保护。资源、低空间、删除回收等未验项转兼容插件技术债，不标记通过。 |
-| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 被 #17 阻塞。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
+| [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
+| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务（#17 已关闭）。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
-| [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 被 #17 的实际组件清单阻塞，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
+| [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | #17 已关闭，组件清单见[分发组件](../design/distribution-components.md)，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 
 ## 已交付基线
 

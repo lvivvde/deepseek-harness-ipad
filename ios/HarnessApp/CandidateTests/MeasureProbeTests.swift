@@ -4,7 +4,9 @@ import HarnessCandidate
 import HarnessHost
 
 /// The measurement probe on a fake guest that runs each command in the shared directory with the Mac's
-/// shell and answers `/ready` only after a delay, so Linux is still preparing when the probe acts.
+/// shell and answers `/ready` only after a delay, so Linux is still preparing when the probe acts. Its
+/// terminal runs each line with the same shell and is idle once the line ends; stopping it ends every
+/// command, as a VM exit does.
 final class MeasureProbeTests: XCTestCase {
     final class ShellMachine: GuestMachine, GuestRPC, @unchecked Sendable {
         let lock = NSLock()
@@ -13,6 +15,10 @@ final class MeasureProbeTests: XCTestCase {
         var bootedAt: Date?
         var ended = false
         var onExit: ((Int32?) -> Void)?
+        var running: [String: Process] = [:]
+        var cancelled = Set<String>()
+        /// Per terminal: the fence it holds, and whether a line still runs in it.
+        var terminals: [String: (fence: Int?, busy: Bool)] = [:]
         var rpc: GuestRPC { self }
         var exited: Bool { lock.lock(); defer { lock.unlock() }; return ended }
 
@@ -21,8 +27,20 @@ final class MeasureProbeTests: XCTestCase {
         func boot(workspace: String) throws { lock.lock(); share = workspace; bootedAt = Date(); lock.unlock() }
 
         func stop() {
-            lock.lock(); let first = !ended; ended = true; lock.unlock()
+            lock.lock(); let first = !ended; ended = true; let left = running.values; terminals = [:]; lock.unlock()
+            left.forEach { $0.terminate() }
             if first { onExit?(9) }
+        }
+
+        private func shell(_ line: String, in cwd: String, output: Pipe?) throws -> Process {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", line]
+            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+            process.standardOutput = output ?? FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            return process
         }
 
         func call(_ route: String, _ body: [String: Any]?) throws -> [String: Any] {
@@ -37,20 +55,67 @@ final class MeasureProbeTests: XCTestCase {
             case "/execute":
                 let request = body ?? [:]
                 guard request["projectId"] as? String == identity else { throw GuestRPCError.refused("PROJECT_REFUSED") }
+                let id = request["id"] as? String ?? ""
                 let cwd = (request["cwd"] as? String ?? "/workspace").replacingOccurrences(of: "/workspace", with: share)
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/bin/sh")
-                // Absolute guest paths (the host's mount check) read the share.
-                process.arguments = ["-c", ((request["argv"] as? [String])?.last ?? "").replacingOccurrences(of: "/workspace", with: share)]
-                process.currentDirectoryURL = URL(fileURLWithPath: cwd)
                 let output = Pipe()
-                process.standardOutput = output
-                process.standardError = FileHandle.nullDevice
-                try process.run()
+                // Absolute guest paths (the host's mount check) read the share.
+                let process = try shell(((request["argv"] as? [String])?.last ?? "").replacingOccurrences(of: "/workspace", with: share),
+                                        in: cwd, output: output)
+                lock.lock(); running[id] = process; lock.unlock()
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                return ["code": Int(process.terminationStatus), "stdout": String(decoding: data, as: UTF8.self), "stderr": "",
-                        "writerQuiescent": true]
+                lock.lock(); running[id] = nil; let gone = ended, stopped = cancelled.contains(id); lock.unlock()
+                if gone { throw GuestRPCError.unreachable("down") }
+                var answer: [String: Any] = ["code": Int(process.terminationStatus), "stdout": String(decoding: data, as: UTF8.self),
+                                             "stderr": "", "writerQuiescent": true, "cancelled": stopped]
+                if request["join"] != nil { answer["joined"] = true }
+                return answer
+            case "/cancel":
+                let id = body?["id"] as? String ?? ""
+                lock.lock(); cancelled.insert(id); let process = running[id]; lock.unlock()
+                process?.terminate()
+                return ["cancelled": process != nil]
+            case "/terminal/open":
+                lock.lock(); terminals[body?["id"] as? String ?? ""] = (nil, false); lock.unlock()
+                return ["pid": 1]
+            case "/terminal/write":
+                let id = body?["id"] as? String ?? ""
+                let line = String(decoding: Data(base64Encoded: body?["data"] as? String ?? "") ?? Data(), as: UTF8.self)
+                let fence = (body?["lease"] as? [String: Any])?["fence"] as? Int
+                lock.lock()
+                guard terminals[id] != nil else { lock.unlock(); throw GuestRPCError.refused("TERMINAL_NOT_FOUND") }
+                if let fence { terminals[id]?.fence = fence }
+                terminals[id]?.busy = true
+                lock.unlock()
+                let process = try shell(line, in: share, output: nil)
+                Thread.detachNewThread { [self] in
+                    process.waitUntilExit()
+                    lock.lock(); terminals[id]?.busy = false; lock.unlock()
+                }
+                return ["leased": fence != nil]
+            case "/terminal/read":
+                let id = body?["id"] as? String ?? ""
+                let deadline = Date().addingTimeInterval(Double(body?["waitMs"] as? Int ?? 0) / 1000)
+                while true {
+                    lock.lock(); let terminal = terminals[id]; lock.unlock()
+                    guard let terminal else { throw GuestRPCError.refused("TERMINAL_NOT_FOUND") }
+                    let releasable = terminal.fence != nil && !terminal.busy
+                    if releasable || Date() >= deadline {
+                        return ["data": "", "next": body?["offset"] as? Int ?? 0, "leased": terminal.fence != nil, "releasable": releasable,
+                                "activity": ["state": terminal.busy ? "busy" : "idle", "revision": 0]]
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+            case "/terminal/unlease":
+                let id = body?["id"] as? String ?? ""
+                lock.lock(); defer { lock.unlock() }
+                guard terminals[id]?.busy == false else { return ["writerQuiescent": false] }
+                terminals[id]?.fence = nil
+                return ["writerQuiescent": true]
+            case "/terminal/close":
+                let id = body?["id"] as? String ?? ""
+                lock.lock(); let fence = terminals.removeValue(forKey: id)?.fence; lock.unlock()
+                return ["closed": true, "releasedFence": fence as Any? ?? NSNull()]
             default:
                 return ["bound": true, "revoked": true]
             }
@@ -65,8 +130,8 @@ final class MeasureProbeTests: XCTestCase {
 
     override func tearDownWithError() throws { try? FileManager.default.removeItem(atPath: root) }
 
-    func host(readyAfter: TimeInterval) throws -> CandidateHost {
-        try CandidateHost(registry: ProjectRegistry(root: root), machine: ShellMachine(readyAfter: readyAfter), availability: .available,
+    func host(readyAfter: TimeInterval, machine: ShellMachine? = nil) throws -> CandidateHost {
+        try CandidateHost(registry: ProjectRegistry(root: root), machine: machine ?? ShellMachine(readyAfter: readyAfter), availability: .available,
                           gitScripts: CandidateHostTests.gitScripts(), pollInterval: 0.01)
     }
 
@@ -142,5 +207,31 @@ final class MeasureProbeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(record["guestEntries"] as? Int ?? 0, 3)
         XCTAssertEqual(MeasureProbe.run(.imported, host: try self.host(readyAfter: 0), project: "absent", timing: {
             var short = timing(); short.ready = 0.2; return short }())["failure"] as? String, "PROJECT_UNKNOWN")
+    }
+
+    func testExecutionSettlesCancelsTerminalLeasesAndAVMExit() throws {
+        let record = MeasureProbe.run(.execution, host: try host(readyAfter: 0), timing: timing())
+        XCTAssertEqual(record["passed"] as? Bool, true, "\(record)")
+        XCTAssertEqual(record["early.again"] as? String, "REFUSED:DUPLICATE_OPERATION")
+        XCTAssertEqual(record["running.cancel"] as? String, "CANCEL_REQUESTED")
+        XCTAssertEqual(record["join.command"] as? String, "COMPLETED")
+        XCTAssertEqual(record["close.lateWrite"] as? String, "TERMINAL_NOT_FOUND")
+        XCTAssertEqual(record["exit.writerUnknown"] as? Bool, false)
+        XCTAssertEqual(record["exit.nativeWrite"] as? String, "create")
+    }
+
+    func testAWriterLeftByAnEarlierLaunchOutlivesThisLaunchsVMExit() throws {
+        var timing = timing(); timing.hold = 30
+        let machine = ShellMachine(readyAfter: 0)
+        let earlier = try host(readyAfter: 0, machine: machine)
+        let held = MeasureProbe.run(.executionHold, host: earlier, timing: timing)
+        XCTAssertEqual(held["passed"] as? Bool, true, "\(held)")
+        // A second host on the same data root stands in for the next launch; the first one's command still runs.
+        let record = MeasureProbe.run(.executionStale, host: try host(readyAfter: 0), project: held["project"] as? String, timing: timing)
+        XCTAssertEqual(record["passed"] as? Bool, true, "\(record)")
+        XCTAssertEqual(record["stale.command"] as? String, "REFUSED:WRITER_UNKNOWN")
+        XCTAssertEqual(record["exit.writerUnknown"] as? Bool, true)
+        XCTAssertEqual(record["release"] as? String, "RELEASED")
+        machine.stop()
     }
 }

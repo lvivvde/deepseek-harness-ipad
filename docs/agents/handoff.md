@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-11，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-13，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -11,7 +11,9 @@
 
 ## 当前状态
 
-架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。代码提交 `b64e6be` 已完成验证：Swift 全量测试与 `make check` 通过、无警告（网关 35、候选宿主 16 项）；`make test-candidate` 桥接 15、构建闸门 15 项通过、无跳过。macOS/iPad 候选 App 未签名构建成功，脱敏收据在本项 worktree 的忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`。规范审查无发现；规格审查三项（旧终端登记竞争、拒绝后的存储错误被吞、Gateway 兼容入口归属绕过）均修复并复核通过。图工具不可用，审查为有界源码核查。未安装、未上真机。用户已授权推送及创建草稿，分支已推送并创建 [PR #56](https://github.com/lvivvde/deepseek-harness-ipad/pull/56)，base 为 main；已同步包含 PR #54 的 main（`021959c`），冲突仅交接文档且已保留双方记录；组合后的 `make test-app`、`make check` 与 `make test-candidate` 全通过（网关 35、候选宿主 20、恢复合同 9、桥接 20、构建闸门 15 项），无跳过。macOS/iPad 未签名构建复验通过，脱敏收据在 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`；两轴组合审查无新发现。用户已具体授权将 PR #56 转为待合并并用 merge commit 合入 main；当前合并状态以 PR 页面为准。下一步为本项真机验收，未安装或上真机。
+架构第二项在独立分支 `codex/linux-execution` 实现（基线 `c81f9dc`，终端 PR #53 已合并，开工时恢复 PR #54 仍开放）。用户已确认原生侧范围及[执行与写租约结算设计](../design/linux-execution-lifecycle.md)。LinuxExecution 集中操作 ID、取消、终端归属及写租约结算；未派发租约清理、提前取消 ID 再提交、命令/终端授予期间 VM 退出均已由行为测试覆盖。代码提交 `b64e6be` 已完成验证：Swift 全量测试与 `make check` 通过、无警告（网关 35、候选宿主 16 项）；`make test-candidate` 桥接 15、构建闸门 15 项通过、无跳过。macOS/iPad 候选 App 未签名构建成功，脱敏收据在本项 worktree 的忽略目录 `build/candidate/linux-execution-{mac,ipad}-reviewed/build-safe.json`。规范审查无发现；规格审查三项（旧终端登记竞争、拒绝后的存储错误被吞、Gateway 兼容入口归属绕过）均修复并复核通过。图工具不可用，审查为有界源码核查。未安装、未上真机。用户已授权推送及创建草稿，分支已推送并创建 [PR #56](https://github.com/lvivvde/deepseek-harness-ipad/pull/56)，base 为 main；已同步包含 PR #54 的 main（`021959c`），冲突仅交接文档且已保留双方记录；组合后的 `make test-app`、`make check` 与 `make test-candidate` 全通过（网关 35、候选宿主 20、恢复合同 9、桥接 20、构建闸门 15 项），无跳过。macOS/iPad 未签名构建复验通过，脱敏收据在 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`；两轴组合审查无新发现。PR #56 已以 merge commit 合入 main。
+
+已验证（真机，2026-10-13，签名 r14，分支 `feat/linux-execution-device-check`）：内置探针新阶段 `execution`、`execution-hold`、`execution-stale` 自动完成，无需用户操作和 Key，均 `passed`。先到取消与重复 ID、运行中取消、终端租约的取得、释放与并入、关闭的终端 ID、命令期间 VM 退出、上一进程留下的写者跨本进程 VM 退出保持未知直到显式释放，都符合设计。冷启动、G4 调度、G6 生命周期回归通过。存储失败注入、VM 退出的确定时序、断连与迟到停止证明真机未验证，只有 macOS 测试。详见 [Linux 执行生命周期验收](../validation/ipad-linux-execution.md)。`make test-app` 237 项、`make check` 通过。
 
 架构基线为 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)（2026-10-06 用户确认，accepted）：官方 Worker 在 WKWebView 中运行，Swift 网关与原生工作区为唯一权威；Linux 是项目级兼容插件，启用后异步预热；9P 共享模式 `none`；耐久写租约与草稿；隔离语义为事后检测并转为冲突；工具按能力声明走 `native` / `linux` / `unsupported`。[ADR 0001](../adr/0001-local-linux-emulation.md) 中“Harness 在 Linux 内运行”的部分被取代。
 
@@ -120,8 +122,8 @@
 
 **下一步：**
 
-1. PR #53、#54、#56 已合并；本分支（含 #14 清单提交）的 [PR55](https://github.com/lvivvde/deepseek-harness-ipad/pull/55) 已同步 main（同步后 `make test-app` 8 个测试包共 235 项无失败、跳过或警告，`make check` 通过），用户已同意以 merge commit 合入 main。Linux 执行生命周期（PR #56）的真机验收待安排。
-2. 真实备份导入演练（设备上的 r13 已含工作区权限修正）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
+1. PR #53、#54、#55、#56 已合并。PR #56 的真机验收已完成，结果在分支 `feat/linux-execution-device-check` 的 PR 中，合并需用户另行同意。
+2. 真实备份导入演练（设备上的 r14 含工作区权限修正）：用户从正式 Harness 导出备份到“文件”App，在候选 App 用“Import backup…”同时选 tar 与 `.sha256`，重开候选 App，再确认正式 Harness 照常打开；结果补到测量文档。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
@@ -154,7 +156,7 @@
 ## 文档入口
 
 - 研究：[Worker/Swift/Linux 接缝](../research/plan500-worker-gateway.md)、[iPad 研究 App](../research/plan500-ipad-preflight.md)、[Darwin](../research/plan500-darwin.md)、[写租约](../research/plan500-write-lease.md)、[共享/RPC](../research/plan500-sharing-rpc.md)、[候选研究](../research/plan500-feasibility.md)；原型在 `runtime/prototypes/plan500-*/README.md`。早期研究报告已归档在 `docs/research/`，文首注明原分支。
-- 验收：[非锁屏](../validation/ipad-non-lock-acceptance.md)、[后台恢复](../validation/ipad-background-recovery.md)、[备份恢复](../validation/ipad-recovery-backup.md)、[存储工具](../validation/ipad-storage-tools.md)、[签名维护](../validation/ipad-signing-maintenance.md)、[插件预览](../validation/ipad-plugins-preview.md)。
+- 验收：[非锁屏](../validation/ipad-non-lock-acceptance.md)、[后台恢复](../validation/ipad-background-recovery.md)、[备份恢复](../validation/ipad-recovery-backup.md)、[存储工具](../validation/ipad-storage-tools.md)、[签名维护](../validation/ipad-signing-maintenance.md)、[Linux 执行生命周期](../validation/ipad-linux-execution.md)、[插件预览](../validation/ipad-plugins-preview.md)。
 
 ## 本机接手资产
 
@@ -164,9 +166,9 @@
 - `build/test-dependencies/harness/`：固定官方 `@deepseek-ai/dsh@0.2.0-rc.2`、pnpm 11.28.4 的宿主测试依赖和 lock。设置 `HARNESS_TEST_MODULES="$PWD/build/test-dependencies/harness/node_modules"` 后运行 `make test-runtime`，核对无跳过。依赖丢失时用保留的 lock 重装。
 - Lima `ubuntu` 内 `/var/tmp/ipad-bundled-guest-storage-v6` 可跑 Linux 验收，使用新临时盘；`/Users/edwin` 只读挂载，`/private/tmp` 不挂载。Linux/QEMU 只用隔离盘，不读 iPad 原盘。
 - 正式包：`build/maintenance19/r2-7956e8c/`。研究 App 与收据：`build/prototypes/plan500-ipad/`（`device-r1/` 签名与两模式收据，`worker-device-r1/`、`r2/`、`r4/` 协作与模型收据）；macOS 原型收据在 `build/prototypes/plan500-{worker,sharing,lease,darwin}/`。
-- #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）；`build/issue39-gate5/`（`device/device-private.py`，步骤为 sign、install、launch、wait；收据在 `device/*-safe.json`，macOS 运行在 `mac-3/` 和 `mac-push-dry/`）。研究 App 已于 2026-10-10 卸载以腾出名额，演练 App `g6drill` 已卸载；iPad 上现装候选 App `org.lvivvde.harness.candidate`（现为 r13 构建；内有用户建的项目 Gate1、探针项目 gate1-probe-2 至 4 和 `measure-*` 测量项目，部分保持写者未知，可随时整体卸载）。
+- #39 关口：`build/issue39-gate1/`（从 `device/durability-safe.json` 看起）；`build/issue39-gate3/device/`（关口 2、3、4 的收据与 `device-private.py`）；`build/issue39-gate6/`（合成矩阵，`device/gate6-private.py` 与收据）；`build/issue39-gate5/`（`device/device-private.py`，步骤为 sign、install、launch、wait；收据在 `device/*-safe.json`，macOS 运行在 `mac-3/` 和 `mac-push-dry/`）。研究 App 已于 2026-10-10 卸载以腾出名额，演练 App `g6drill` 已卸载；iPad 上现装候选 App `org.lvivvde.harness.candidate`（现为 r14 构建；内有用户建的项目 Gate1、探针项目 gate1-probe-2 至 4 和 `measure-*` 测量项目，部分保持写者未知，可随时整体卸载）。
 - #17 候选 App：`build/candidate/CandidateWeb`（网页根目录与 `candidate-receipt.json`）；`build/candidate/app/`（生成的工程、`build-private.log`、`build-safe.json` 和 `.app`）；`build/candidate/run/`（macOS 实测的数据根，含私有日志和测试项目 `demo`）。
-- #17 iPad 候选：`build/candidate/ipad-signed-r13/`（现装签名构建与收据，r10–r12 为测量中的旧版）；`build/candidate/ipad-signed/project` 是注入团队后供 Xcode 界面首次运行的工程；`build/candidate/device/device-private.py`（步骤 free-slot、install、launch、gate1 hold|check、running、terminate、pull SUBDIR DEST）。一键复测：`python3 build/candidate/device/gate1-auto-private.py <.app> <上次 hold.json 相对 device/ 的路径>`，安装、hold、强制结束、check 全自动，只打印 `HOLD_PASSED`/`CHECK_PASSED`。关口 1 证据：最新 `device/gate1-auto-204420/`（`hold.json`、`check.json`）；首次手动版在 `device/gate1-killed/` 与 `device/gate1-checked/`。#17 测量：`device/measure-auto-private.py`（install APP、cold N、scheduling、lifecycle、background、background-idle、import、import-old），证据在 `device/measure-auto-154040`（冷启动）、`154144`（调度）、`154203`（生命周期）、`154227`（后台）、`155655`（空闲后台）、`160243`（导入与 home 检查点）、`165653`（旧导出器备份导入）。端到端复核：`device/e2e-auto-private.py`。
+- #17 iPad 候选：`build/candidate/ipad-signed-r14/`（现装签名构建与收据，r10–r13 为旧版）；`build/candidate/ipad-signed/project` 是注入团队后供 Xcode 界面首次运行的工程；`build/candidate/device/device-private.py`（步骤 free-slot、install、launch、gate1 hold|check、running、terminate、pull SUBDIR DEST）。一键复测：`python3 build/candidate/device/gate1-auto-private.py <.app> <上次 hold.json 相对 device/ 的路径>`，安装、hold、强制结束、check 全自动，只打印 `HOLD_PASSED`/`CHECK_PASSED`。关口 1 证据：最新 `device/gate1-auto-204420/`（`hold.json`、`check.json`）；首次手动版在 `device/gate1-killed/` 与 `device/gate1-checked/`。#17 测量：`device/measure-auto-private.py`（install APP、cold N、scheduling、lifecycle、background、background-idle、import、import-old、execution、execution-stale），证据在 `device/measure-auto-154040`（冷启动）、`154144`（调度）、`154203`（生命周期）、`154227`（后台）、`155655`（空闲后台）、`160243`（导入与 home 检查点）、`165653`（旧导出器备份导入）；PR #56 验收在 `223332`（`execution`）、`223410`（hold 与 stale），r14 回归在 `223459`、`223523`、`223541`。端到端复核：`device/e2e-auto-private.py`。
 - 历史归档：`build/acceptance-archive/2026-10-05/`（旧日志、xcresult、截图、脱敏结果与 SHA256 清单）；Issue 正文备份与草稿在 `build/issue-drafts/`。
 - `harness-30` 锁屏提醒已暂停，保持取消。
 

@@ -364,9 +364,8 @@ public enum MeasureProbe {
             "early.ran": false, "running.cancelled": true, "running.ran": false, "running.writerUnknown": false, "repeat.ran": false,
             "terminal.prompt": true, "terminal.released": true, "terminal.file": true,
             "join.stillLeased": true, "join.released": true, "exit.writerUnknown": false]
-        let missed = expected.filter { record[$0.key] as? String != $0.value }.map(\.key)
-            + flags.filter { record[$0.key] as? Bool != $0.value }.map(\.key)
-        record["missed"] = missed.sorted()
+        let missed = misses(record, expected, flags)
+        record["missed"] = missed
         record["passed"] = missed.isEmpty && record["join.files"] as? Int == 2 && host.bootCount == 1
     }
 
@@ -397,13 +396,20 @@ public enum MeasureProbe {
         record["after.writerUnknown"] = entry(host, project.id)?["writerUnknown"] as? Bool
         record["after.nativeWrite"] = nativeWrite(host, project.mount + "/after-release.txt")
         record["bootCount"] = host.bootCount
-        record["passed"] = record["stale.writerUnknown"] as? Bool == true && record["stale.command"] as? String == "REFUSED:WRITER_UNKNOWN"
-            && record["exit.phase"] as? String == "FAILED" && record["exit.writerUnknown"] as? Bool == true
-            && record["release"] as? String == "RELEASED" && record["after.writerUnknown"] as? Bool == false
-            && record["after.nativeWrite"] as? String == "create" && host.bootCount == 1
+        let missed = misses(record, ["stale.command": "REFUSED:WRITER_UNKNOWN", "exit.phase": "FAILED", "release": "RELEASED",
+                                     "after.nativeWrite": "create"],
+                            ["stale.writerUnknown": true, "exit.writerUnknown": true, "after.writerUnknown": false])
+        record["missed"] = missed
+        record["passed"] = missed.isEmpty && host.bootCount == 1
     }
 
     // MARK: Helpers
+
+    /// The record keys whose value differs from the expected code or flag, sorted.
+    private static func misses(_ record: [String: Any], _ expected: [String: String], _ flags: [String: Bool]) -> [String] {
+        (expected.filter { record[$0.key] as? String != $0.value }.map(\.key)
+            + flags.filter { record[$0.key] as? Bool != $0.value }.map(\.key)).sorted()
+    }
 
     private static func named(_ host: CandidateHost, _ name: String?, _ timing: Timing) throws -> CandidateProject {
         var found: CandidateProject?

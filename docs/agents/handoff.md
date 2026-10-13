@@ -125,6 +125,7 @@
 - PR #58 已合并。正式 Harness 用同一签名身份重签覆盖安装（r3，`build/maintenance19/r3-7956e8c-resign/`），数据保留。
 - 用户从正式 Harness 导出备份，在候选 App 导入。“文件”App 给重复保存的文件加了编号（`HarnessBackup 2.tar`、`HarnessBackup.tar.sha256 2`），r14 配不上对。r15 改为按扩展名配对，r16 再去掉末尾编号；r16 导入成功。
 - 已验证（真机，r16）：2 个项目、73 个文件、8 个会话（3 个改键），凭据 1 个和缓存 10 条被排除。打开 `Test` 后 Linux READY，home 检查点记下这份导入，23 个 home 文件、8 个会话都在。
+- 回退通过：用户确认正式 Harness 页面正常、项目和会话都在。它在后台约 80 分钟后第一次恢复失败（修复页面端口转发未成，“页面连接暂不可用”），同一进程再次恢复后 `ready`，原因未查明，状态文件只记阶段。
 - 未查明：修复前有一次一直显示“Importing…”，线程栈无活动、无写入。导入的会话文件修改时间变成了导入时间。
 - 已验证（macOS，`01a7f7c` 之后）：`make test-app` 全量 239 项，无失败或警告；`make check` 通过。第一次全量时 `EmbeddedMachineTests` 有 1 项在 5 秒内没读到串口日志而失败，单独跑 3 次和随后全量都通过，按时序抖动记，没有改它。
 - 工具：lldb attach 设备 App 后，进程未停住就退出会杀掉 App。私有 `build/candidate/device/stack-private.py` 用 Python API 停住、取栈、detach，不杀进程。
@@ -132,9 +133,8 @@
 **下一步：**
 
 1. 分支 `fix/import-pairing-suffix`（导入配对认“文件”App 的重复编号）的 PR 等用户同意后合并。
-2. 用户确认正式 Harness 仍能照常打开，结果补到测量文档“真实备份演练”的“回退”一条。
-3. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
-4. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
+2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
+3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 

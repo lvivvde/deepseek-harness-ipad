@@ -70,6 +70,16 @@ public enum BackupImport {
         return summary
     }
 
+    /// The archive and its checksum among the files picked in Files: exactly one `.tar` and one `.sha256`,
+    /// whatever their names. Files numbers a repeated export ("HarnessBackup 2.tar", "HarnessBackup.tar
+    /// 2.sha256"), so the names cannot pair them; the checksum decides whether the two belong together.
+    public static func pick(_ files: [URL]) -> (archive: URL, checksum: URL)? {
+        let archives = files.filter { $0.pathExtension.lowercased() == "tar" }
+        let checksums = files.filter { $0.pathExtension.lowercased() == "sha256" }
+        guard archives.count == 1, checksums.count == 1 else { return nil }
+        return (archives[0], checksums[0])
+    }
+
     public static func defaultOptions() -> MigrationOptions {
         var options = MigrationOptions()
         options.codec = try? DynamicZstd()

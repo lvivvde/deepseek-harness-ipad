@@ -142,6 +142,30 @@ final class BackupImportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/home-imports"))
     }
 
+    func testARepeatedExportNumberedByFilesStillPairsAndImports() throws {
+        try writeBackup()
+        let numbered = inbox + "/HarnessBackup 2.tar", sidecar = inbox + "/HarnessBackup.tar 2.sha256"
+        try FileManager.default.moveItem(atPath: archive, toPath: numbered)
+        try FileManager.default.moveItem(atPath: checksum, toPath: sidecar)
+        let urls = [sidecar, numbered].map { URL(fileURLWithPath: $0) }
+        let picked = try XCTUnwrap(BackupImport.pick(urls), "one .tar and one .sha256 pair whatever Files named them")
+        XCTAssertEqual(picked.archive.path, numbered)
+        XCTAssertEqual(picked.checksum.path, sidecar)
+        let reply = try host().importBackup(archive: picked.archive.path, checksum: picked.checksum.path)
+        XCTAssertNil(reply["error"])
+        XCTAssertEqual(reply["projects"] as? [String], ["demo"])
+    }
+
+    func testOnlyOneArchiveAndOneChecksumMakeAPair() {
+        let url = { (name: String) in URL(fileURLWithPath: "/inbox/" + name) }
+        XCTAssertNil(BackupImport.pick([url("HarnessBackup.tar")]))
+        XCTAssertNil(BackupImport.pick([url("HarnessBackup.tar"), url("notes.txt")]))
+        XCTAssertNil(BackupImport.pick([url("HarnessBackup.tar"), url("HarnessBackup 2.tar"), url("HarnessBackup.tar.sha256")]),
+                     "two archives: which one the checksum belongs to is a guess")
+        XCTAssertNil(BackupImport.pick([url("HarnessBackup.tar"), url("HarnessBackup.tar.sha256"), url("HarnessBackup.tar 2.sha256")]))
+        XCTAssertNotNil(BackupImport.pick([url("Backup.TAR"), url("Backup.TAR.SHA256")]))
+    }
+
     func testABadSidecarChangesNothing() throws {
         try writeBackup()
         try Data("nope\n".utf8).write(to: URL(fileURLWithPath: checksum))

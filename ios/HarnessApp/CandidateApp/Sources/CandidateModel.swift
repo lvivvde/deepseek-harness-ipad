@@ -196,10 +196,9 @@ final class CandidateModel: ObservableObject {
     /// picker's access lasts. Sessions join at the Worker's next restore, so a running page needs a relaunch.
     func importBackup(_ urls: [URL]) {
         failure = nil
-        guard let host,
-              let archive = urls.first(where: { $0.pathExtension == "tar" }),
-              let checksum = urls.first(where: { $0.lastPathComponent == archive.lastPathComponent + ".sha256" })
-        else { importStatus = "Pick the backup .tar and its .sha256 together."; return }
+        guard let host, let picked = BackupImport.pick(urls)
+        else { importStatus = "Pick one backup .tar and one .sha256 together."; return }
+        let (archive, checksum) = picked
         importStatus = "Importing…"
         let relaunch = webStarted
         background.async {

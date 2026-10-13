@@ -229,6 +229,7 @@ final class MeasureProbeTests: XCTestCase {
         // A second host on the same data root stands in for the next launch; the first one's command still runs.
         let record = MeasureProbe.run(.executionStale, host: try host(readyAfter: 0), project: held["project"] as? String, timing: timing)
         XCTAssertEqual(record["passed"] as? Bool, true, "\(record)")
+        XCTAssertEqual(record["missed"] as? [String], [])
         XCTAssertEqual(record["stale.command"] as? String, "REFUSED:WRITER_UNKNOWN")
         XCTAssertEqual(record["exit.writerUnknown"] as? Bool, true)
         XCTAssertEqual(record["release"] as? String, "RELEASED")

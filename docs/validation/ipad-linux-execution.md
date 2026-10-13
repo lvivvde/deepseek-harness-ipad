@@ -10,7 +10,7 @@
 - `execution-hold`：在新项目里跑一个长命令，记下项目名后由驱动强制结束 App。
 - `execution-stale`：下一次启动打开该项目，检查上一进程留下的写者。
 
-每个阶段自己判定 `passed`，`execution` 另记未达预期的键（`missed`）。Mac 上的私有驱动是忽略目录里的 `build/candidate/device/measure-auto-private.py`，步骤 `execution` 和 `execution-stale`。macOS 用假 guest 跑同样三个阶段，测试在 `MeasureProbeTests`。
+每个阶段自己判定 `passed`，`execution` 和 `execution-stale` 另记未达预期的键（`missed`）。Mac 上的私有驱动是忽略目录里的 `build/candidate/device/measure-auto-private.py`，步骤 `execution` 和 `execution-stale`。macOS 用假 guest 跑同样三个阶段，测试在 `MeasureProbeTests`。
 
 ## 结果
 
@@ -24,15 +24,17 @@
 | 取消运行中的命令（1.5 s 后） | `CANCEL_REQUESTED`；命令返回 `COMPLETED` 且 `cancelled=true`，文件未写，写者未变成未知 |
 | 取消后的新命令 | `COMPLETED` |
 | 已完成的 ID 再提交 | `REFUSED:DUPLICATE_OPERATION`，未运行 |
-| 打开 `/bin/bash -i` 终端 | 打开；提示符出现时为 idle |
+| 打开 `/bin/bash -i` 终端 | 打开；提示符出现时为 idle（未检查第一行前是否不持有租约） |
 | 在终端运行一行 | `WRITTEN` 且取得租约；行结束后读取时租约释放，文件内容正确 |
 | 终端释放后的命令 | `COMPLETED` |
 | 终端运行中发命令 | 命令并入，返回 `COMPLETED`；之后终端仍持有租约，行结束后释放；两个文件都在 |
 | 关闭终端 | 关闭；再写该 ID 返回 `TERMINAL_NOT_FOUND`；同一 ID 可重新打开 |
-| 命令运行中 VM 退出 | 项目 `FAILED`；该命令返回 `WRITER_UNKNOWN`（结果未知）；写者未变成未知；原生写入立即提交；重开的终端已不存在（`TERMINAL_NOT_FOUND`） |
+| 命令运行中 VM 退出 | 项目 `FAILED`；该命令的返回码只记录、不判定，本次为 `WRITER_UNKNOWN`（结果未知） |
+| VM 退出后的写者 | 写者未变成未知；原生写入立即提交 |
+| VM 退出后重开的终端 | 已不存在（`TERMINAL_NOT_FOUND`） |
 | VM 启动次数 | 1 |
 
-VM 退出这一项说明：命令结果未知，但租约已按本进程派发的 fence 结算，所以原生写入可以继续。这与设计中“命令结果未知与租约是否仍占用分别表达”一致。
+VM 退出这几项说明：命令结果未知，但租约已按本进程派发的 fence 结算，所以原生写入可以继续。命令的返回码取决于退出时机，探针不把它列入判定。这与设计中“命令结果未知与租约是否仍占用分别表达”一致。
 
 ### `execution-hold` → 强制结束 → `execution-stale`（都 `passed`）
 
@@ -49,14 +51,17 @@ VM 退出这一项说明：命令结果未知，但租约已按本进程派发�
 
 ## 未在真机验证
 
-以下只由 macOS 行为测试覆盖，真机无法稳定注入，记为真机未验证：
+以下只由 macOS 行为测试覆盖（终端两项见 `ProjectGatewayTests` 和 `CandidateHostTests`），真机无法稳定注入，记为真机未验证：
 
 - toolStart 单次或持续存储失败、并入的 toolStart 失败、VM 退出结算时存储失败及之后的显式补偿。
 - VM 退出恰在准入后、grant 前，或派发后、回答前（需要确定的时序）。
 - 断连后的未知结果、迟到的 `writerQuiescent`、释放中等待和显式 revoke。
+- 终端只允许 `/bin/bash -i`：探针只打开这一种，没试其他 shell。
+- 空闲终端在运行第一行前只读、不持有租约：探针没在这一刻检查。
 - 有模型参与的回合（需要用户的 Key，本次未做）。
 
 ## 构建与测试
 
+- 验收后（[PR #57](https://github.com/lvivvde/deepseek-harness-ipad/pull/57) 合并后）`execution-stale` 改为与 `execution` 共用预期值表和 `missed` 列表。判定条件不变，macOS 测试通过，真机未重跑。
 - `make test-app`：8 个 bundle，237 项，0 失败、0 跳过、0 警告（新增两项探针测试）。`make check` 通过。
 - r14 用私有签名文件构建，签名校验通过；先重新生成了固定依赖网页。原始日志、收据和设备记录都在忽略的 `build/candidate/`：构建在 `ipad-signed-r14/`，设备证据在 `device/measure-auto-223332`（`execution`）、`223410`（hold 与 stale）、`223459`（冷启动）、`223523`（调度）、`223541`（生命周期）。

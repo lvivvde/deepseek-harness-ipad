@@ -235,4 +235,16 @@ final class MeasureProbeTests: XCTestCase {
         XCTAssertEqual(record["release"] as? String, "RELEASED")
         machine.stop()
     }
+
+    func testNetworkPassesOnlyWhenEveryCheckExitsZero() throws {
+        let checks = [MeasureProbe.NetworkCheck("reach", "true"), MeasureProbe.NetworkCheck("refused", "exit 3")]
+        let record = MeasureProbe.run(.network, host: try host(readyAfter: 0.2), timing: timing(), network: checks)
+        XCTAssertEqual(record["passed"] as? Bool, false, "\(record)")
+        XCTAssertEqual(record["reach.exitCode"] as? Int, 0)
+        XCTAssertEqual(record["refused.exitCode"] as? Int, 3)
+        XCTAssertNotNil(record["hostLoopback.exitCode"])
+        XCTAssertEqual(try saved("network")["passed"] as? Bool, false)
+        let again = MeasureProbe.run(.network, host: try host(readyAfter: 0), timing: timing(), network: [checks[0]])
+        XCTAssertEqual(again["passed"] as? Bool, true, "\(again)")
+    }
 }

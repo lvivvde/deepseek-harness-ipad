@@ -17,7 +17,8 @@ public protocol GuestMachine: AnyObject {
 }
 
 /// The guest both platforms boot: TCG, one vCPU, the read-only system disk, the agent forwarded to a
-/// loopback port with no other network, and the workspace as the 9P share (`security_model=none`).
+/// loopback port, IPv4 user networking out to the internet (#18: clone, install, push), and the
+/// workspace as the 9P share (`security_model=none`).
 enum GuestArguments {
     static func machine(inputs: String, workspace: String, port: UInt16, serial: String) -> [String] {
         [
@@ -27,7 +28,7 @@ enum GuestArguments {
             "-kernel", inputs + "/Image", "-initrd", inputs + "/initramfs.gz", "-append", "console=ttyAMA0 rdinit=/init",
             "-drive", "file=" + option(inputs + "/system.raw") + ",if=none,id=system,format=raw,readonly=on",
             "-device", "virtio-blk-pci,drive=system",
-            "-netdev", "user,id=net,restrict=on,hostfwd=tcp:127.0.0.1:\(port)-:4500", "-device", "virtio-net-pci,netdev=net,romfile=",
+            "-netdev", "user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:\(port)-:4500", "-device", "virtio-net-pci,netdev=net,romfile=",
             "-fsdev", "local,id=workspace,path=" + option(workspace) + ",security_model=none,writeout=immediate",
             "-device", "virtio-9p-pci,fsdev=workspace,mount_tag=workspace",
         ]

@@ -26,12 +26,29 @@ import os
 /// - `execution-hold` leaves a command running in a new project for the driver to end the App;
 ///   `execution-stale` opens that project (`project`) in the next launch: the writer the earlier launch
 ///   left stays unknown across this launch's VM exit until it is released explicitly.
+/// - `network` (#18): a guest command resolves names and reaches the Git and npm hosts over HTTPS.
+///   Whether a guest command reaches a listener on the host's loopback (`10.0.2.2`) is recorded, not judged.
 /// Each phase writes `<root>/probe/measure-<phase>.json` with numbers and fixed codes only, tagged with
 /// the launch's `run` id and marked `done` once final.
 public enum MeasureProbe {
     public enum Phase: String {
         case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle", imported
         case execution, executionHold = "execution-hold", executionStale = "execution-stale"
+        case network
+    }
+
+    /// A guest command the `network` phase runs, passing when it exits 0.
+    public struct NetworkCheck {
+        public var name: String
+        public var command: String
+        public init(_ name: String, _ command: String) { self.name = name; self.command = command }
+
+        /// Name resolution, Git over HTTPS to a small public repository, and the npm registry.
+        public static let defaults = [
+            NetworkCheck("dns", "node -e \"require('node:dns').lookup('github.com', e => process.exit(e ? 1 : 0))\""),
+            NetworkCheck("git", "git ls-remote https://github.com/octocat/Hello-World.git HEAD"),
+            NetworkCheck("npm", "node -e \"fetch('https://registry.npmjs.org/-/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(2))\""),
+        ]
     }
 
     public struct Timing {
@@ -49,7 +66,7 @@ public enum MeasureProbe {
 
     @discardableResult
     public static func run(_ phase: Phase, host: CandidateHost, bundle: String? = nil, project: String? = nil,
-                           timing: Timing = .init()) -> [String: Any] {
+                           timing: Timing = .init(), network: [NetworkCheck] = NetworkCheck.defaults) -> [String: Any] {
         let started = Date()
         var record: [String: Any] = ["phase": phase.rawValue, "run": runId]
         if let launched = processStart() { record["processToProbeMs"] = ms(started.timeIntervalSince(launched)) }
@@ -64,6 +81,7 @@ public enum MeasureProbe {
             case .execution: try execution(host, timing, &record)
             case .executionHold: try executionHold(host, timing, &record)
             case .executionStale: try executionStale(host, project, timing, &record)
+            case .network: try networkReach(host, network, timing, &record)
             }
         } catch let error as CandidateError {
             record["failure"] = error.code
@@ -403,7 +421,58 @@ public enum MeasureProbe {
         record["passed"] = missed.isEmpty && host.bootCount == 1
     }
 
+    private static func networkReach(_ host: CandidateHost, _ checks: [NetworkCheck], _ timing: Timing, _ record: inout [String: Any]) throws {
+        let (id, mount) = try project(host, "measure-network", plugin: true)
+        _ = host.handle(["operation": "project-open", "id": id])
+        try waitReady(host, id, timing, &record)
+        for check in checks {
+            var reply: [String: Any] = [:]
+            record["\(check.name).ms"] = ms(time { reply = execute(host, "net-\(check.name)", mount, check.command) })
+            record["\(check.name).status"] = describe(reply)
+            record["\(check.name).exitCode"] = reply["exitCode"] as? Int ?? -1
+        }
+        // The guest reaches the host's loopback as 10.0.2.2. Observed only: QEMU has no switch to close it.
+        if let listener = try? Listener() {
+            defer { listener.close() }
+            let reply = execute(host, "net-host-loopback", mount, "timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.2.2/\(listener.port)'")
+            record["hostLoopback.exitCode"] = reply["exitCode"] as? Int ?? -1
+            record["hostLoopback.accepted"] = listener.accepted()
+        }
+        record["bootCount"] = host.bootCount
+        record["passed"] = checks.allSatisfy { record["\($0.name).exitCode"] as? Int == 0 } && host.bootCount == 1
+    }
+
     // MARK: Helpers
+
+    /// A TCP listener on a free host loopback port, to see whether a guest command connects to it.
+    private final class Listener {
+        let fd: Int32
+        let port: UInt16
+
+        init() throws {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw CandidateError("PORT_UNAVAILABLE") }
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+            address.sin_addr.s_addr = inet_addr("127.0.0.1")
+            var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let bound = withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) == 0 && getsockname(fd, $0, &size) == 0 }
+            }
+            guard bound, listen(fd, 4) == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { Darwin.close(fd); throw CandidateError("PORT_UNAVAILABLE") }
+            self.fd = fd
+            port = UInt16(bigEndian: address.sin_port)
+        }
+
+        /// True when a connection is waiting or was made; accepts and closes it.
+        func accepted() -> Bool {
+            let client = accept(fd, nil, nil)
+            if client >= 0 { Darwin.close(client) }
+            return client >= 0
+        }
+
+        func close() { Darwin.close(fd) }
+    }
 
     /// The record keys whose value differs from the expected code or flag, sorted.
     private static func misses(_ record: [String: Any], _ expected: [String: String], _ flags: [String: Bool]) -> [String] {

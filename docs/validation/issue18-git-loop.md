@@ -35,11 +35,21 @@
 | 平台 | 结果 | dns | git | npm | host 回环 | 启动次数 |
 | --- | --- | --- | --- | --- | --- | --- |
 | macOS（2026-10-14） | passed | 0，312 ms | 0，22.9 s | 0，8.8 s | 能连上 | 1 |
-| iPad | 待测 | | | | | |
+| iPad（2026-10-14，r17） | 未通过 | 0，2.5 s | 被 60 s 上限终止 | 0，15.1 s | 能连上 | 1 |
+
+iPad 上外网可达，但 guest 的 git 走 HTTPS 很慢：`git ls-remote` 超过 shell 工具 60 s 的上限被终止，同一命令在 macOS 上用 22.9 s。Node 的 HTTPS 请求在 iPad 上用 15.1 s。所以获取、推送只走没有时限的终端，耗时以终端里 `time` 的结果为准。
 
 ## 终端步骤
 
-在候选 App 中新建一个空项目并启用 Linux 插件，等插件就绪后打开终端：
+在候选 App 中新建一个空项目并启用 Linux 插件，等插件就绪后打开终端（起点是 `/workspace`）。先核对“重名、失败、取消不覆盖”：
+
+```sh
+ls -A
+git clone https://github.com/<owner>/<repo>.git . ; echo "clone=$?"
+ls -A
+```
+
+工作区根有保留文件，git 应拒绝克隆到非空目录，前后两次 `ls -A` 相同。之后在第一次 `git fetch` 的密码提示处按 Ctrl-C（取消），再运行一次并输入错误的密码（失败），每次之后 `git branch -a` 都应为空。
 
 ```sh
 cd /workspace
@@ -48,10 +58,10 @@ printf '.dsh-identity\n.plan500-identity\n.dsh-mount-check\n' >> .git/info/exclu
 git remote add origin https://github.com/<owner>/<repo>.git
 git config user.name "Harness Acceptance"
 git config user.email "acceptance@invalid"
-git fetch origin            # 在提示处输入用户名和 token，token 不回显
+time git fetch origin       # 在提示处输入用户名和 token，token 不回显
 git checkout main
 git config core.hooksPath .githooks
-npm ci
+time npm ci
 npm test; echo "test=$?"
 npm run typecheck; echo "typecheck=$?"
 npm run build; echo "build=$?"

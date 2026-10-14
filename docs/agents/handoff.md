@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-13，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-14，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -133,9 +133,14 @@
 
 #17 已于 2026-10-14 关闭。[完成条件核对](../validation/issue17-closeout.md) 由 PR #60 合入（`cf28b7c`），用户同意缺口按核对表放行。iPad 文件面板能显示终端新建的文件，用户已确认（r16）。文件面板在右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。
 
+#18 进行中，分支 `feat/issue18-git-loop`（未开 PR）。范围由用户 2026-10-14 确认，已写进 #18 评论和 [#18 验收记录](../validation/issue18-git-loop.md)：用户新建私有测试仓库并在 iPad 上输入 fine-grained token；guest 去掉 `restrict=on` 放开出站；固定项目是 `runtime/acceptance/ts-git-loop`（只依赖 `typescript@7.0.2`）；`git fetch`、`npm ci`、`git push` 由用户在终端手动运行。标签已改为 `ready-for-human`。
+
+- 已改：QEMU 网络参数改为 `user,id=net,ipv6=off,hostfwd=…`；探针新阶段 `network`；[调度与隔离边界](../design/linux-plugin-scheduling.md)新增“网络（#18）”和 host 回环缺口。
+- 已验证（macOS，2026-10-14）：`network` 探针 passed（dns、`git ls-remote`、npm registry 都是 0，QEMU 启动 1 次；guest 能连上 host 回环的监听，只记录）；`make test-app` 全量 240 项（候选 47 项）通过、无警告，`make check`、`make test-candidate` 通过。签名 iPad 构建 r17 在 `build/candidate/ipad-signed-r17/`，未安装：当时 iPad 未连接。私有驱动 `measure-auto-private.py` 新增步骤 `network`。
+
 **下一步：**
 
-1. 开始 #18：先定范围（仍带 `needs-triage`）和用户授权的测试远端。#14 现在也可以开始，依据是 #17 的组件清单。
+1. #18：连上 iPad 后安装 r17 并跑 `measure-auto-private.py network`；用户建好私有测试仓库后，从 Mac 用固定项目播种；用户在 iPad 终端按验收记录的步骤获取、安装、测试，再由模型修改、提交和推送；核对远端提交，逐条填写验收表。#14 也可以开始，依据是 #17 的组件清单。
 2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
@@ -144,7 +149,7 @@
 | Issue | 依赖与边界 |
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
-| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务（#17 已关闭）。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
+| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务（#17 已关闭）。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。范围已定，标签 `ready-for-human`。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | #17 已关闭，组件清单见[分发组件](../design/distribution-components.md)，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 

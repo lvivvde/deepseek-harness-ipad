@@ -1,0 +1,15 @@
+{
+  "name": "harness-acceptance-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The fixed project for the #18 Git loop acceptance: a small TypeScript library with one dependency.",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

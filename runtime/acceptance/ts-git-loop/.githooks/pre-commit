@@ -1,0 +1,5 @@
+#!/bin/sh
+# Commit only when the typecheck and the tests pass.
+set -e
+npm run --silent typecheck
+npm test --silent

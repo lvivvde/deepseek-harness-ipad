@@ -56,6 +56,8 @@ final class CandidateModel: ObservableObject {
     @Published private(set) var boundProject: String?
     @Published private(set) var diagnostic: String?
     @Published private(set) var failure: String?
+    /// The last characters and length of the key in memory, so the user can check it against the console.
+    @Published private(set) var keyHint: String?
     @Published private(set) var webStarted = false
     @Published private(set) var lastEvent: String?
     @Published private(set) var sessionPhase = "NOT_STARTED"
@@ -107,11 +109,12 @@ final class CandidateModel: ObservableObject {
         if let host, let phase = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_GATE1"].flatMap(Gate1Probe.Phase.init) {
             Thread.detachNewThread { Gate1Probe.run(phase, host: host) }
         }
-        // A #17 measurement launch runs one phase on its own project; see `MeasureProbe`.
+        // A #17 or #18 measurement launch runs one phase; see `MeasureProbe`.
         if let host, let phase = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE"].flatMap(MeasureProbe.Phase.init) {
             let bundle = Bundle.main.bundlePath
             let project = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_PROJECT"]
-            Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle, project: project) }
+            let remote = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_REMOTE"]
+            Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle, project: project, remote: remote) }
         }
         // The scripted migration drill imports `<root>/incoming/HarnessBackup.tar` before anything opens;
         // the serial queue keeps the open below behind it. The reply goes to `<root>/probe/import.json`.
@@ -161,7 +164,12 @@ final class CandidateModel: ObservableObject {
         #endif
     }
 
-    func setKey(_ value: String) { key.set(value) }
+    /// A pasted key often carries a space or line break, which the gateway would refuse as missing.
+    func setKey(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        key.set(trimmed)
+        keyHint = trimmed.isEmpty ? nil : "In use: …\(trimmed.suffix(4)), \(trimmed.count) characters"
+    }
 
     func create(name: String, pluginEnabled: Bool) {
         failure = nil

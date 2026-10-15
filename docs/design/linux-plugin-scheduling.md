@@ -108,6 +108,13 @@ QEMU 退出后：
 - 命令看到的 `/workspace` 是只读 bind。只有持有租约的命令才进入私有 mount namespace，并只把自己的视图改为可写；不持租约的命令以 reader uid 运行。
 - 每个命令有自己的 cgroup。结束、超时或取消时，guest 先杀掉整个 cgroup，再回报 `writerQuiescent`。
 
+**网络（#18）**
+
+- guest 使用 QEMU user 网络、只开 IPv4：`user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:<端口>-:4500`。不再加 `restrict=on`，guest 命令可以直接访问外网，用于 `git clone`/`fetch`/`push` 和 `npm ci`。
+- 端口转发只绑定 host 的 `127.0.0.1`，其他设备连不到 agent，agent 自身仍然要求令牌。
+- 出站连接由 App 进程中的 QEMU 发出。guest 内没有代理，也没有域名白名单。
+- 模型请求仍只走原生网关，Key 不进入 guest。Git 凭据由用户在终端里 git 的提示处输入，不保存，也不从聊天中获取。
+
 **已知缺口**
 
 以下缺口保留，作为后续加固项：
@@ -121,6 +128,8 @@ QEMU 退出后：
 - 租约释放时，扫描工作区。
 
 差异记为 `external` 代际，受影响的原生修改保存为冲突草稿。独立 uid 或更强的隔离不在 #17 范围内。
+
+网络还有一个缺口：guest 经 `10.0.2.2` 能连到 host 的 `127.0.0.1`。QEMU user 网络没有关闭这条路径的开关，macOS 探针实测 guest 命令能连上 host 回环上的监听（`hostLoopback.accepted: true`）。agent 的端口转发连接也从 `10.0.2.2` 进入 guest，所以不能用路由屏蔽这个地址；guest 没有 iproute2 的 `uidrange` 规则或 netfilter，无法按 uid 区分。因此 host 回环上的服务不能把“只监听 127.0.0.1”当作对 guest 的隔离，需要自己做认证。
 
 ## 验证
 

@@ -31,8 +31,8 @@ import os
 /// - `git-fetch` (#18): in the user's project (`project`, by name, created when absent), cloning into the workspace root, a
 ///   second project of the same name, a second `origin`, a fetch with prompts off and one cancelled at
 ///   its prompt all leave the project as it was. The probe then waits for the user's own `git fetch` of
-///   `remote` in the App's terminal, where the token is typed, and installs, tests, type-checks and
-///   builds with real exit codes; a commit that fails the pre-commit hook leaves `HEAD` where it was.
+///   `remote` in the App's terminal, where the token is typed, checks that nothing in the VM kept the token,
+///   and installs, tests, type-checks and builds with real exit codes; a commit that fails the pre-commit hook leaves `HEAD` where it was.
 /// - `git-push` (#18): a commit sent while Linux prepares waits for it and completes only after the
 ///   pre-commit hook passes; the probe then waits for the user's own `git push` in the App's terminal.
 /// - `git-keep` (#18): after a reopen, an overwrite upgrade or a migration, the project (`project`, by
@@ -494,8 +494,8 @@ public enum MeasureProbe {
             record["clone.reason"] = Shell.reason(shell.last)
             record["clone.unchanged"] = listing(workspace) == listed
             if !FileManager.default.fileExists(atPath: workspace + "/.git") {
+                // No exclude entries: the guest's system git config ignores the reserved root files.
                 record["setup.exitCode"] = shell.run("git init -q -b main"
-                    + " && printf '.dsh-identity\\n.plan500-identity\\n.dsh-mount-check\\n' >> .git/info/exclude"
                     + " && git remote add origin '\(remote)' && git config user.name 'Harness Acceptance'"
                     + " && git config user.email acceptance@invalid && git config core.hooksPath .githooks") ?? -1
                 expected["setup.exitCode"] = 0
@@ -524,6 +524,10 @@ public enum MeasureProbe {
             record["fetch.waitMs"] = ms(Date().timeIntervalSince(waited))
             record.removeValue(forKey: "state")
             guard fetched() != nil else { throw CandidateError("FETCH_NOT_SEEN") }
+            // The fetch authenticated with a token typed in this VM; nothing in the VM may have kept it.
+            record["credential.helper"] = shell.run(storedHelper).map { $0 == 0 } ?? "NO_EXIT_CODE"
+            record["credential.file"] = shell.run(storedFile).map { $0 == 0 } ?? "NO_EXIT_CODE"
+            flags.merge(["credential.helper": false, "credential.file": false]) { $1 }
         }
 
         record["checkout.exitCode"] = shell.run("git checkout -q main") ?? -1
@@ -606,6 +610,10 @@ public enum MeasureProbe {
         record["passed"] = missed.isEmpty && host.bootCount == 1
     }
 
+    /// Exit 0 when guest git would keep a typed credential: a helper is configured, or a credential file exists.
+    static let storedHelper = "git config --get-all credential.helper >/dev/null"
+    static let storedFile = "test -e ~/.git-credentials || test -e .git-credentials || test -e ~/.config/git/credentials"
+
     private static func gitKeep(_ host: CandidateHost, _ name: String?, _ remote: String?, _ timing: Timing,
                                 _ record: inout [String: Any]) throws {
         let project = try named(host, name, timing)
@@ -628,9 +636,8 @@ public enum MeasureProbe {
             record["origin.same"] = check("origin", "test \"$(git remote get-url origin)\" = '\(remote)'") == 0
         }
         // Prompted credentials are not kept: no helper is set and no credential file exists.
-        record["credential.helper"] = check("helper", "git config --get-all credential.helper >/dev/null") == 0
-        record["credential.file"] = check("file", "test -e ~/.git-credentials || test -e .git-credentials"
-                                          + " || test -e ~/.config/git/credentials") == 0
+        record["credential.helper"] = check("helper", storedHelper) == 0
+        record["credential.file"] = check("file", storedFile) == 0
         #if os(iOS)
         let scanned = NSHomeDirectory()
         #else

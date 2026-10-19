@@ -88,6 +88,7 @@ iPad 上外网可达，但 guest 的 git 走 HTTPS 很慢：`git ls-remote` 超�
 | iPad（2026-10-15，r22→r23） | `git-keep`，覆盖升级 | Git、会话、配置保留 | 覆盖安装 r23 后首次启动：`HEAD` 与 push 后相同，2 个提交，`fsck` 0，工作区干净，`origin` 不变；没有凭据文件；扫描 1247 个文件、118 MB，无 token 命中。未判通过只因 guest 配置了 credential helper（发现第 2 条） |
 | iPad（2026-10-15，r23） | `git-keep`，重开 | 同上 | 结果与升级后相同，扫描 1250 个文件，无 token 命中。随后按项目名打开 App，Worker 恢复后重新保存：基线 27 个会话文件全部保留且内容未变，Acc-ts 的 4 个会话都在，3 个配置文件不变 |
 | iPad（2026-10-15，r23） | 迁移 | Git、会话、配置保留 | 导入合成备份：38 个文件、1 个会话，排除 2 个凭据文件。`HEAD` 与备份中相同，3 个提交，`fsck` 0，`origin` 不变；会话迁到 `/dsh/workspace/migrated-git`；home 存档和工作区都没有假凭据标记；扫描 1293 个文件，无 token 命中。工作区不干净：App 的保留文件 `.plan500-identity` 是未跟踪文件（发现第 3 条） |
+| iPad（2026-10-19，r25） | `git-keep`，#63/#64 修复后复测 | Git、凭据、保留文件 | Acc-ts：2 个提交，`fsck` 0，工作区干净，`origin` 不变，`credential.helper` 与凭据文件都没有；扫描 1310 个文件无 token 命中，通过。migrated-git：3 个提交，`fsck` 0，**工作区干净**，无 credential helper、无凭据文件，通过 |
 
 模型修改（2026-10-15，r20）：用户在 App 里让 DeepSeek 新增 `truncateWords` 及其测试。模型运行 `npm test`，5/5 通过，退出码 0。diff 只涉及 `src/index.ts`（+15）和 `test/index.test.ts`（+16 −1），用户审阅后通过。
 
@@ -97,7 +98,9 @@ iPad 上外网可达，但 guest 的 git 走 HTTPS 很慢：`git ls-remote` 超�
 
 1. **iPad 上带 hook 的提交超过 shell 工具 60 s 的上限。** pre-commit 运行类型检查和测试，单独运行约 70 s，提交合计 71–103 s。r21 用 shell 工具提交，hook 被终止，退出码 -1；git 没有留下 `index.lock`，`HEAD` 不变。所以提交、获取和推送都应在终端里运行。模型若用 shell 工具提交，会遇到同样的上限。
 2. **guest 把输入的 token 留在内存里，直到 VM 退出。** 候选 App 的 guest 系统盘沿用旧运行时的 `/etc/gitconfig`（[`runtime/guest/gitconfig`](../../runtime/guest/gitconfig)），其中 `credential.helper = store`；guest 命令和终端的 `HOME` 是 tmpfs 上的 `/tmp`。按 git 的行为，认证成功后 token 会写进 `/tmp/.git-credentials`。它不落盘，App 重开后就消失：三次扫描都没有命中，重开后也没有凭据文件。但 VM 运行期间，之后的 guest 命令（含模型的 shell 命令和 hook）都能读到它。这与 [Git 写操作与 hook](../design/git-writes-and-hooks.md) 的要求不符：令牌只在单条网络命令里提供，hook 环境中没有令牌。这一条是按配置推断的：VM 运行期间没有直接查看该文件，因为那样需要用户再输入一次 token。
+   **已修（#63，r24/r25）：** `agent.cjs` 给 guest 命令和终端设 `GIT_CONFIG_SYSTEM=/run/plan500-git/config`，其中不配 credential helper。r25 复测 `git-keep` 两个项目都没有 credential helper 和凭据文件。在新项目上真实输入 token 后检查（`git-fetch`）未做：用户 2026-10-19 决定跳过，按通过处理。
 3. **迁移来的 Git 项目里，App 的保留文件显示为未跟踪。** 工作区根的 `.plan500-identity` 不在仓库的忽略规则里，`git status` 不干净，`git add -A` 会把它提交进去。Acc-ts 没有这个问题，是因为探针建仓时把保留文件写进了 `.git/info/exclude`。用户自己建仓、clone 或迁移来的项目都会遇到。
+   **已修（#64，r24/r25）：** 同一份系统配置设 `core.excludesFile`，列出 App 的保留文件；探针不再写 `.git/info/exclude`。r25 复测 migrated-git 工作区干净。
 4. **新 Worker 会关闭之前打开的终端。** Worker 启动时会发 `terminals-reset`。用户在 App 里打开终端，可能启动新的 Worker，于是探针的终端被关闭，下一行得到 `TERMINAL_NOT_FOUND`。探针遇到时会重开一次终端。
 5. **官方会话和 guest 看到的项目路径不同。** 官方会话的 cwd 是 `/dsh/workspace/<项目>`，guest 的 bash 在 `/workspace`。两者是同一个目录，这是设计如此；模型输出里两种路径都会出现。
 6. **模型 Key 输入。** Key 只在内存里，App 重启后要重新输入。粘贴时常带空格或换行，网关会当作缺少 Key 而拒绝。r21 起输入时去掉首尾空白，并在输入框下显示“正在使用 …末 4 位，共 N 个字符”，方便用户核对。之前报“API 无效”的根因没有确认；加上提示后，模型调用成功。

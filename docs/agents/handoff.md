@@ -133,7 +133,7 @@
 
 #17 已于 2026-10-14 关闭。[完成条件核对](../validation/issue17-closeout.md) 由 PR #60 合入（`cf28b7c`），用户同意缺口按核对表放行。iPad 文件面板能显示终端新建的文件，用户已确认（r16）。文件面板在右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。
 
-#18 进行中，分支 `feat/issue18-git-loop`。范围由用户 2026-10-14 确认，已写进 #18 评论和 [#18 验收记录](../validation/issue18-git-loop.md)：私有测试仓库 `lvivvde/harness-acceptance-ts`（种子提交 `afdb093`），用户在 iPad 的 git 提示处输入 fine-grained token；guest 放开出站；固定项目是 `runtime/acceptance/ts-git-loop`；`git fetch`、`npm ci`、`git push` 由用户在终端手动运行。
+#18 验收完成，PR #62 已于 2026-10-19 合入（`3c76b4e`），#63、#64、#18 已关闭。范围由用户 2026-10-14 确认，已写进 #18 评论和 [#18 验收记录](../validation/issue18-git-loop.md)：私有测试仓库 `lvivvde/harness-acceptance-ts`（种子提交 `afdb093`），用户在 iPad 的 git 提示处输入 fine-grained token；guest 放开出站；固定项目是 `runtime/acceptance/ts-git-loop`；`git fetch`、`npm ci`、`git push` 由用户在终端手动运行。
 
 - 已改：QEMU 网络放开出站；探针阶段 `network`、`git-fetch`、`git-push`、`git-keep`。`git-fetch` 失败带原因码，遇 `TERMINAL_NOT_FOUND` 重开终端；`git-push` 的提交改在终端运行（shell 工具 60 s 上限放不下 hook）；`git-keep` 核对 Git 历史、凭据配置并扫描 App 容器里的 token 前缀。候选 App 的 Key 输入去掉首尾空白，并显示末 4 位和长度。
 - 已验证（iPad，2026-10-15，r19–r23）：验收表 6 步全部填写，1–5 通过，6 通过附发现。远端 `main` 为 `f4386365`，父提交 `afdb093`。重开、r22→r23 覆盖升级、合成备份迁移后 Git 历史、会话、配置都保留；App 容器无 token 命中。macOS 上 `MeasureProbeTests` 14 项通过。
@@ -142,7 +142,7 @@
 
 **下一步：**
 
-1. #18：PR #62 合入验收记录、探针和 #63/#64 修复（合并需用户同意）；合并后关闭 #63、#64，按用户意见关闭 #18，转 #23。测试仓库是否删除由用户决定。#14 也可以开始，依据是 #17 的组件清单。
+1. #23：先提出阈值并经用户确认，再开工。测试仓库是否删除由用户决定。#14 也可以开始，依据是 #17 的组件清单。
 2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
@@ -151,8 +151,8 @@
 | Issue | 依赖与边界 |
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
-| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务。iPad 验收 6 步已填，1–5 通过，6 的两条发现（#63/#64）已在本分支修复并复测。推送只用用户授权的测试远端。 |
-| [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
+| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 已关闭（2026-10-19）。6 步通过；发现 #63/#64 已修复并关闭（PR #62）。推送只用用户授权的测试远端。 |
+| [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 当前任务（#18 已关闭）。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | #17 已关闭，组件清单见[分发组件](../design/distribution-components.md)，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 
 ## 已交付基线

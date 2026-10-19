@@ -50,6 +50,7 @@ test-candidate:
 	@swift build --package-path ios/HarnessApp --product home-recovery-probe
 	@node --test runtime/candidate/test_recovery.mjs
 	@node --test runtime/candidate/test_bridge.mjs
+	@node --test runtime/candidate/test_pnpm.mjs
 	@python3 -m unittest discover -s runtime/candidate -p test_build.py
 
 candidate-web:

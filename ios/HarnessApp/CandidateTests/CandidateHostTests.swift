@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 import HarnessCandidate
 import HarnessHost
@@ -121,6 +122,26 @@ final class CandidateHostTests: XCTestCase {
 
     func execute(_ host: CandidateHost, _ id: String, cwd: String, _ command: String = "pwd", trigger: String = "shell") -> [String: Any] {
         host.handle(["operation": "execute", "operationId": id, "command": command, "cwd": cwd, "timeoutMs": 5000, "trigger": trigger])
+    }
+
+    func testPluginPackagesAreStoredOnlyUnderTheirIntegrityAndPrunedToTheLock() throws {
+        let host = try host()
+        let tarball = Data("package bytes".utf8), other = Data("other bytes".utf8)
+        let integrity = { (data: Data) in "sha512-" + Data(SHA512.hash(data: data)).base64EncodedString() }
+        let put = { (data: Data, claimed: String) in
+            host.handle(["operation": "package-put", "integrity": claimed, "base64": data.base64EncodedString()])
+        }
+        XCTAssertEqual(put(tarball, integrity(other))["error"] as? String, "PACKAGE_INTEGRITY")
+        XCTAssertEqual(put(tarball, "sha1-abc")["error"] as? String, "PACKAGE_REFUSED")
+        XCTAssertEqual(put(tarball, integrity(tarball))["stored"] as? Bool, true)
+        XCTAssertEqual(put(other, integrity(other))["stored"] as? Bool, true)
+        XCTAssertEqual(host.handle(["operation": "package-get", "integrity": integrity(tarball)])["base64"] as? String, tarball.base64EncodedString())
+        XCTAssertEqual(host.handle(["operation": "package-keep", "integrities": [integrity(other)]])["removed"] as? Int, 1)
+        XCTAssertEqual(host.handle(["operation": "package-get", "integrity": integrity(tarball)])["error"] as? String, "PACKAGE_MISSING")
+        // A stored file that no longer matches its name is never handed back.
+        let stored = root + "/packages/" + SHA512.hash(data: other).map { String(format: "%02x", $0) }.joined() + ".tgz"
+        try Data("damaged".utf8).write(to: URL(fileURLWithPath: stored))
+        XCTAssertEqual(host.handle(["operation": "package-get", "integrity": integrity(other)])["error"] as? String, "PACKAGE_MISSING")
     }
 
     func testANativeProjectReadsAndWritesTheRealWorkspace() throws {

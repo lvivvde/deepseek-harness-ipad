@@ -41,7 +41,8 @@ function candidateSeedHome(vfs, snapshot) {
 function candidateSnapshotHome(vfs) {
   const result = {formatVersion: 1, directories: [], files: []};
   const visit = path => {
-    if (!candidateHomePath(path)) return;
+    // Plugin packages are kept as verified tarballs in the native store and unpacked at restore.
+    if (!candidateHomePath(path) || path === candidateModules) return;
     const stat = vfs.statSync(path);
     if (stat.isDirectory()) {
       result.directories.push({path, mode: stat.mode, mtimeMs: stat.mtimeMs});
@@ -66,7 +67,10 @@ const candidateRecovery = (() => {
     const reply = await candidateNative('restore');
     if (typeof reply.worker !== 'string' || !reply.worker) throw new Error('RECOVERY_REPLY_REFUSED');
     worker = reply.worker;
-    if (reply.snapshot) candidateSeedHome(mounted, reply.snapshot);
+    if (reply.snapshot) {
+      candidateSeedHome(mounted, reply.snapshot);
+      await candidateRestorePackages(mounted);
+    }
     candidateRouting = true;
   }
   async function capture() {

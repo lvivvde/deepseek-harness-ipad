@@ -18,6 +18,8 @@ public final class CandidateHost: @unchecked Sendable {
 
     public let registry: ProjectRegistry
     private let recovery: SessionRecovery
+    /// Plugin tarballs the Worker's native pnpm installed (#23).
+    private let packages: PackageStore
     private let machine: GuestMachine
     private let gitScripts: [(name: String, source: String)]
     private let model: ModelGateway?
@@ -43,6 +45,7 @@ public final class CandidateHost: @unchecked Sendable {
                 gitScripts: [(name: String, source: String)], model: ModelGateway? = nil,
                 readyTimeout: TimeInterval = 600, pollInterval: TimeInterval = 0.25, recoveryFault: FaultHook? = nil) {
         recovery = SessionRecovery(root: registry.root, fault: recoveryFault)
+        packages = PackageStore(root: registry.root)
         self.registry = registry; self.machine = machine; self.gitScripts = gitScripts; self.model = model
         self.readyTimeout = readyTimeout; self.pollInterval = pollInterval
         let record = registry.root + "/" + Self.diagnosticRecord
@@ -112,6 +115,9 @@ public final class CandidateHost: @unchecked Sendable {
             case "session-changed": return try recovery.changed(body)
             case "session-fresh": return try recovery.fresh()
             case "restore": return try recovery.restore()
+            case "package-put": return try packages.put(body)
+            case "package-get": return try packages.get(body)
+            case "package-keep": return try packages.keep(body)
             default: throw CandidateError("OPERATION_REFUSED")
             }
         } catch let error as CandidateError {

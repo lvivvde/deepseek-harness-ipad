@@ -9,7 +9,8 @@ import {fileURLToPath} from 'node:url';
 import {candidateIndex, patchWorker} from './prepare.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const bridge = readFileSync(path.join(here, 'candidate-bridge.js'), 'utf8') + '\n' + readFileSync(path.join(here, 'session-recovery.js'), 'utf8');
+const bridge = 'const EXECUTABLES = new Map();\n' + ['candidate-bridge.js', 'candidate-pnpm.js', 'session-recovery.js']
+  .map(name => readFileSync(path.join(here, name), 'utf8')).join('\n');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // A Worker VFS with the members the bridge calls.

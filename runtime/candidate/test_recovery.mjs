@@ -14,7 +14,8 @@ const repo = resolve(import.meta.dirname, '../..');
 const probe = process.env.HOME_RECOVERY_PROBE ?? join(repo, 'ios/HarnessApp/.build/debug/home-recovery-probe');
 const official = readFileSync(join(repo, 'build/prototypes/plan500-worker/dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib/worker.js'), 'utf8');
 const image = gunzipSync(readFileSync(join(repo, 'build/candidate/CandidateWeb/vfs-image.tar.gz')));
-const bridge = readFileSync(join(import.meta.dirname, 'candidate-bridge.js'), 'utf8') + '\n' + readFileSync(join(import.meta.dirname, 'session-recovery.js'), 'utf8');
+const bridge = ['candidate-bridge.js', 'candidate-pnpm.js', 'session-recovery.js']
+  .map(name => readFileSync(join(import.meta.dirname, name), 'utf8')).join('\n');
 function native(root) {
   const child = spawn(probe, [root], {stdio: ['pipe', 'pipe', 'inherit']});
   const pending = [];

@@ -4,7 +4,7 @@
 // Usage: node runtime/candidate/prepare.mjs [--harness DIR] [--worker-dependencies DIR] [--out DIR]
 import {createRequire} from 'node:module';
 import {spawnSync} from 'node:child_process';
-import {cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -13,6 +13,22 @@ const source = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(source, '../..');
 export const gitScripts = ['native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js'];
 
+// The runtime's own module transform, which the official worker leaves to pack time, scoped for the
+// Worker so plugins installed at runtime are lowered exactly as the image's packages were.
+export function loweringSource(workerDependencies, runtime) {
+  const index = readFileSync(join(runtime, 'index.js'), 'utf8');
+  const start = index.indexOf('//#region src/compile/transform.ts');
+  const end = index.indexOf('//#endregion', start);
+  if (start < 0 || end < 0 || !index.slice(start, end).includes('function lowerModuleSource(')) throw new Error('runtime transform region not found');
+  const acorn = readFileSync(join(workerDependencies, 'node_modules/acorn/dist/acorn.js'), 'utf8');
+  return `const candidateLowerModuleSource = (() => {
+const {parse} = (() => { const module = {exports: {}}; const exports = module.exports; const define = undefined;
+${acorn}
+return module.exports; })();
+${index.slice(start, end)}
+return lowerModuleSource;
+})();`;
+}
 function replaceOnce(text, before, after, what) {
   if (text.split(before).length !== 2) throw new Error('Upstream anchor changed: ' + what);
   return text.replace(before, () => after);
@@ -41,6 +57,30 @@ for (const name of Object.keys(promises)) {
   const base = promises[name];
   if (typeof base === 'function') promises[name] = (...args) => self.candidateFsRoute ? self.candidateFsRoute(name, args, base) : base(...args);
 }`, 'fs/promises');
+  // The plugin profile's package.json is the install record (#23); keep it across boots instead of
+  // resetting it to an empty bundle list.
+  worker = replaceOnce(worker, 'vfs.seed(join$1(dir, "package.json"), ',
+    'if (!vfs.existsSync(join$1(dir, "package.json"))) vfs.seed(join$1(dir, "package.json"), ', 'profile package.json seed');
+  // The web preview anchors the installation at the profile's own package.json, so every installed
+  // plugin counts as supplied by the installation and none can be uninstalled. Anchor it at an empty
+  // installation manifest as native dsh does; bundle lookup still falls back to the profile (#23).
+  worker = replaceOnce(worker, '\t\tinstallAnchor: join$1(dir, "package.json"),',
+    '\t\tinstallAnchor: join$1(root, "config", "candidate-installation.json"),', 'install anchor');
+  worker = replaceOnce(worker, '\tvfs.seed(join$1(dir, "cordis.yml"), "[]\\n");',
+    '\tvfs.seed(join$1(dir, "cordis.yml"), "[]\\n");\n\tvfs.seed(join$1(root, "config", "candidate-installation.json"), "{\\"private\\":true}\\n");', 'install anchor seed');
+  // The official plugin manager runs pnpm through execa, which the Worker leaves unimplemented (#23).
+  worker = replaceOnce(worker, 'const execa = notImplementedFail("execa", "execa");',
+    'const execa = (...args) => candidateExeca(...args);', 'execa');
+  // Installed plugins live in the profile's node_modules; bare imports from inside the home resolve
+  // Node-style up its node_modules directories before the image's own (#23).
+  worker = replaceOnce(worker, 'const packageDirectory = join$1(this.root, "node_modules", packageName);',
+    'const packageDirectory = candidateModulePaths(fromDirectory).map(dir => join$1(dir, packageName)).find(dir => this.vfs.existsSync(join$1(dir, "package.json"))) ?? join$1(this.root, "node_modules", packageName);', 'home module resolution');
+  worker = replaceOnce(worker, 'return [join$1(this.root, "node_modules")];',
+    'return [...candidateModulePaths(fromDirectory), join$1(this.root, "node_modules")];', 'home module paths');
+  // ... and awaits its exit through node:events once, which the Worker's events subset lacks.
+  worker = replaceOnce(worker, '\tEventEmitter: () => EventEmitter,\n\t__esModule: () => true,',
+    '\tEventEmitter: () => EventEmitter,\n\tonce: () => candidateEventsOnce,\n\t__esModule: () => true,', 'events once');
+  worker = replaceOnce(worker, 'var events_default = { EventEmitter };', 'var events_default = { EventEmitter, once: candidateEventsOnce };', 'events default once');
   worker = replaceOnce(worker, '\tcp: () => cp$1,', '\tcp: () => cp$1,\n\tcopyFile: () => promises.copyFile,', 'fs/promises copyFile');
   // Candidate frames never reach the official tunnel, which fails the Worker on a frame it does not know.
   // WebKit lacks the disposal symbols the compiled resource-management helper names; they only name methods.
@@ -135,6 +175,16 @@ function main() {
       'Function.prototype.toString.call(constructor) === Function.prototype.toString.call(name === "Array" ? Array : Object)', name));
     workspaces.set('@deepseek-ai/' + name, copy);
   }
+  // Plugin metadata asks Cordis for Node's internal resolver, which the Worker has none of by design.
+  // Its hoisted dependencies resolve upward from the scratch copy as they do from the harness tree.
+  symlinkSync(join(harness, 'node_modules'), join(scratch, 'node_modules'));
+  const appBoot = join(scratch, 'dsh-app-boot');
+  cpSync(join(harness, 'node_modules/@deepseek-ai/dsh-app-boot'), appBoot, {recursive: true});
+  const appBootEntry = join(appBoot, 'lib/index.js');
+  writeFileSync(appBootEntry, replaceOnce(readFileSync(appBootEntry, 'utf8'),
+    '\tif (loader === void 0) throw new Error("Plugin metadata requires the Node module resolver");',
+    '\tif (loader === void 0 && typeof globalThis.candidateResolveResource === "function") return fileURLToPath(globalThis.candidateResolveResource(specifier, parentURL));\n\tif (loader === void 0) throw new Error("Plugin metadata requires the Node module resolver");', 'dsh-app-boot'));
+  workspaces.set('@deepseek-ai/dsh-app-boot', appBoot);
   checkImageSeeds(join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-packer'));
   const {packVfsImage} = createRequire(join(workerDependencies, 'package.json'))('@deepseek-ai/dsh-experimental-webworker-packer');
   const packed = packVfsImage({config, profile: 'web', workspaces, resolveFrom: harness,
@@ -149,7 +199,8 @@ function main() {
 
   const runtime = join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib');
   writeFileSync(join(out, 'worker.js'), patchWorker(readFileSync(join(runtime, 'worker.js'), 'utf8'),
-    readFileSync(join(source, 'candidate-bridge.js'), 'utf8') + '\n' + readFileSync(join(source, 'session-recovery.js'), 'utf8')));
+    [loweringSource(workerDependencies, runtime),
+      ...['candidate-bridge.js', 'candidate-pnpm.js', 'session-recovery.js'].map(name => readFileSync(join(source, name), 'utf8'))].join('\n')));
   cpSync(join(runtime, 'client.js'), join(out, 'client.js'));
   cpSync(join(workerDependencies, 'node_modules/@deepseek-ai/dsh-client-web/lib/apply-injections.js'), join(out, 'apply-injections.js'));
   cpSync(join(source, 'connector.js'), join(out, 'connector.js'));
@@ -170,7 +221,7 @@ function main() {
     adaptations: ['fixed-zod-CJS-export-selection', 'WebKit-intrinsic-constructor-comparison', 'WebKit-disposal-symbols',
       'worker-hook-restore', 'worker-hook-install', 'worker-hook-fs-promises-route', 'fs-promises-copyFile',
       'candidate-frames-filter', 'vfs-image-lazy-xterm-entries', 'index-importmap-and-connector', 'candidate-bridge',
-      'session-recovery'],
+      'session-recovery', 'profile-package-json-kept', 'native-pnpm-for-plugins', 'execa-over-worker-spawn', 'events-once', 'home-module-resolution', 'plugin-metadata-resolver', 'plugin-module-lowering', 'plugin-install-anchor', 'plugin-builtin-check'],
     unresolvedExternalRequests: packed.unresolvedExternalRequests,
     files: Object.fromEntries(files(out).map(path => [path, sha256(readFileSync(join(out, path)))])),
   };

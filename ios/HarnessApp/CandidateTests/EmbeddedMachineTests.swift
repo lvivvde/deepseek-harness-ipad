@@ -59,7 +59,7 @@ final class EmbeddedMachineTests: XCTestCase {
         let argv = recorded.value
         XCTAssertEqual(Array(argv.prefix(3)), ["qemu-aarch64-softmmu", "-L", root + "/qemu"])
         XCTAssertTrue(argv.contains("local,id=workspace,path=" + root + "/share,,odd,security_model=none,writeout=immediate"))
-        XCTAssertTrue(argv.contains { $0.hasPrefix("user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:") && $0.hasSuffix("-:4500") })
+        XCTAssertTrue(argv.contains { $0.hasPrefix("user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:") && $0.contains("-:4500,hostfwd=tcp:127.0.0.1:\(machine.previewPort!)-:4501") })
         XCTAssertEqual(argv.firstIndex(of: "chardev=qmp,mode=control").map { argv[$0 - 1] }, "-mon")
         XCTAssertTrue(qmp.value.contains("qmp_capabilities"))
         XCTAssertTrue(machine.exited)

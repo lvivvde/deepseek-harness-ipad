@@ -28,6 +28,7 @@ public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
     private let configuration: Configuration
     private let engine: Engine
     private let port: UInt16
+    public let previewPort: UInt16?
     private let lock = NSLock()
     private var started = false
     private var ended = false
@@ -38,6 +39,7 @@ public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
     public init(_ configuration: Configuration, engine: @escaping Engine) throws {
         self.configuration = configuration; self.engine = engine
         port = try GuestArguments.freePort()
+        previewPort = try GuestArguments.freePort(besides: port)
         rpc = GatedGuestRPC(port: port, token: configuration.token)
     }
 
@@ -59,7 +61,7 @@ public final class EmbeddedMachine: GuestMachine, @unchecked Sendable {
         Self.drain(serial.0, to: configuration.logs + "/serial-private.log", drains)
         Self.drain(qmp.0, to: configuration.logs + "/qmp-private.log", drains)
         let arguments = ["qemu-aarch64-softmmu", "-L", configuration.firmware]
-            + GuestArguments.machine(inputs: configuration.inputs, workspace: workspace, port: port,
+            + GuestArguments.machine(inputs: configuration.inputs, workspace: workspace, port: port, preview: previewPort ?? 0,
                                      serial: "socket,id=serial,fd=\(serial.1)")
             + ["-chardev", "socket,id=qmp,fd=\(qmp.1)", "-mon", "chardev=qmp,mode=control"]
         let thread = Thread { [self] in

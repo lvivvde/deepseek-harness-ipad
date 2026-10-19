@@ -141,11 +141,12 @@
 - 设备上现装 r25（`build/candidate/ipad-signed-r25/`）；候选 App 还有未完成 fetch 的项目 Acc-ts2，可删。复测证据 `device/measure-auto-221958`、`222034`。原 r23 记录：候选 App 里有 Acc-ts（测试仓库的克隆）和迁移演练项目 `migrated-git`，都可随卸载一并清除。私有驱动 `measure-auto-private.py` 新增 `git-fetch`、`git-push`、`keep-baseline`、`git-keep`、`home-check`、`import-git`；证据：push `device/measure-auto-231526`，升级后 `232857`、`233224`，重开 `233105`，迁移 `234434`。
 
 - #23 预览与 HMR（分支 `feat/issue23-interaction`）：阈值经用户 2026-10-19 确认。开发服务器作为不持租约、只读的 guest 服务运行，预览经 guest 4501 转发器和第二条仅回环的 `hostfwd`，侧栏有原生预览面板。已验证（2026-10-19，r26）：探针阶段 `preview` 在 iPad 通过，Linux 就绪 9.9 s，服务器就绪 28.5 s，HMR 中位数 125 ms，最大 338 ms，全部 `update`；macOS 也通过。预览面板界面未手动看过。详见 [预览与 HMR 验收](../validation/issue23-preview-hmr.md)。设备上现装 r26，候选 App 里多了 `measure-preview-*` 项目，可删。证据 `device/measure-auto-232837`。改 `agent.cjs` 后须按真机自动化记录重新生成 guest 输入。
-- #23 插件（分支 `feat/issue23-plugins`）：用户选“原生 JS 安装”。Worker 里的虚拟 pnpm（`runtime/candidate/candidate-pnpm.js`）回答官方插件管理器的命令，tarball 按 sha512 存进原生 `PackageStore`，每次 Worker 启动按 `candidate-lock.json` 重新解包。安装脚本、原生二进制、超过 32 MB、入口静态导入 Worker 没有的内置模块（如 `node:https`）的插件都会被拒，并给出原因。`prepare.mjs` 把官方 web 预览的 `installAnchor` 改到 `config/candidate-installation.json`，否则什么都卸不掉。已验证（2026-10-20）：macOS 上安装、启用、重启保留、卸载、拒绝 `dsh-free-search` 都通过；iPad r27 上用户在官方界面装 `@jonathanleelx/dsh-balance`、启用、重开后仍启用。无 scope 的 `dsh-balance` 0.2.7 被官方兼容检查拒绝（需要 `@deepseek-ai/dsh-credentials`）。iPad 上未测卸载。详见 [插件安装验收](../validation/issue23-plugins.md)。设备上现装 r27（`build/candidate/ipad-signed-r27/`），证据 `device/pull-plugins-r27d`。
+- #23 插件（分支 `feat/issue23-plugins`）：用户选“原生 JS 安装”。Worker 里的虚拟 pnpm（`runtime/candidate/candidate-pnpm.js`）回答官方插件管理器的命令，tarball 按 sha512 存进原生 `PackageStore`，每次 Worker 启动按 `candidate-lock.json` 重新解包。安装脚本、原生二进制、超过 32 MB、入口静态导入 Worker 没有的内置模块（如 `node:https`）的插件都会被拒，并给出原因。`prepare.mjs` 把官方 web 预览的 `installAnchor` 改到 `config/candidate-installation.json`，否则什么都卸不掉。已验证（2026-10-20）：macOS 上安装、启用、重启保留、卸载、拒绝 `dsh-free-search` 都通过；iPad r27 上用户在官方界面装 `@jonathanleelx/dsh-balance`、启用、重开后仍启用。无 scope 的 `dsh-balance` 0.2.7 被官方兼容检查拒绝（需要 `@deepseek-ai/dsh-credentials`）。iPad 上未测卸载。详见 [插件安装验收](../validation/issue23-plugins.md)。证据 `device/pull-plugins-r27d`。
+- #23 键盘与前后台（分支 `feat/issue23-keyboard`）：候选 App 加了终端辅助键排（`CandidateKeyRow.swift`，移植旧 App 的 `TerminalKeyRow`），经 `prepare.mjs` 的 `patchTerminalClient` 给官方终端窗格加输入通道；网页进程被系统结束时从资源源重新加载，Worker 从检查点恢复。已验证（2026-10-20，r28）：用户在 iPad 上试过辅助键、聊天框和终端里的中文输入（不丢字，组字时回车不发送）、切后台再回来（草稿和终端内容仍在），都通过。外接硬件键盘和网页进程被结束后的重新加载未测。详见 [键盘与前后台验收](../validation/issue23-keyboard.md)。设备上现装 r28（`build/candidate/ipad-signed-r28/`）。
 
 **下一步：**
 
-1. #23 其余部分：预览面板真机目视、模型调用插件（需用户在设备上输入真实 Key）、键盘与中文输入法、前后台保持。测试仓库是否删除由用户决定。#14 也可以开始，依据是 #17 的组件清单。
+1. #23 其余部分：预览面板真机目视（横竖屏、关闭后服务器仍在）、模型调用插件与后台期间进行中的任务（需用户在设备上输入真实 Key）。测试仓库是否删除由用户决定。#14 也可以开始，依据是 #17 的组件清单。
 2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
@@ -155,7 +156,7 @@
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
 | [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 已关闭（2026-10-19）。6 步通过；发现 #63/#64 已修复并关闭（PR #62）。推送只用用户授权的测试远端。 |
-| [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 当前任务。预览与 HMR 已在真机通过（r26），插件安装已在真机通过（r27），其余未做。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值已确认（2026-10-19）。仍带 `needs-triage`。 |
+| [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 当前任务。预览与 HMR 已在真机通过（r26），插件安装已在真机通过（r27），键盘、中文输入法与前后台已在真机通过（r28），其余未做。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值已确认（2026-10-19）。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | #17 已关闭，组件清单见[分发组件](../design/distribution-components.md)，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 
 ## 已交付基线

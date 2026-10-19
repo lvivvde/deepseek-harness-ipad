@@ -14,6 +14,10 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
     let host: CandidateHost
     let assets: AssetServer
     let view: WKWebView
+    #if os(iOS)
+    /// The terminal key row; the layout places it above the soft keyboard.
+    private(set) var keys: CandidateKeyRow!
+    #endif
     private let logs: URL
     /// The latest Worker event name, for the status line.
     var onEvent: ((String) -> Void)?
@@ -43,6 +47,13 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
         view.uiDelegate = self
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "native")
         config.userContentController.add(self, name: "log")
+        #if os(iOS)
+        view.scrollView.keyboardDismissMode = .interactive
+        keys = CandidateKeyRow(page: view)
+        config.userContentController.add(self, name: "terminalState")
+        config.userContentController.addUserScript(WKUserScript(source: CandidateKeyRow.bridgeScript,
+                                                                injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        #endif
     }
 
     /// Loads the page once; later project opens are forwarded with `projectOpened`.
@@ -99,6 +110,19 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
         return nil
     }
 
+    /// The system can end the page's process in the background (memory pressure), taking the Worker with
+    /// it. The page is loaded again from the asset origin, and the Worker restores from the last checkpoint
+    /// as at any start; work after that checkpoint is not kept.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let origin else { return }
+        #if os(iOS)
+        keys.reset()
+        #endif
+        append(Data(#"{"event":"webcontent-terminated"}"#.utf8))
+        onEvent?("webcontent-terminated")
+        webView.load(URLRequest(url: origin))
+    }
+
     private func openExternally(_ action: WKNavigationAction) {
         guard action.navigationType == .linkActivated || action.targetFrame == nil, let url = action.request.url,
               url.scheme == "https" || url.scheme == "http" else { return }
@@ -129,6 +153,12 @@ final class CandidateWebHost: NSObject, WKScriptMessageHandlerWithReply, WKScrip
     /// Worker diagnostics: each entry and the file are bounded, appended to the private log directory,
     /// never shown with their details. A full log rolls over to `worker-private.1.log`.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        #if os(iOS)
+        if message.name == "terminalState" {
+            if trusted(message.frameInfo), let state = message.body as? [String: Any] { keys.update(state) }
+            return
+        }
+        #endif
         guard trusted(message.frameInfo), let body = message.body as? [String: Any],
               let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 65536 else { return }
         let event = (body["event"] as? String).map { String($0.prefix(64)) } ?? "log"

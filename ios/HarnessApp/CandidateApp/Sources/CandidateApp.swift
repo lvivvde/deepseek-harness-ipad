@@ -130,7 +130,11 @@ struct CandidateView: View {
 
     @ViewBuilder private var official: some View {
         if model.webStarted, let web = model.web {
+            #if os(iOS)
+            OfficialPage(web: web)
+            #else
             WebView(view: web.view)
+            #endif
         } else {
             Text("Open a project to start.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -232,5 +236,34 @@ struct WebView: UIViewRepresentable {
     let view: WKWebView
     func makeUIView(context: Context) -> WKWebView { view }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+/// The official page with the terminal key row held to the top of the keyboard. SwiftUI rebuilds the
+/// container when the preview layout changes; the page and the row move into the new one.
+struct OfficialPage: UIViewRepresentable {
+    let web: CandidateWebHost
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .systemBackground
+        let page = web.view, keys = web.keys!
+        for child in [page, keys] as [UIView] {
+            child.removeFromSuperview()
+            child.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(child)
+        }
+        let height = keys.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            page.topAnchor.constraint(equalTo: container.topAnchor),
+            page.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            page.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keys.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            keys.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keys.bottomAnchor.constraint(equalTo: container.keyboardLayoutGuide.topAnchor), height
+        ])
+        keys.onVisibility = { height.constant = $0 ? 44 : 0 }
+        return container
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
 #endif

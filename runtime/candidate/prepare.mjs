@@ -95,6 +95,14 @@ for (const key of ['dispose', 'asyncDispose']) {
 ` + worker + '\n' + bridge;
 }
 
+// The official terminal pane, with a seam the App's key row writes through (#23): Esc, Tab, Ctrl and the
+// arrows reach the terminal's own model exactly as typed input does, and only while it is writable.
+export function patchTerminalClient(client) {
+  client = replaceOnce(client, 'xterm.open(node);',
+    'xterm.open(node);\n\t\t\t\txterm.element.harnessTerminalInput = data => { if (current.current.state.writable) model.write(data); };', 'terminal input');
+  return replaceOnce(client, 'xterm.dispose();', 'delete xterm.element.harnessTerminalInput;\n\t\t\t\t\txterm.dispose();', 'terminal dispose');
+}
+
 // The official frontend page; the connector runs first so the transport exists before the entry boots.
 export function candidateIndex(html) {
   if (html.includes('importmap')) throw new Error('Upstream anchor changed: index importmap');
@@ -185,6 +193,11 @@ function main() {
     '\tif (loader === void 0) throw new Error("Plugin metadata requires the Node module resolver");',
     '\tif (loader === void 0 && typeof globalThis.candidateResolveResource === "function") return fileURLToPath(globalThis.candidateResolveResource(specifier, parentURL));\n\tif (loader === void 0) throw new Error("Plugin metadata requires the Node module resolver");', 'dsh-app-boot'));
   workspaces.set('@deepseek-ai/dsh-app-boot', appBoot);
+  const terminal = join(scratch, 'dsh-client-ui-sidebar-terminal');
+  cpSync(join(harness, 'node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal'), terminal, {recursive: true});
+  const terminalEntry = join(terminal, 'lib/client.terminal.js');
+  writeFileSync(terminalEntry, patchTerminalClient(readFileSync(terminalEntry, 'utf8')));
+  workspaces.set('@deepseek-ai/dsh-client-ui-sidebar-terminal', terminal);
   checkImageSeeds(join(workerDependencies, 'node_modules/@deepseek-ai/dsh-experimental-webworker-packer'));
   const {packVfsImage} = createRequire(join(workerDependencies, 'package.json'))('@deepseek-ai/dsh-experimental-webworker-packer');
   const packed = packVfsImage({config, profile: 'web', workspaces, resolveFrom: harness,
@@ -221,7 +234,7 @@ function main() {
     adaptations: ['fixed-zod-CJS-export-selection', 'WebKit-intrinsic-constructor-comparison', 'WebKit-disposal-symbols',
       'worker-hook-restore', 'worker-hook-install', 'worker-hook-fs-promises-route', 'fs-promises-copyFile',
       'candidate-frames-filter', 'vfs-image-lazy-xterm-entries', 'index-importmap-and-connector', 'candidate-bridge',
-      'session-recovery', 'profile-package-json-kept', 'native-pnpm-for-plugins', 'execa-over-worker-spawn', 'events-once', 'home-module-resolution', 'plugin-metadata-resolver', 'plugin-module-lowering', 'plugin-install-anchor', 'plugin-builtin-check'],
+      'session-recovery', 'profile-package-json-kept', 'native-pnpm-for-plugins', 'execa-over-worker-spawn', 'events-once', 'home-module-resolution', 'plugin-metadata-resolver', 'plugin-module-lowering', 'plugin-install-anchor', 'plugin-builtin-check', 'terminal-key-row-input'],
     unresolvedExternalRequests: packed.unresolvedExternalRequests,
     files: Object.fromEntries(files(out).map(path => [path, sha256(readFileSync(join(out, path)))])),
   };

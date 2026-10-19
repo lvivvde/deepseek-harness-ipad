@@ -26,12 +26,43 @@ import os
 /// - `execution-hold` leaves a command running in a new project for the driver to end the App;
 ///   `execution-stale` opens that project (`project`) in the next launch: the writer the earlier launch
 ///   left stays unknown across this launch's VM exit until it is released explicitly.
+/// - `network` (#18): a guest command resolves names and reaches the Git and npm hosts over HTTPS.
+///   Whether a guest command reaches a listener on the host's loopback (`10.0.2.2`) is recorded, not judged.
+/// - `git-fetch` (#18): in the user's project (`project`, by name, created when absent), cloning into the workspace root, a
+///   second project of the same name, a second `origin`, a fetch with prompts off and one cancelled at
+///   its prompt all leave the project as it was. The probe then waits for the user's own `git fetch` of
+///   `remote` in the App's terminal, where the token is typed, checks that nothing in the VM kept the token,
+///   and installs, tests, type-checks and builds with real exit codes; a commit that fails the pre-commit hook leaves `HEAD` where it was.
+/// - `git-push` (#18): a commit sent while Linux prepares waits for it and completes only after the
+///   pre-commit hook passes; the probe then waits for the user's own `git push` in the App's terminal.
+/// - `git-keep` (#18): after a reopen, an overwrite upgrade or a migration, the project (`project`, by
+///   name) still holds its history and `origin` (`remote`), with a clean tree and no stored credential,
+///   and no file the App keeps holds a GitHub token.
 /// Each phase writes `<root>/probe/measure-<phase>.json` with numbers and fixed codes only, tagged with
 /// the launch's `run` id and marked `done` once final.
 public enum MeasureProbe {
     public enum Phase: String {
         case cold, scheduling, lifecycle, background, backgroundIdle = "background-idle", imported
         case execution, executionHold = "execution-hold", executionStale = "execution-stale"
+        case network
+        case gitFetch = "git-fetch", gitPush = "git-push", gitKeep = "git-keep"
+    }
+
+    /// Prefixes of GitHub tokens: a file the App keeps that holds one is a leak.
+    public static let tokenPrefixes = ["github_pat_", "ghp_", "gho_"]
+
+    /// A guest command the `network` phase runs, passing when it exits 0.
+    public struct NetworkCheck {
+        public var name: String
+        public var command: String
+        public init(_ name: String, _ command: String) { self.name = name; self.command = command }
+
+        /// Name resolution, Git over HTTPS to a small public repository, and the npm registry.
+        public static let defaults = [
+            NetworkCheck("dns", "node -e \"require('node:dns').lookup('github.com', e => process.exit(e ? 1 : 0))\""),
+            NetworkCheck("git", "git ls-remote https://github.com/octocat/Hello-World.git HEAD"),
+            NetworkCheck("npm", "node -e \"fetch('https://registry.npmjs.org/-/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(2))\""),
+        ]
     }
 
     public struct Timing {
@@ -44,12 +75,17 @@ public enum MeasureProbe {
         public var quiet: ClosedRange<TimeInterval> = 20...170
         /// How long `execution-hold`'s command runs; the driver ends the App well before.
         public var hold: TimeInterval = 590
+        /// How long the Git phases wait for the user's own fetch or push in the App's terminal.
+        public var user: TimeInterval = 1800
+        /// How long one line in the probe's terminal may run.
+        public var line: TimeInterval = 3600
         public init() {}
     }
 
     @discardableResult
     public static func run(_ phase: Phase, host: CandidateHost, bundle: String? = nil, project: String? = nil,
-                           timing: Timing = .init()) -> [String: Any] {
+                           remote: String? = nil, timing: Timing = .init(),
+                           network: [NetworkCheck] = NetworkCheck.defaults) -> [String: Any] {
         let started = Date()
         var record: [String: Any] = ["phase": phase.rawValue, "run": runId]
         if let launched = processStart() { record["processToProbeMs"] = ms(started.timeIntervalSince(launched)) }
@@ -64,6 +100,10 @@ public enum MeasureProbe {
             case .execution: try execution(host, timing, &record)
             case .executionHold: try executionHold(host, timing, &record)
             case .executionStale: try executionStale(host, project, timing, &record)
+            case .network: try networkReach(host, network, timing, &record)
+            case .gitFetch: try gitFetch(host, project, remote, timing, &record)
+            case .gitPush: try gitPush(host, project, timing, &record)
+            case .gitKeep: try gitKeep(host, project, remote, timing, &record)
             }
         } catch let error as CandidateError {
             record["failure"] = error.code
@@ -403,7 +443,407 @@ public enum MeasureProbe {
         record["passed"] = missed.isEmpty && host.bootCount == 1
     }
 
+    private static func networkReach(_ host: CandidateHost, _ checks: [NetworkCheck], _ timing: Timing, _ record: inout [String: Any]) throws {
+        let (id, mount) = try project(host, "measure-network", plugin: true)
+        _ = host.handle(["operation": "project-open", "id": id])
+        try waitReady(host, id, timing, &record)
+        for check in checks {
+            var reply: [String: Any] = [:]
+            record["\(check.name).ms"] = ms(time { reply = execute(host, "net-\(check.name)", mount, check.command) })
+            record["\(check.name).status"] = describe(reply)
+            record["\(check.name).exitCode"] = reply["exitCode"] as? Int ?? -1
+        }
+        // The guest reaches the host's loopback as 10.0.2.2. Observed only: QEMU has no switch to close it.
+        if let listener = try? Listener() {
+            defer { listener.close() }
+            let reply = execute(host, "net-host-loopback", mount, "timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.2.2/\(listener.port)'")
+            record["hostLoopback.exitCode"] = reply["exitCode"] as? Int ?? -1
+            record["hostLoopback.accepted"] = listener.accepted()
+        }
+        record["bootCount"] = host.bootCount
+        record["passed"] = checks.allSatisfy { record["\($0.name).exitCode"] as? Int == 0 } && host.bootCount == 1
+    }
+
+    private static func gitFetch(_ host: CandidateHost, _ name: String?, _ remote: String?, _ timing: Timing,
+                                 _ record: inout [String: Any]) throws {
+        guard let remote, !remote.contains("'") else { throw CandidateError("REMOTE_MISSING") }
+        guard let name else { throw CandidateError("PROJECT_UNKNOWN") }
+        let known = host.registry.projects.contains { $0.name == name }
+        let project = try registered(host, try self.project(host, name, plugin: true).0)
+        record["created"] = !known
+        let workspace = host.registry.workspace(project)
+        func fetched() -> String? { ref(workspace, "refs/remotes/origin/main") }
+        // A second project of the same name is refused and leaves this one's workspace alone.
+        var listed = listing(workspace)
+        record["duplicate.project"] = describe(host.handle(["operation": "project-create", "name": project.name, "pluginEnabled": true]))
+        record["duplicate.unchanged"] = listing(workspace) == listed
+        let opened = Date()
+        _ = host.handle(["operation": "project-open", "id": project.id])
+        try waitReady(host, project.id, timing, &record)
+        record["linuxReadyMs"] = ms(Date().timeIntervalSince(opened))
+        let shell = try Shell(host, "acc-probe-" + runId, project.mount, timing)
+        defer { shell.close() }
+        var expected: [String: Int] = [:]
+        var flags: [String: Bool] = [:]
+        var reasons: [String: String] = [:]
+        record["resumed"] = fetched() != nil
+        if fetched() == nil {
+            // The reserved files at the root make `clone` into it fail, so the steps below replace it.
+            listed = listing(workspace)
+            record["clone.exitCode"] = shell.run("git clone -q '\(remote)' .") ?? -1
+            record["clone.reason"] = Shell.reason(shell.last)
+            record["clone.unchanged"] = listing(workspace) == listed
+            if !FileManager.default.fileExists(atPath: workspace + "/.git") {
+                // No exclude entries: the guest's system git config ignores the reserved root files.
+                record["setup.exitCode"] = shell.run("git init -q -b main"
+                    + " && git remote add origin '\(remote)' && git config user.name 'Harness Acceptance'"
+                    + " && git config user.email acceptance@invalid && git config core.hooksPath .githooks") ?? -1
+                expected["setup.exitCode"] = 0
+            }
+            record["duplicateRemote.exitCode"] = shell.run("git remote add origin https://invalid.invalid/other.git") ?? -1
+            record["remote.same"] = shell.run("test \"$(git remote get-url origin)\" = '\(remote)'") == 0
+            record["failure.exitCode"] = shell.run("GIT_TERMINAL_PROMPT=0 git fetch -q origin") ?? -1
+            record["failure.reason"] = Shell.reason(shell.last)
+            record["failure.noRefs"] = fetched() == nil
+            // Ctrl-C at the credential prompt ends the fetch with SIGINT. A fetch that ends before
+            // prompting, as on a network error, is recorded with its reason instead.
+            let (prompted, ended) = shell.prompt("git fetch origin", "Username for", timing.line)
+            record["cancel.prompted"] = prompted
+            record["cancel.reason"] = Shell.reason(shell.last)
+            record["cancel.exitCode"] = (prompted ? shell.interrupt() : ended) ?? -1
+            record["cancel.noRefs"] = fetched() == nil
+            expected.merge(["clone.exitCode": 128, "duplicateRemote.exitCode": 3, "failure.exitCode": 128, "cancel.exitCode": 130]) { $1 }
+            reasons = ["clone.reason": "NOT_EMPTY", "failure.reason": "PROMPTS_DISABLED", "cancel.reason": "PROMPTED"]
+            flags = ["duplicate.unchanged": true, "clone.unchanged": true, "remote.same": true, "failure.noRefs": true,
+                     "cancel.prompted": true, "cancel.noRefs": true]
+
+            record["state"] = "waiting-fetch"
+            write(host, .gitFetch, record)
+            let waited = Date()
+            record["fetch.seen"] = wait(timing.user, 1) { fetched() != nil }
+            record["fetch.waitMs"] = ms(Date().timeIntervalSince(waited))
+            record.removeValue(forKey: "state")
+            guard fetched() != nil else { throw CandidateError("FETCH_NOT_SEEN") }
+            // The fetch authenticated with a token typed in this VM; nothing in the VM may have kept it.
+            record["credential.helper"] = shell.run(storedHelper).map { $0 == 0 } ?? "NO_EXIT_CODE"
+            record["credential.file"] = shell.run(storedFile).map { $0 == 0 } ?? "NO_EXIT_CODE"
+            flags.merge(["credential.helper": false, "credential.file": false]) { $1 }
+        }
+
+        record["checkout.exitCode"] = shell.run("git checkout -q main") ?? -1
+        record["head"] = head(workspace)
+        record["head.fetched"] = head(workspace) == fetched()
+        for (step, command) in [("install", "npm ci --no-audit --no-fund"), ("test", "npm test"), ("typecheck", "npm run typecheck"),
+                                ("build", "npm run build"), ("precommit", ".githooks/pre-commit")] {
+            var code: Int?
+            record["\(step).ms"] = ms(time { code = shell.run(command) })
+            record["\(step).exitCode"] = code ?? -1
+            expected["\(step).exitCode"] = 0
+        }
+        record["build.output"] = ["dist/index.js", "dist/index.d.ts"].allSatisfy { FileManager.default.fileExists(atPath: workspace + "/" + $0) }
+        // A commit that breaks the typecheck, in a scratch clone, is refused by the hook.
+        let scratch = "/tmp/acc-hook-" + runId
+        record["hookBlock.exitCode"] = shell.run("(git clone -q /workspace \(scratch) && cd \(scratch) && ln -s /workspace/node_modules node_modules"
+            + " && git config user.name probe && git config user.email probe@invalid && git config core.hooksPath .githooks"
+            + " && printf 'export const broken: number = \"x\";\\n' >> src/index.ts && git commit -qam broken) >/dev/null 2>&1") ?? -1
+        record["hookBlock.headUnchanged"] = shell.run("test \"$(git -C \(scratch) rev-parse HEAD)\" = \"$(git rev-parse HEAD)\"") == 0
+        _ = shell.run("rm -rf \(scratch)")
+        record["bootCount"] = host.bootCount
+        record["shell.reopened"] = shell.reopened
+
+        expected["checkout.exitCode"] = 0
+        flags.merge(["head.fetched": true, "build.output": true, "hookBlock.headUnchanged": true]) { $1 }
+        var missed = expected.filter { record[$0.key] as? Int != $0.value }.map(\.key)
+            + flags.filter { record[$0.key] as? Bool != $0.value }.map(\.key)
+            + reasons.filter { record[$0.key] as? String != $0.value }.map(\.key)
+        if [0, -1].contains(record["hookBlock.exitCode"] as? Int) { missed.append("hookBlock.exitCode") }
+        if record["duplicate.project"] as? String != "PROJECT_NAME_TAKEN" { missed.append("duplicate.project") }
+        missed.sort()
+        record["missed"] = missed
+        record["passed"] = missed.isEmpty && host.bootCount == 1
+    }
+
+    private static func gitPush(_ host: CandidateHost, _ name: String?, _ timing: Timing, _ record: inout [String: Any]) throws {
+        let project = try named(host, name, timing)
+        let workspace = host.registry.workspace(project)
+        guard let before = head(workspace) else { throw CandidateError("HEAD_MISSING") }
+        let opened = Date()
+        _ = host.handle(["operation": "project-open", "id": project.id])
+        // The commit goes in while Linux prepares: opening its terminal waits, and the hook runs once
+        // Linux is ready. A terminal, because the hook outlasts the shell tool's 60 s limit on the iPad.
+        record["commit.phaseAtSubmit"] = entry(host, project.id)?["phase"] as? String
+        let commit = onThread(limit: timing.ready + timing.line) { () -> [String: Any] in
+            guard let shell = try? Shell(host, "acc-commit-" + String(UUID().uuidString.prefix(8)), project.mount, timing) else {
+                return ["status": "TERMINAL_REFUSED"]
+            }
+            defer { shell.close() }
+            let code = shell.run("(git add -A && if git diff --cached --quiet; then exit 90; fi"
+                                 + " && git commit -q -m 'Apply the reviewed model edit (#18)')")
+            return ["status": code == nil ? "NO_EXIT_CODE" : "COMPLETED", "exitCode": code ?? -1]
+        }
+        try waitReady(host, project.id, timing, &record)
+        record["linuxReadyMs"] = ms(Date().timeIntervalSince(opened))
+        let reply = commit()
+        record["commit.ms"] = ms(Date().timeIntervalSince(opened))
+        record["commit.status"] = reply["status"] as? String ?? describe(reply)
+        record["commit.exitCode"] = reply["exitCode"] as? Int ?? -1
+        let after = head(workspace)
+        record["head"] = after
+        record["head.moved"] = after != nil && after != before
+        record["head.parent"] = (execute(host, "git-parent", project.mount, "test \"$(git rev-parse HEAD~1)\" = \(before)")["exitCode"] as? Int) == 0
+        record["clean"] = (execute(host, "git-clean", project.mount, "test -z \"$(git status --porcelain)\"")["exitCode"] as? Int) == 0
+
+        // Only a new commit is waited for: the remote already holds the one before it.
+        if record["head.moved"] as? Bool == true {
+            record["state"] = "waiting-push"
+            write(host, .gitPush, record)
+            let waited = Date()
+            record["push.seen"] = wait(timing.user, 1) { ref(workspace, "refs/remotes/origin/main") == after }
+            record["push.waitMs"] = ms(Date().timeIntervalSince(waited))
+            record.removeValue(forKey: "state")
+        }
+        record["bootCount"] = host.bootCount
+        let missed = (misses(record, ["commit.phaseAtSubmit": "PREPARING", "commit.status": "COMPLETED"],
+                             ["head.moved": true, "head.parent": true, "clean": true, "push.seen": true])
+            + (record["commit.exitCode"] as? Int == 0 ? [] : ["commit.exitCode"])).sorted()
+        record["missed"] = missed
+        record["passed"] = missed.isEmpty && host.bootCount == 1
+    }
+
+    /// Exit 0 when guest git would keep a typed credential: a helper is configured, or a credential file exists.
+    static let storedHelper = "git config --get-all credential.helper >/dev/null"
+    static let storedFile = "test -e ~/.git-credentials || test -e .git-credentials || test -e ~/.config/git/credentials"
+
+    private static func gitKeep(_ host: CandidateHost, _ name: String?, _ remote: String?, _ timing: Timing,
+                                _ record: inout [String: Any]) throws {
+        let project = try named(host, name, timing)
+        let workspace = host.registry.workspace(project)
+        record["pluginEnabled"] = project.pluginEnabled
+        record["head"] = head(workspace)
+        record["origin.main"] = ref(workspace, "refs/remotes/origin/main")
+        let opened = Date()
+        _ = host.handle(["operation": "project-open", "id": project.id])
+        try waitReady(host, project.id, timing, &record)
+        record["linuxReadyMs"] = ms(Date().timeIntervalSince(opened))
+        func check(_ id: String, _ command: String) -> Int {
+            execute(host, "keep-" + id, project.mount, command)["exitCode"] as? Int ?? -1
+        }
+        record["fsck.exitCode"] = check("fsck", "git fsck --no-progress >/dev/null 2>&1")
+        // The count is the exit code, so the record needs no output; a history of 255 or more reads as 255.
+        record["commits"] = check("count", "n=$(git rev-list --count HEAD) || exit 255; [ \"$n\" -lt 255 ] && exit \"$n\"; exit 255")
+        record["clean"] = check("clean", "test -z \"$(git status --porcelain)\"") == 0
+        if let remote, !remote.contains("'") {
+            record["origin.same"] = check("origin", "test \"$(git remote get-url origin)\" = '\(remote)'") == 0
+        }
+        // Prompted credentials are not kept: no helper is set and no credential file exists.
+        record["credential.helper"] = check("helper", storedHelper) == 0
+        record["credential.file"] = check("file", storedFile) == 0
+        #if os(iOS)
+        let scanned = NSHomeDirectory()
+        #else
+        let scanned = host.registry.root
+        #endif
+        let scan = tokens(in: scanned)
+        record["tokens.ms"] = scan.ms
+        record["tokens.files"] = scan.files
+        record["tokens.bytes"] = scan.bytes
+        record["tokens.found"] = scan.found
+        record["bootCount"] = host.bootCount
+        var missed = misses(record, [:], ["clean": true, "credential.helper": false, "credential.file": false])
+        if record["fsck.exitCode"] as? Int != 0 { missed.append("fsck.exitCode") }
+        if record["head"] == nil { missed.append("head") }
+        if remote != nil, record["origin.same"] as? Bool != true { missed.append("origin.same") }
+        if !scan.found.isEmpty { missed.append("tokens.found") }
+        missed.sort()
+        record["missed"] = missed
+        record["passed"] = missed.isEmpty && host.bootCount == 1
+    }
+
+    /// The files under `root` holding a GitHub token prefix, as paths relative to it. Read in chunks, so
+    /// a disk image of several gigabytes needs little memory.
+    static func tokens(in root: String) -> (files: Int, bytes: Int, found: [String], ms: Int) {
+        let started = Date()
+        let patterns = tokenPrefixes.map { Data($0.utf8) }
+        let overlap = patterns.map(\.count).max()! - 1
+        var files = 0, bytes = 0, found: [String] = []
+        let items = FileManager.default.enumerator(atPath: root)
+        while let relative = items?.nextObject() as? String {
+            guard items?.fileAttributes?[.type] as? FileAttributeType == .typeRegular,
+                  let handle = FileHandle(forReadingAtPath: root + "/" + relative) else { continue }
+            defer { try? handle.close() }
+            files += 1
+            var tail = Data(), hit = false
+            while !hit, let chunk = try? handle.read(upToCount: 8 << 20), !chunk.isEmpty {
+                bytes += chunk.count
+                let window = tail + chunk
+                hit = patterns.contains { window.range(of: $0) != nil }
+                tail = window.suffix(overlap)
+            }
+            if hit { found.append(relative) }
+        }
+        return (files, bytes, found.sorted(), ms(Date().timeIntervalSince(started)))
+    }
+
     // MARK: Helpers
+
+    /// A terminal the probe runs lines in, one at a time. Each line prints a marker with its exit code,
+    /// so a line's result is read from the output without its text.
+    private final class Shell {
+        let host: CandidateHost, id: String, cwd: String, timing: Timing
+        private var offset = 0, count = 0
+        /// How often the terminal was reopened: a new Worker closes the terminals an earlier one left open.
+        private(set) var reopened = 0
+        private var output = ""
+        /// The output of the last line, kept in the probe only: records hold a reason code, not the text.
+        var last: String { output }
+
+        init(_ host: CandidateHost, _ id: String, _ cwd: String, _ timing: Timing) throws {
+            self.host = host; self.id = id; self.cwd = cwd; self.timing = timing
+            try open()
+        }
+
+        private func open() throws {
+            offset = 0
+            guard terminalOpen(host, id, cwd) == "OPEN" else { throw CandidateError("TERMINAL_REFUSED") }
+            guard terminalUntil(host, id, &offset, timing, { ($0["activity"] as? [String: Any])?["state"] as? String == "idle" }) else {
+                throw CandidateError("TERMINAL_NOT_IDLE")
+            }
+        }
+
+        /// The exit code of `line`, or nil when its marker did not come within `limit`.
+        func run(_ line: String, _ limit: TimeInterval? = nil) -> Int? {
+            count += 1
+            let tag = "@@\(count)@@"
+            guard send(line + "; printf '\\n\(tag)%d@@\\n' $?\n") else { return nil }
+            guard read(limit ?? timing.line, { $0.contains(tag) && Shell.code($0, tag) != nil }) else { return nil }
+            return Shell.code(output, tag)
+        }
+
+        /// Sends `line` and reads until its output contains `text` (`prompted`), or until the line ends
+        /// first (its exit code in `ended`).
+        func prompt(_ line: String, _ text: String, _ limit: TimeInterval) -> (prompted: Bool, ended: Int?) {
+            count += 1
+            let tag = "@@\(count)@@"
+            guard send(line + "; printf '\\n\(tag)%d@@\\n' $?\n"),
+                  read(limit, { $0.contains(text) || Shell.code($0, tag) != nil }) else { return (false, nil) }
+            let ended = Shell.code(output, tag)
+            return (ended == nil, ended)
+        }
+
+        /// A fixed code for why a Git command ended, from its output.
+        static func reason(_ output: String) -> String {
+            let known: [(String, String)] = [
+                ("terminal prompts disabled", "PROMPTS_DISABLED"), ("Username for", "PROMPTED"),
+                ("already exists and is not an empty directory", "NOT_EMPTY"), ("Could not resolve host", "DNS"),
+                ("Failed to connect", "CONNECT"), ("Couldn't connect", "CONNECT"), ("timed out", "TIMEOUT"),
+                ("SSL", "TLS"), ("certificate", "TLS"), ("Authentication failed", "AUTH"), ("not found", "NOT_FOUND")]
+            return known.first { output.contains($0.0) }?.1 ?? "OTHER"
+        }
+
+        /// Sends Ctrl-C and returns the exit code of what was running.
+        func interrupt() -> Int? {
+            _ = terminalWrite(host, id, "\u{3}")
+            Thread.sleep(forTimeInterval: 2)
+            count += 1
+            let tag = "@@\(count)@@"
+            guard send("printf '\\n\(tag)%d@@\\n' $?\n"), read(timing.line, { Shell.code($0, tag) != nil }) else { return nil }
+            return Shell.code(output, tag)
+        }
+
+        func close() { _ = host.handle(["operation": "terminal-close", "terminalId": id]) }
+
+        /// Writes once the project's lease is free: the user's own line may still be finishing. A terminal
+        /// closed by a new Worker is reopened once; a line it was running is not resumed.
+        private func send(_ text: String) -> Bool {
+            output = ""
+            let deadline = Date().addingTimeInterval(120)
+            var retried = false
+            while true {
+                let written = terminalWrite(host, id, text)
+                if written.hasPrefix("WRITTEN") { return true }
+                if written == "TERMINAL_NOT_FOUND", !retried, Date() < deadline {
+                    retried = true
+                    guard (try? open()) != nil else { return false }
+                    reopened += 1
+                    continue
+                }
+                guard written == "REFUSED:LEASE_BUSY", Date() < deadline else { return false }
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+
+        private func read(_ limit: TimeInterval, _ done: (String) -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(limit)
+            while Date() < deadline {
+                let reply = terminalRead(host, id, &offset, waitMs: 5000)
+                if reply["error"] != nil { return false }
+                output += decoded(reply["data"]) ?? ""
+                if done(output) { return true }
+            }
+            return false
+        }
+
+        /// The code printed after `tag`. The echoed line holds `%d` there, so it never matches.
+        private static func code(_ output: String, _ tag: String) -> Int? {
+            guard let range = output.range(of: tag + "(-?[0-9]+)@@", options: .regularExpression) else { return nil }
+            return Int(output[range].dropFirst(tag.count).dropLast(2))
+        }
+    }
+
+    /// The names at the root of a workspace, sorted.
+    private static func listing(_ workspace: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: workspace)) ?? []).sorted()
+    }
+
+    /// A Git ref read natively, loose or packed.
+    private static func ref(_ workspace: String, _ name: String) -> String? {
+        if let loose = try? String(contentsOfFile: workspace + "/.git/" + name, encoding: .utf8) {
+            return loose.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let packed = (try? String(contentsOfFile: workspace + "/.git/packed-refs", encoding: .utf8)) ?? ""
+        for line in packed.split(separator: "\n") {
+            let fields = line.split(separator: " ")
+            if fields.count == 2, fields[1] == name { return String(fields[0]) }
+        }
+        return nil
+    }
+
+    /// The commit `HEAD` names, read natively.
+    private static func head(_ workspace: String) -> String? {
+        guard let text = try? String(contentsOfFile: workspace + "/.git/HEAD", encoding: .utf8) else { return nil }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.hasPrefix("ref: ") ? ref(workspace, String(value.dropFirst(5))) : value
+    }
+
+    /// A TCP listener on a free host loopback port, to see whether a guest command connects to it.
+    private final class Listener {
+        let fd: Int32
+        let port: UInt16
+
+        init() throws {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw CandidateError("PORT_UNAVAILABLE") }
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+            address.sin_addr.s_addr = inet_addr("127.0.0.1")
+            var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let bound = withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) == 0 && getsockname(fd, $0, &size) == 0 }
+            }
+            guard bound, listen(fd, 4) == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { Darwin.close(fd); throw CandidateError("PORT_UNAVAILABLE") }
+            self.fd = fd
+            port = UInt16(bigEndian: address.sin_port)
+        }
+
+        /// True when a connection is waiting or was made; accepts and closes it.
+        func accepted() -> Bool {
+            let client = accept(fd, nil, nil)
+            if client >= 0 { Darwin.close(client) }
+            return client >= 0
+        }
+
+        func close() { Darwin.close(fd) }
+    }
 
     /// The record keys whose value differs from the expected code or flag, sorted.
     private static func misses(_ record: [String: Any], _ expected: [String: String], _ flags: [String: Bool]) -> [String] {
@@ -436,9 +876,10 @@ public enum MeasureProbe {
         }
     }
 
-    private static func execute(_ host: CandidateHost, _ id: String, _ cwd: String, _ command: String, timeoutMs: Int = 120_000) -> [String: Any] {
+    private static func execute(_ host: CandidateHost, _ id: String, _ cwd: String, _ command: String, timeoutMs: Int = 120_000,
+                                trigger: String = "shell") -> [String: Any] {
         host.handle(["operation": "execute", "operationId": id + "-" + runId, "command": command, "cwd": cwd,
-                     "timeoutMs": timeoutMs, "trigger": "shell"])
+                     "timeoutMs": timeoutMs, "trigger": trigger])
     }
 
     private static let maxTimeoutMs = 600_000
@@ -487,8 +928,8 @@ public enum MeasureProbe {
         return false
     }
 
-    /// Runs `work` on its own thread; the returned function waits for its reply, for at most 120 s.
-    private static func onThread(_ work: @escaping () -> [String: Any]) -> () -> [String: Any] {
+    /// Runs `work` on its own thread; the returned function waits for its reply, for at most `limit`.
+    private static func onThread(limit: TimeInterval = 120, _ work: @escaping () -> [String: Any]) -> () -> [String: Any] {
         let group = DispatchGroup(), lock = NSLock()
         var value: [String: Any] = ["status": "NO_REPLY"]
         group.enter()
@@ -498,7 +939,7 @@ public enum MeasureProbe {
             group.leave()
         }
         return {
-            _ = group.wait(timeout: .now() + 120)
+            _ = group.wait(timeout: .now() + limit)
             lock.lock(); defer { lock.unlock() }; return value
         }
     }

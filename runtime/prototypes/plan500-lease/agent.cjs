@@ -26,6 +26,10 @@ const secretNames = new Set(['DSH_GIT_TOKEN']);
 // Commands stop at this length; the native transport waits longer than this.
 const maxTimeoutMs = 60000;
 const sockets = new Set();
+// Guest git reads this system config instead of the image's /etc/gitconfig: no credential helper, so a
+// token typed at a prompt is never kept, and the workspace's reserved root files are ignored.
+const gitSystem = '/run/plan500-git';
+const guestEnv = {PATH: '/opt/node/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8', GIT_CONFIG_SYSTEM: gitSystem + '/config'};
 let epoch = null, lastFence = 0, activeLease = null, generation = 0;
 const terminals = new Map();
 const terminalRoot = '/run/plan500-term';
@@ -121,6 +125,10 @@ async function sweep() {
 }
 fs.mkdirSync(groups, {recursive: true});
 fs.mkdirSync(published, {recursive: true, mode: 0o755});
+fs.mkdirSync(gitSystem, {recursive: true, mode: 0o755});
+fs.writeFileSync(gitSystem + '/ignore', '/.dsh-identity\n/.dsh-mount-check\n/.plan500-identity\n.dsh-tmp-*\n', {mode: 0o644});
+fs.writeFileSync(gitSystem + '/config', '[user]\n\tuseConfigOnly = true\n[init]\n\tdefaultBranch = main\n[core]\n\tpager = cat\n'
+  + '\texcludesFile = ' + gitSystem + '/ignore\n', {mode: 0o644});
 publish();
 
 function secretsOf(request) {
@@ -175,7 +183,7 @@ function execute(request) {
       ? ['-c', JOINED_WRAPPER, 'plan500', group, String(terminal.child.pid), String(user.uid), String(user.gid), cwd, ...request.argv]
       : ['-c', WRAPPER, 'plan500', group, lease ? '1' : '0', String(user.uid), String(user.gid), cwd, ...request.argv];
     const child = cp.spawn('/bin/sh', argv, {
-      cwd: '/', detached: true, env: {PATH: '/opt/node/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8', ...secrets},
+      cwd: '/', detached: true, env: {...guestEnv, ...secrets},
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const closed = new Promise(done => child.on('close', done));
@@ -388,7 +396,7 @@ async function openTerminal(input) {
   fs.mkdirSync(group);
   const child = cp.spawn('/bin/sh', ['-c', TERMINAL_WRAPPER, 'plan500', group, String(owner.uid), String(owner.gid), cwd, command], {
     cwd: '/', detached: true, stdio: ['pipe', 'pipe', 'pipe'],
-    env: {PATH: '/opt/node/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8', TERM: type, SHELL: '/bin/bash', ...extra},
+    env: {...guestEnv, TERM: type, SHELL: '/bin/bash', ...extra},
   });
   const terminal = {id: input.id, signature, child, group, directory, shellPid: null, buffer: Buffer.alloc(0), base: 0,
     closed: false, exit: null, waiters: [], shellRevision: 0, observed: '', invalidated: undefined,

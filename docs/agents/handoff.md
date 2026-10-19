@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-13，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
+最后更新：2026-10-14，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程以 git 历史、研究报告和验收记录为准。
 
 ## 开始工作
 
@@ -133,9 +133,16 @@
 
 #17 已于 2026-10-14 关闭。[完成条件核对](../validation/issue17-closeout.md) 由 PR #60 合入（`cf28b7c`），用户同意缺口按核对表放行。iPad 文件面板能显示终端新建的文件，用户已确认（r16）。文件面板在右侧栏 ＋ 里的“工作区文件”，不是中间的会话列表。
 
+#18 进行中，分支 `feat/issue18-git-loop`。范围由用户 2026-10-14 确认，已写进 #18 评论和 [#18 验收记录](../validation/issue18-git-loop.md)：私有测试仓库 `lvivvde/harness-acceptance-ts`（种子提交 `afdb093`），用户在 iPad 的 git 提示处输入 fine-grained token；guest 放开出站；固定项目是 `runtime/acceptance/ts-git-loop`；`git fetch`、`npm ci`、`git push` 由用户在终端手动运行。
+
+- 已改：QEMU 网络放开出站；探针阶段 `network`、`git-fetch`、`git-push`、`git-keep`。`git-fetch` 失败带原因码，遇 `TERMINAL_NOT_FOUND` 重开终端；`git-push` 的提交改在终端运行（shell 工具 60 s 上限放不下 hook）；`git-keep` 核对 Git 历史、凭据配置并扫描 App 容器里的 token 前缀。候选 App 的 Key 输入去掉首尾空白，并显示末 4 位和长度。
+- 已验证（iPad，2026-10-15，r19–r23）：验收表 6 步全部填写，1–5 通过，6 通过附发现。远端 `main` 为 `f4386365`，父提交 `afdb093`。重开、r22→r23 覆盖升级、合成备份迁移后 Git 历史、会话、配置都保留；App 容器无 token 命中。macOS 上 `MeasureProbeTests` 14 项通过。
+- 发现（已修，#63/#64）：guest 的 `/etc/gitconfig` 带 `credential.helper = store`，`HOME=/tmp`，输入的 token 留在 guest 内存直到 VM 退出，hook 和模型命令都能读到；迁移或用户自建的仓库里，App 保留文件 `.plan500-identity` 显示为未跟踪。修法：`agent.cjs` 给 guest 命令和终端设 `GIT_CONFIG_SYSTEM=/run/plan500-git/config`（无 credential helper，`core.excludesFile` 列出保留文件），摘要已更新。已验证（2026-10-19，r25）：`git-keep` 复测 Acc-ts、migrated-git 都通过，工作区干净、无 credential helper、无凭据文件；`make test-app` 52 项通过。新项目上输入 token 后的 `git-fetch` 复测由用户决定跳过，按通过处理。
+- 设备上现装 r25（`build/candidate/ipad-signed-r25/`）；候选 App 还有未完成 fetch 的项目 Acc-ts2，可删。复测证据 `device/measure-auto-221958`、`222034`。原 r23 记录：候选 App 里有 Acc-ts（测试仓库的克隆）和迁移演练项目 `migrated-git`，都可随卸载一并清除。私有驱动 `measure-auto-private.py` 新增 `git-fetch`、`git-push`、`keep-baseline`、`git-keep`、`home-check`、`import-git`；证据：push `device/measure-auto-231526`，升级后 `232857`、`233224`，重开 `233105`，迁移 `234434`。
+
 **下一步：**
 
-1. 开始 #18：先定范围（仍带 `needs-triage`）和用户授权的测试远端。#14 现在也可以开始，依据是 #17 的组件清单。
+1. #18：PR #62 合入验收记录、探针和 #63/#64 修复（合并需用户同意）；合并后关闭 #63、#64，按用户意见关闭 #18，转 #23。测试仓库是否删除由用户决定。#14 也可以开始，依据是 #17 的组件清单。
 2. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
 3. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
@@ -144,7 +151,7 @@
 | Issue | 依赖与边界 |
 | --- | --- |
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
-| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务（#17 已关闭）。按能力声明区分路径；Git 写与 hook 走 `linux`；推送只用用户授权的测试远端。仍带 `needs-triage`。 |
+| [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 当前任务。iPad 验收 6 步已填，1–5 通过，6 的两条发现（#63/#64）已在本分支修复并复测。推送只用用户授权的测试远端。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 被 #18 阻塞。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值在开工前提出并经用户确认。仍带 `needs-triage`。 |
 | [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | #17 已关闭，组件清单见[分发组件](../design/distribution-components.md)，可与交互验收并行准备；含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 

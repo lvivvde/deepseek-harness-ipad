@@ -91,6 +91,14 @@ public final class CandidateHost: @unchecked Sendable {
                         "activity": Self.activity(inspected.activity)]
             case "terminal-close": return try terminalClose(body)
             case "terminals-reset": return terminalsReset()
+            case "service-start": return try serviceStart(body)
+            case "service-read": return try guest("/service/read", ["id": try serviceId(body)])
+            case "service-stop": return try guest("/service/stop", ["id": try serviceId(body)])
+            case "preview-ports": return try previewPorts()
+            case "preview-open": return try previewOpen(body)
+            case "preview-close":
+                _ = try guest("/preview", ["port": NSNull()])
+                return ["closed": true]
             case "writer-release":
                 guard let id = body["id"] as? String, let gateway = opened(id)?.gateway else { throw CandidateError("PROJECT_UNKNOWN") }
                 return ["status": Self.name(gateway.releaseUnknownWriter())]
@@ -325,6 +333,59 @@ public final class CandidateHost: @unchecked Sendable {
 
     private static func activity(_ activity: TerminalActivity) -> [String: Any] {
         ["state": activity.state, "revision": activity.revision]
+    }
+
+    // MARK: Services and preview (#23)
+
+    /// Starts a long-running Linux command, such as a dev server, in the project whose mount holds `cwd`.
+    /// It runs read-only on the workspace and holds no write lease, so native edits land while it runs;
+    /// it ends on `service-stop` or with the VM.
+    private func serviceStart(_ body: [String: Any]) throws -> [String: Any] {
+        let id = try serviceId(body)
+        guard let command = body["command"] as? String, !command.isEmpty, command.utf8.count <= 16 * 1024,
+              let cwd = body["cwd"] as? String else { throw CandidateError("SERVICE_REFUSED") }
+        lock.lock(); let located = locate(cwd); lock.unlock()
+        guard let (target, guestCwd) = located else { throw CandidateError("CWD_REFUSED") }
+        try requireReady(target.project.id)
+        return try guest("/service/start", ["id": id, "projectId": target.project.id, "argv": ["/bin/sh", "-c", command], "cwd": guestCwd])
+    }
+
+    private func serviceId(_ body: [String: Any]) throws -> String {
+        guard let id = body["serviceId"] as? String, (1...64).contains(id.utf8.count),
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+            throw CandidateError("SERVICE_REFUSED")
+        }
+        return id
+    }
+
+    /// The ports listening in the bound project's guest, for the preview picker.
+    private func previewPorts() throws -> [String: Any] {
+        guard let bound = plugin.boundProject else { throw CandidateError("LINUX_NOT_READY") }
+        try requireReady(bound)
+        return try guest("/ports", [:])
+    }
+
+    /// Points the guest's preview forwarder at `port` and answers the loopback URL that reaches it. Only
+    /// this device reaches it; closing the preview stops no service.
+    private func previewOpen(_ body: [String: Any]) throws -> [String: Any] {
+        guard let port = body["port"] as? Int, (1...65535).contains(port) else { throw CandidateError("PORT_REFUSED") }
+        guard let local = machine.previewPort else { throw CandidateError("PREVIEW_UNAVAILABLE") }
+        guard let bound = plugin.boundProject else { throw CandidateError("LINUX_NOT_READY") }
+        try requireReady(bound)
+        _ = try guest("/preview", ["port": port])
+        return ["port": port, "url": "http://127.0.0.1:\(local)/"]
+    }
+
+    private func requireReady(_ project: String) throws {
+        guard plugin.boundProject == project, case .ready = plugin.phase(of: project) else { throw CandidateError("LINUX_NOT_READY") }
+    }
+
+    /// One guest call; a guest refusal passes through only as a fixed code.
+    private func guest(_ route: String, _ body: [String: Any]) throws -> [String: Any] {
+        do { return try machine.rpc.call(route, body) } catch GuestRPCError.refused(let code) {
+            guard let code, code.range(of: "^[A-Z_]{1,64}$", options: .regularExpression) != nil else { throw CandidateError("GUEST_REFUSED") }
+            throw CandidateError(code)
+        } catch { throw CandidateError("GUEST_UNREACHABLE") }
     }
 
     /// Caller holds `lock`. Maps a Worker path inside an open project to the guest's `/workspace`.

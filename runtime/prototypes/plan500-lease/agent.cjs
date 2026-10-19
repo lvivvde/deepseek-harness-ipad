@@ -5,6 +5,7 @@
 // An interactive terminal keeps its own mount namespace, read-only until a lease remounts it rw;
 // the lease ends only once the shell is back at an idle prompt and the view is remounted ro.
 const http = require('node:http');
+const net = require('node:net');
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const crypto = require('node:crypto');
@@ -23,7 +24,7 @@ const allowed = new Set(['/bin/sh', '/usr/bin/git', '/opt/node/bin/node']);
 const operations = new Map();
 // Per-request secrets that reach only the command's environment: never echoed, logged or kept.
 const secretNames = new Set(['DSH_GIT_TOKEN']);
-// Commands stop at this length; the native transport waits longer than this.
+// Commands stop at this length; the native transport waits longer than this. Services do not.
 const maxTimeoutMs = 60000;
 const sockets = new Set();
 // Guest git reads this system config instead of the image's /etc/gitconfig: no credential helper, so a
@@ -563,6 +564,106 @@ const terminalRoutes = {
     : {closed: true, releasedFence: releasedFences.has(input.fence) ? input.fence : null},
 };
 
+// Services (#23): long-running commands such as a dev server. A service runs unleased, as the reader uid
+// in the global namespace with the read-only workspace view, so native edits land while it runs; it
+// writes only outside the workspace (its caches go to /tmp). It ends on stop or with the VM.
+const services = new Map();
+const maxServices = 4, maxServiceOutput = 65536;
+function startService(input) {
+  const signature = JSON.stringify({argv: input.argv, cwd: input.cwd});
+  const existing = services.get(input.id);
+  if (existing) {
+    if (existing.signature !== signature) throw new Error('OPERATION_ID_CONFLICT');
+    return {pid: existing.child.pid};
+  }
+  if (input.projectId !== identity) throw new Error('PROJECT_ID_MISMATCH');
+  if ([...services.values()].filter(x => !x.exit).length >= maxServices) throw new Error('SERVICE_LIMIT');
+  if (!Array.isArray(input.argv) || !allowed.has(input.argv[0]) ||
+      !input.argv.every(x => typeof x === 'string') || input.argv.length > 100) throw new Error('ARGV_REFUSED');
+  const cwd = fs.realpathSync(input.cwd ?? root);
+  if (cwd !== root && !cwd.startsWith(root + '/')) throw new Error('CWD_REFUSED');
+  const group = groups + '/svc-' + input.id.replace(/[^A-Za-z0-9_-]/g, '_');
+  fs.mkdirSync(group);
+  const child = cp.spawn('/bin/sh', ['-c', WRAPPER, 'plan500', group, '0', String(reader.uid), String(reader.gid), cwd, ...input.argv], {
+    cwd: '/', detached: true, env: {...guestEnv, TMPDIR: '/tmp'}, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const service = {child, group, signature, output: '', dropped: 0, exit: null};
+  const take = data => {
+    service.output += data;
+    if (service.output.length > maxServiceOutput) {
+      service.dropped += service.output.length - maxServiceOutput;
+      service.output = service.output.slice(-maxServiceOutput);
+    }
+  };
+  child.stdout.on('data', take); child.stderr.on('data', take);
+  child.on('error', error => take(String(error)));
+  child.on('exit', (code, signal) => { service.exit = {code, signal}; drain(group).then(() => { try { fs.rmdirSync(group); } catch {} }); });
+  services.set(input.id, service);
+  return {pid: child.pid};
+}
+function serviceOf(input) {
+  const service = services.get(input.id);
+  if (!service) throw new Error('SERVICE_NOT_FOUND');
+  return service;
+}
+const serviceRoutes = {
+  start: startService,
+  read: input => { const s = serviceOf(input); return {output: s.output, dropped: s.dropped, exited: s.exit}; },
+  stop: async input => {
+    const s = serviceOf(input);
+    const stopped = s.exit !== null || await drain(s.group, bounded(input.graceMs, 0, 10000, 5000));
+    return {stopped, exited: s.exit};
+  },
+};
+
+// Preview (#23): listening TCP ports in the guest, and one forwarder on 4501 (the native side's second
+// loopback forward) to the chosen port on the guest's loopback, IPv4 first, then IPv6.
+const reservedPorts = new Set([4500, 4501]);
+function listening() {
+  const found = new Map();
+  for (const [file, family] of [['/proc/net/tcp', 4], ['/proc/net/tcp6', 6]]) {
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const line of text.split('\n').slice(1)) {
+      const field = line.trim().split(/\s+/);
+      if (field[3] !== '0A') continue;
+      const [address, hex] = field[1].split(':');
+      const port = parseInt(hex, 16);
+      if (reservedPorts.has(port)) continue;
+      const loopback = family === 4 ? address.endsWith('7F') : address === '00000000000000000000000001000000';
+      const any = /^0+$/.test(address);
+      const entry = found.get(port) ?? {port, families: [], loopback: false, any: false};
+      if (!entry.families.includes(family)) entry.families.push(family);
+      entry.loopback ||= loopback; entry.any ||= any;
+      found.set(port, entry);
+    }
+  }
+  return [...found.values()].sort((a, b) => a.port - b.port).slice(0, 32);
+}
+let previewTarget = null;
+const forwarder = net.createServer(client => {
+  const port = previewTarget;
+  if (port === null) return client.destroy();
+  client.pause();
+  const attempt = hosts => {
+    const upstream = net.connect({host: hosts[0], port});
+    upstream.once('connect', () => {
+      upstream.on('error', () => client.destroy());
+      client.on('error', () => upstream.destroy());
+      client.pipe(upstream); upstream.pipe(client); client.resume();
+    });
+    upstream.once('error', () => hosts.length > 1 ? attempt(hosts.slice(1)) : client.destroy());
+  };
+  attempt(['127.0.0.1', '::1']);
+});
+forwarder.listen(4501, '0.0.0.0');
+function preview(input) {
+  if (input.port === null) { previewTarget = null; return {port: null}; }
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535 || reservedPorts.has(input.port)) throw new Error('PORT_REFUSED');
+  previewTarget = input.port;
+  return {port: previewTarget};
+}
+
 function sever(ms) {
   server.close(() => setTimeout(() => server.listen(4500, '0.0.0.0'), ms));
   for (const socket of sockets) socket.destroy();
@@ -603,6 +704,8 @@ const server = http.createServer(async (request, response) => {
       return reply(200, {generation});
     }
     if (request.url === '/revoke') return reply(200, await revoke(input));
+    if (request.url === '/ports') return reply(200, {ports: listening(), target: previewTarget});
+    if (request.url === '/preview') return reply(200, preview(input));
     if (request.url === '/test/sever') {
       // PROTOTYPE fault injection: drop every RPC connection while commands keep running.
       return reply(200, {severing: input.ms}, () => sever(Math.min(Math.max(input.ms, 10), 5000)));
@@ -611,6 +714,10 @@ const server = http.createServer(async (request, response) => {
     if (request.url === '/execute') return reply(200, await execute(input));
     if (request.url.startsWith('/terminal/')) {
       const route = terminalRoutes[request.url.slice('/terminal/'.length)];
+      if (route) return reply(200, await route(input));
+    }
+    if (request.url.startsWith('/service/')) {
+      const route = serviceRoutes[request.url.slice('/service/'.length)];
       if (route) return reply(200, await route(input));
     }
     if (request.url === '/cancel') {

@@ -65,6 +65,9 @@ final class CandidateModel: ObservableObject {
     @Published private(set) var sessionFailure: String?
     @Published private(set) var sessionSavedAt: Date?
     @Published private(set) var importStatus: String?
+    /// Ports listening in the guest, and the forwarded preview address while one is open (#23).
+    @Published private(set) var previewPorts: [Int] = []
+    @Published private(set) var previewURL: URL?
 
     let web: CandidateWebHost?
     private let host: CandidateHost?
@@ -231,6 +234,27 @@ final class CandidateModel: ObservableObject {
     }
 
     func saveSession() { web?.saveSession() }
+
+    /// Lists the guest's listening ports; only the bound, ready project has any.
+    func scanPreviewPorts() {
+        call(["operation": "preview-ports"]) { [weak self] reply in
+            let entries = reply["ports"] as? [[String: Any]] ?? []
+            self?.previewPorts = entries.compactMap { $0["port"] as? Int }
+        }
+    }
+
+    func openPreview(port: Int) {
+        failure = nil
+        call(["operation": "preview-open", "port": port]) { [weak self] reply in
+            if let url = (reply["url"] as? String).flatMap(URL.init(string:)) { self?.previewURL = url }
+        }
+    }
+
+    /// Closing the panel only clears the forward; the dev server keeps running.
+    func closePreview() {
+        previewURL = nil
+        call(["operation": "preview-close"]) { _ in }
+    }
 
     // Called only by the UI's explicit fresh-start confirmation.
     func freshSession() {

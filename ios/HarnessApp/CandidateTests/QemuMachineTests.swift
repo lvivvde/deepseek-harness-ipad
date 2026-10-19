@@ -28,7 +28,7 @@ final class QemuMachineTests: XCTestCase {
         while !FileManager.default.fileExists(atPath: root + "/argv") && Date() < deadline { usleep(10_000) }
         let argv = try String(contentsOfFile: root + "/argv", encoding: .utf8).split(separator: "\n").map(String.init)
         XCTAssertTrue(argv.contains("local,id=workspace,path=" + root + "/share,,odd,security_model=none,writeout=immediate"))
-        XCTAssertTrue(argv.contains { $0.hasPrefix("user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:") && $0.hasSuffix("-:4500") })
+        XCTAssertTrue(argv.contains { $0.hasPrefix("user,id=net,ipv6=off,hostfwd=tcp:127.0.0.1:") && $0.contains("-:4500,hostfwd=tcp:127.0.0.1:\(machine.previewPort!)-:4501") })
         XCTAssertFalse(machine.exited)
         machine.stop()
         machine.stop()

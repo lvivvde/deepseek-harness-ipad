@@ -21,6 +21,7 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
     public var onExit: ((Int32?) -> Void)?
     private let configuration: Configuration
     private let port: UInt16
+    public let previewPort: UInt16?
     private let lock = NSLock()
     private var process: Process?
     private var ended = false
@@ -28,6 +29,7 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
     public init(_ configuration: Configuration) throws {
         self.configuration = configuration
         port = try GuestArguments.freePort()
+        previewPort = try GuestArguments.freePort(besides: port)
         rpc = GatedGuestRPC(port: port, token: configuration.token)
     }
 
@@ -41,7 +43,7 @@ public final class QemuMachine: GuestMachine, @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: configuration.executable)
         process.arguments = GuestArguments.machine(
-            inputs: configuration.inputs, workspace: workspace, port: port,
+            inputs: configuration.inputs, workspace: workspace, port: port, preview: previewPort ?? 0,
             serial: "file,id=serial,path=" + GuestArguments.option(configuration.logs + "/serial-private.log"))
         let log = configuration.logs + "/qemu-private.log"
         FileManager.default.createFile(atPath: log, contents: nil, attributes: [.posixPermissions: 0o600])

@@ -38,6 +38,10 @@ import os
 /// - `git-keep` (#18): after a reopen, an overwrite upgrade or a migration, the project (`project`, by
 ///   name) still holds its history and `origin` (`remote`), with a clean tree and no stored credential,
 ///   and no file the App keeps holds a GitHub token.
+/// - `preview` (#23): a new project unpacks the Vite fixture the driver left at `<root>/probe/vite-hmr.tar`,
+///   installs it in the terminal, starts its dev server as a service, opens the forwarded preview and
+///   times five native edits to the HMR update over the preview's own WebSocket. Closing the preview
+///   leaves the server running.
 /// Each phase writes `<root>/probe/measure-<phase>.json` with numbers and fixed codes only, tagged with
 /// the launch's `run` id and marked `done` once final.
 public enum MeasureProbe {
@@ -46,6 +50,13 @@ public enum MeasureProbe {
         case execution, executionHold = "execution-hold", executionStale = "execution-stale"
         case network
         case gitFetch = "git-fetch", gitPush = "git-push", gitKeep = "git-keep"
+        case preview
+    }
+
+    /// The #23 thresholds, in milliseconds. A miss is a failure; they are never relaxed to pass.
+    public enum PreviewLimit {
+        public static let linuxReady = 20_000, serverReady = 60_000, combined = 120_000
+        public static let hmrMedian = 5_000, hmrEach = 15_000, hmrRuns = 5
     }
 
     /// Prefixes of GitHub tokens: a file the App keeps that holds one is a leak.
@@ -104,6 +115,7 @@ public enum MeasureProbe {
             case .gitFetch: try gitFetch(host, project, remote, timing, &record)
             case .gitPush: try gitPush(host, project, timing, &record)
             case .gitKeep: try gitKeep(host, project, remote, timing, &record)
+            case .preview: try preview(host, timing, &record)
             }
         } catch let error as CandidateError {
             record["failure"] = error.code
@@ -608,6 +620,139 @@ public enum MeasureProbe {
             + (record["commit.exitCode"] as? Int == 0 ? [] : ["commit.exitCode"])).sorted()
         record["missed"] = missed
         record["passed"] = missed.isEmpty && host.bootCount == 1
+    }
+
+    private static func preview(_ host: CandidateHost, _ timing: Timing, _ record: inout [String: Any]) throws {
+        guard let fixture = FileManager.default.contents(atPath: host.registry.root + "/probe/vite-hmr.tar") else {
+            throw CandidateError("FIXTURE_MISSING")
+        }
+        let (id, mount) = try project(host, "measure-preview-\(stamp())", plugin: true)
+        let opened = Date()
+        _ = host.handle(["operation": "project-open", "id": id])
+        try waitReady(host, id, timing, &record)
+        record["linuxReadyMs"] = ms(Date().timeIntervalSince(opened))
+
+        // The fixture goes in as a native write and is unpacked and installed in the terminal, like a
+        // user would; the install is timed on its own and is not part of the thresholds.
+        let written = host.handle(["operation": "fs", "method": "write",
+                                   "args": ["path": mount + "/vite-hmr.tar", "data": fixture.base64EncodedString()]])
+        guard (written["value"] as? [String: Any])?["operation"] != nil else { throw CandidateError("FIXTURE_REFUSED") }
+        let shell = try Shell(host, "acc-preview-" + runId, mount, timing)
+        defer { shell.close() }
+        record["unpack.exitCode"] = shell.run("tar -xf vite-hmr.tar && rm vite-hmr.tar") ?? -1
+        var install: Int?
+        record["installMs"] = ms(time { install = shell.run("npm ci --no-audit --no-fund") })
+        record["install.exitCode"] = install ?? -1
+        write(host, .preview, record)
+        guard install == 0 else { throw CandidateError("INSTALL_FAILED") }
+
+        // The dev server runs unleased and read-only, so the native edits below commit at once.
+        let service = "vite-" + runId
+        let started = Date()
+        let start = host.handle(["operation": "service-start", "serviceId": service, "cwd": mount,
+                                 "command": "exec node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort --configLoader native"])
+        record["service.start"] = start["pid"] != nil ? "STARTED" : describe(start)
+        defer { _ = host.handle(["operation": "service-stop", "serviceId": service]) }
+        func listed() -> Bool {
+            ((host.handle(["operation": "preview-ports"])["ports"] as? [[String: Any]]) ?? []).contains { $0["port"] as? Int == 5173 }
+        }
+        record["service.listening"] = wait(Double(PreviewLimit.combined) / 1000, 0.25, listed)
+        record["service.listenMs"] = ms(Date().timeIntervalSince(started))
+        let open = host.handle(["operation": "preview-open", "port": 5173])
+        guard let url = (open["url"] as? String).flatMap(URL.init(string:)) else {
+            record["service.exited"] = (host.handle(["operation": "service-read", "serviceId": service])["exited"] as? [String: Any]) != nil
+            throw CandidateError("PREVIEW_" + describe(open))
+        }
+        var page: String?
+        record["server.ok"] = wait(Double(PreviewLimit.combined) / 1000, 0.25) {
+            page = get(url); return page?.contains("id=\"message\"") == true
+        }
+        let serverReady = ms(Date().timeIntervalSince(started))
+        record["serverReadyMs"] = serverReady
+        write(host, .preview, record)
+
+        // Vite's client gives the token its WebSocket needs; loading the modules puts them in its graph.
+        guard let client = get(url.appendingPathComponent("@vite/client")),
+              let range = client.range(of: "wsToken = \"[^\"]+\"", options: .regularExpression) else { throw CandidateError("HMR_TOKEN_MISSING") }
+        let token = client[range].dropFirst("wsToken = \"".count).dropLast()
+        for module in ["src/main.js", "src/message.js"] { _ = get(url.appendingPathComponent(module)) }
+        var socketURL = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        socketURL.scheme = "ws"; socketURL.queryItems = [URLQueryItem(name: "token", value: String(token))]
+        let socket = URLSession.shared.webSocketTask(with: socketURL.url!, protocols: ["vite-hmr"])
+        socket.resume()
+        defer { socket.cancel(with: .goingAway, reason: nil) }
+        record["hmr.connected"] = receive(socket, 15)?.contains("\"connected\"") == true
+
+        var runs: [Int] = [], kinds: [String] = [], served = 0
+        for run in 1...PreviewLimit.hmrRuns {
+            Thread.sleep(forTimeInterval: 1)
+            let text = "export const message = 'edit \(run)';\n"
+            let edited = Date()
+            _ = host.handle(["operation": "fs", "method": "write",
+                             "args": ["path": mount + "/src/message.js", "data": Data(text.utf8).base64EncodedString()]])
+            var kind = "TIMEOUT"
+            let deadline = edited.addingTimeInterval(Double(PreviewLimit.hmrEach) / 1000)
+            while Date() < deadline, let message = receive(socket, deadline.timeIntervalSinceNow) {
+                if message.contains("\"type\":\"update\"") { kind = "update"; break }
+                if message.contains("\"type\":\"full-reload\"") { kind = "full-reload"; break }
+            }
+            runs.append(kind == "TIMEOUT" ? -1 : ms(Date().timeIntervalSince(edited)))
+            kinds.append(kind)
+            if get(url.appendingPathComponent("src/message.js"))?.contains("edit \(run)") == true { served += 1 }
+        }
+        record["hmr.ms"] = runs
+        record["hmr.kinds"] = kinds
+        record["hmr.served"] = served
+        let timed = runs.filter { $0 >= 0 }.sorted()
+        let median = timed.count == runs.count ? timed[timed.count / 2] : -1
+        record["hmr.medianMs"] = median
+        record["hmr.maxMs"] = timed.count == runs.count ? timed.last ?? -1 : -1
+
+        // Closing the preview clears only the forward; the server keeps running.
+        _ = host.handle(["operation": "preview-close"])
+        let after = host.handle(["operation": "service-read", "serviceId": service])
+        record["close.serviceRunning"] = after["exited"] is NSNull || (after["exited"] == nil && after["error"] == nil)
+        record["bootCount"] = host.bootCount
+
+        let linux = record["linuxReadyMs"] as? Int ?? .max
+        var missed = misses(record, ["service.start": "STARTED"],
+                            ["service.listening": true, "server.ok": true, "hmr.connected": true, "close.serviceRunning": true])
+        if record["unpack.exitCode"] as? Int != 0 { missed.append("unpack.exitCode") }
+        if linux > PreviewLimit.linuxReady { missed.append("linuxReadyMs") }
+        if serverReady > PreviewLimit.serverReady { missed.append("serverReadyMs") }
+        if linux + serverReady > PreviewLimit.combined { missed.append("combinedMs") }
+        if median < 0 || median > PreviewLimit.hmrMedian { missed.append("hmr.medianMs") }
+        if runs.contains(where: { $0 < 0 || $0 > PreviewLimit.hmrEach }) { missed.append("hmr.each") }
+        if kinds.contains(where: { $0 != "update" }) { missed.append("hmr.kinds") }
+        if served != runs.count { missed.append("hmr.served") }
+        record["combinedMs"] = linux + serverReady
+        record["missed"] = missed.sorted()
+        record["passed"] = missed.isEmpty && host.bootCount == 1
+    }
+
+    /// The body of a 200 reply from the preview, or nil.
+    private static func get(_ url: URL) -> String? {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        request.setValue("text/html,*/*", forHTTPHeaderField: "Accept")
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var body: String?
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            if (response as? HTTPURLResponse)?.statusCode == 200, let data { body = String(decoding: data, as: UTF8.self) }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 12)
+        return body
+    }
+
+    /// The next text message on `socket`, or nil when none comes within `limit` seconds.
+    private static func receive(_ socket: URLSessionWebSocketTask, _ limit: TimeInterval) -> String? {
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var text: String?
+        socket.receive { result in
+            if case .success(.string(let value)) = result { text = value }
+            done.signal()
+        }
+        return done.wait(timeout: .now() + max(limit, 0)) == .success ? text : nil
     }
 
     /// Exit 0 when guest git would keep a typed credential: a helper is configured, or a credential file exists.

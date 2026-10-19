@@ -95,19 +95,45 @@ struct CandidateView: View {
                     if let event = model.lastEvent { LabeledContent("Worker", value: event) }
                     if let failure = model.failure { Text(failure).foregroundStyle(.red) }
                 }
+                Section("Preview") {
+                    Button("Find dev servers") { model.scanPreviewPorts() }
+                        .disabled(model.boundProject == nil)
+                    ForEach(model.previewPorts, id: \.self) { port in
+                        Button("Open port \(port)") { model.openPreview(port: port) }
+                    }
+                    if model.previewURL != nil { Button("Close preview") { model.closePreview() } }
+                    Text("Shown only inside this App. Closing it leaves the server running.").font(.caption).foregroundStyle(.secondary)
+                }
                 if let project = model.projects.first(where: { $0.id == selected }), project.open {
                     CapabilitySection(project: project) { model.releaseWriter(project.id) }
                 }
             }
             .navigationSplitViewColumnWidth(min: 280, ideal: 320)
         } detail: {
-            if model.webStarted, let web = model.web {
-                WebView(view: web.view)
-            } else {
-                Text("Open a project to start.").foregroundStyle(.secondary)
+            GeometryReader { size in
+                // Landscape keeps the official page and the preview side by side; portrait gives the preview the screen.
+                if let url = model.previewURL, size.size.width <= size.size.height {
+                    PreviewPane(url: url) { model.closePreview() }
+                } else {
+                    HStack(spacing: 0) {
+                        official
+                        if let url = model.previewURL {
+                            Divider()
+                            PreviewPane(url: url) { model.closePreview() }
+                        }
+                    }
+                }
             }
         }
         .onChange(of: scenePhase) { phase in if phase != .active { model.saveSession() } }
+    }
+
+    @ViewBuilder private var official: some View {
+        if model.webStarted, let web = model.web {
+            WebView(view: web.view)
+        } else {
+            Text("Open a project to start.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     private var sessionStatus: String {
@@ -158,6 +184,40 @@ struct CapabilitySection: View {
                 }
             }
         }
+    }
+}
+
+/// The forwarded dev server in its own web view, which never sees the official page's bridge.
+struct PreviewPane: View {
+    let url: URL
+    let close: () -> Void
+    @StateObject private var holder = PreviewHolder()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(url.absoluteString).font(.caption.monospaced()).lineLimit(1)
+                Spacer()
+                Button("Reload") { holder.view.reload() }
+                Button("Close", action: close)
+            }.padding(8)
+            WebView(view: holder.view).onAppear { holder.load(url) }.onChange(of: url) { holder.load($0) }
+        }
+    }
+}
+
+@MainActor
+final class PreviewHolder: ObservableObject {
+    let view = WKWebView(frame: .zero, configuration: {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        return configuration
+    }())
+    private var loaded: URL?
+    func load(_ url: URL) {
+        guard url != loaded else { return }
+        loaded = url
+        view.load(URLRequest(url: url))
     }
 }
 

@@ -1,5 +1,7 @@
 # Git 写操作与 hook
 
+> 2026-10-21：文中的研究 App 和原型代码（`runtime/prototypes/`、`ios/LinuxPrototype` 等）已随[单一 App 方案](single-app-plan.md)删除，可在提交 `111817f` 及以前的 Git 历史中查看。
+
 依据：[ADR 0003](../adr/0003-native-worker-with-project-linux.md)，[#39](https://github.com/lvivvde/deepseek-harness-ipad/issues/39) 关口 5，原生只读 Git 见 [native-read-only-git.md](native-read-only-git.md)。2026-10-08 创建。
 
 ## 要回答的问题
@@ -83,7 +85,7 @@ Linux 正在启动时，hook 排队等待就绪。等待中被取消的 hook 不
 - Swift：
   - `runtime/prototypes/plan500-ipad/Sources/Gate5Review.swift`：原生复核与 stat 缓存比对；
   - `WorkerBridge.swift`：`SecretBox`、`execute`、令牌扫描。
-- Linux：`runtime/prototypes/plan500-lease/agent.cjs`（`secretEnv`、以属主 uid 运行）。
+- Linux：`runtime/guest-agent/agent.cjs`（`secretEnv`、以属主 uid 运行）。
 - 单元：`runtime/prototypes/plan500-ipad/test_git_write.mjs`，macOS 16/16。
 - 授权推送：`integration.html` 的 `plan500RunGate5Push`。研究 App 带 `--gate5-push` 启动时，显示 GitHub token 输入框和推送按钮；token 只放进 `SecretBox`，写收据前会扫描收据里有没有它，写完即清掉。macOS 上的 `run-worker.py --only gate5-push-dry` 不带 token 跑同一流程，要求两次推送都停在认证、早于 pre-push，并且远端什么也没收到。
 - 集成：`run-worker.py --only gate5` 依次运行三段：gate5、gate5-unavailable、gate5-prepare-failed。gate5 除 hook 矩阵外，还在预热时排队一条 `git init`，并在 push 之后依次运行 stash push、stash pop、checkout -b、commit、checkout、merge --no-ff、reset --hard。每一步之后，Linux 的 status 与 numstat 都要和原生复核一致。

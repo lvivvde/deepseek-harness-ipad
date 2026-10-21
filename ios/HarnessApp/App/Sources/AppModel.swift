@@ -49,6 +49,7 @@ struct ProjectRow: Identifiable, Equatable {
 /// the official page. Linux binds to the first plugin-enabled project the user opens.
 @MainActor
 final class AppModel: ObservableObject {
+    // Names the data folder only; it stays the same when a signing file overrides the bundle ID.
     static let bundleIdentifier = "org.lvivvde.harness.candidate"
 
     @Published private(set) var projects: [ProjectRow] = []

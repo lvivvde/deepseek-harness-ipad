@@ -1,6 +1,6 @@
 # 合并成一个 App 的方案
 
-> 草案，2026-10-21，待用户确认。目标：只留一个 App，也就是现在的 Harness Candidate；旧的正式 App 和研究原型退役。旧 App 里的数据不需要保留（用户 2026-10-21 确认）。
+> 2026-10-21 用户确认：bundle ID 保留 `org.lvivvde.harness.candidate`，这次只做第 1 步。第 1 步在分支 `feat/single-app` 实现。目标：只留一个 App，也就是现在的 Harness Candidate；旧的正式 App 和研究原型退役。旧 App 里的数据不需要保留（用户 2026-10-21 确认）。
 
 ## 现状
 

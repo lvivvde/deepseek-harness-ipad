@@ -1,5 +1,7 @@
 # 模型流式网关设计
 
+> 2026-10-21：文中的研究 App 和原型代码（`runtime/prototypes/`、`ios/LinuxPrototype` 等）已随[单一 App 方案](single-app-plan.md)删除，可在提交 `111817f` 及以前的 Git 历史中查看。 网关已接进 App（`AppHost`）。
+
 依据：[ADR 0003](../adr/0003-native-worker-with-project-linux.md)，[#39](https://github.com/lvivvde/deepseek-harness-ipad/issues/39) 关口 4。2026-10-06 创建。
 
 代码在 `ios/HarnessApp/Sources/ModelGateway/`（SwiftPM 目标 `ModelGateway`），测试在 `ios/HarnessApp/ModelGatewayTests/`。研究 App 和 macOS 宿主的接线在 `runtime/prototypes/plan500-ipad/`：`Sources/WorkerBridge.swift`、`web/worker-bridge.js`、`web/integration.html` 和 `fault_server.py`。这一层还没有接进正式 App 工程，接入属于 #17。

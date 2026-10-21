@@ -1,5 +1,7 @@
 # 官方 Harness 的 iPad App 适配 Spec
 
+> 2026-10-21：文中的研究 App 和原型代码（`runtime/prototypes/`、`ios/LinuxPrototype` 等）已随[单一 App 方案](single-app-plan.md)删除，可在提交 `111817f` 及以前的 Git 历史中查看。 本文描述的旧正式 App（`org.lvivvde.harness.ipad`）也已退役，现在的 App 见 [ios/HarnessApp/README.md](../../ios/HarnessApp/README.md)。
+
 状态：2026-10-04，M1–M3 核心实现已进入 main，工具与存储设置已补代码；真机验收仍待集中完成。本文固定应用体验并接入已关闭的首版范围、工作区与插件决策；实现状态见任务表，验收结论见验证记录。
 
 追踪入口：[规格：官方 Harness 的 iPad 全屏 App 适配与可安装版本](https://github.com/lvivvde/deepseek-harness-ipad/issues/15)。

@@ -43,9 +43,9 @@
 
 `native` 项在任何状态下都可用。`unsupported` 项始终不可用，原因 `SHARE_MODE_NONE`。阶段规则见 [linux-plugin-scheduling.md](linux-plugin-scheduling.md)。
 
-## 候选 App 的声明
+## App 的声明
 
-候选 App（#17）显示的是正式范围加上候选 App 自己的缺口，由 `CandidateHost.candidateDeclaration` 生成。路径划分不变，不足之处写进声明，不隐藏：
+App（#17 时称候选 App）显示的是正式范围加上 App 自己的缺口，由 `AppHost.gapDeclaration` 生成。路径划分不变，不足之处写进声明，不隐藏：
 
 - `git.write`：只有在 shell 中运行的 git 走 Linux。官方 Worker 自己调用的 git（变更审阅）解析到原生只读 Git，超出只读子集以退出码 128 拒绝；官方网页版没有发起仓库写操作的调用方。可用时附原因 `SHELL_ONLY`。
 - `hook.command`：项目内的 hook 走 Linux，但官方网页版不加载 hook 插件，没有调用方，只由桥接测试覆盖。可用时附原因 `NO_OFFICIAL_CALLER`。

@@ -33,9 +33,9 @@ Git 写操作和 hook 不在本选型内，仍然走项目 Linux，见 [git-writ
 
 ## 代码与验证
 
-- JS 模块：`runtime/prototypes/plan500-ipad/web/native-git-objects.js`、`native-git-match.js`、`native-git-xdiff.js`、`native-git.js`。
+- JS 模块：`runtime/native-git/native-git-objects.js`、`native-git-match.js`、`native-git-xdiff.js`、`native-git.js`。
 - Swift 宿主：`ios/HarnessApp/Sources/NativeTools/GitHost.swift`（`NativeGitHost`）。它在私有的 JSContext 里运行上面四个模块，文件访问经 `NativePathSpace` 落到原生工作区。
-- 差分测试：`runtime/prototypes/plan500-ipad/test_native_git.mjs`。每种调用都在同一仓库上分别跑本实现和 `/usr/bin/git`，要求以下各项一致：
+- 差分测试：`runtime/native-git/test_native_git.mjs`。每种调用都在同一仓库上分别跑本实现和 `/usr/bin/git`，要求以下各项一致：
   - 退出码、stdout、stderr
   - 解析后的索引条目、对象集合
   - `.git` 未被改动

@@ -21,7 +21,10 @@
 - 私有签名文件可以设 `PRODUCT_BUNDLE_IDENTIFIER`，给从源码自建的人用。
 - `make` 只剩 `doctor`、`check`、`test`、`web`、`app`、`ipad`。
 - 已验证（macOS）：`make check`、`make test` 通过（Swift 全部测试包无失败；Worker 恢复 9、桥接 21、插件 11 + 1 项需联网的跳过、原生 Git 10；构建闸门 15；镜像构建 16，7 项缺依赖跳过）。
-- 待做：`make ipad` 签名构建，装到 iPad 冒烟（打开项目、Linux 命令、Git 提交、模型回答一次），卸载旧正式 App，开 PR。
+- 版本号 1.0.0；签名的 iPad 构建同时写出自用的 `DeepSeekHarness.ipa`（不发布）。
+- 设备工具只剩只读 `scripts/device.py probe`，私有脚本导入它的 `Session`；接线的 iPad 在通道建立前也算已连接。
+- iPad：1.0.0 的 IPA 已覆盖安装并启动（可执行名 `DeepSeekHarness`）；旧正式 App 和研究 App 已不在设备上。用户决定不做冒烟测试，先出成品。
+- 待做：PR 合并。
 
 第 2 步（去掉 `system.raw` 里约 537 MB 的 `/opt/harness`，需重建镜像并重跑 Linux 验收）以后再做。
 
@@ -39,7 +42,7 @@
 
 **下一步：**
 
-1. 完成第 1 步的 iPad 冒烟和 PR（见上）。
+1. 合并第 1 步的 PR（见上）。
 2. 可选：第 2 步精简系统盘。
 3. 可选：桥接对 shell 执行也重试 `LEASE_BUSY`。
 
@@ -74,7 +77,7 @@
 - `build/test-dependencies/harness/`、`build/worker-dependencies/`：固定官方依赖（`npm ci` 装出）。设置 `HARNESS_TEST_MODULES="$PWD/build/test-dependencies/harness/node_modules"` 后镜像构建测试不跳过。
 - `build/guest/`：App 用的 guest 输入（含 0600 的 `token-private`）；`build/executor/`：QEMU framework 闭包。
 - `build/app/`：`Web/`（网页根目录与 `web-receipt.json`）、`app/`、`ipad/`、`ipad-signed-rNN/`（签名构建与收据，r28 前为改名前的构建）、`run/`（macOS 数据根）。
-- `build/app/device/`：私有设备脚本。`device-private.py`（free-slot、install、launch、running、terminate、pull）、`measure-auto-private.py`（内置探针各阶段）、`stack-private.py`（停住取栈再 detach，不杀进程）及历次证据。脚本按可执行名 `DeepSeekHarness` 找进程；r28 及以前的构建叫 `HarnessCandidateApp`。
+- `build/app/device/`：私有设备脚本。`device-private.py`（install、launch、running、terminate、pull 等，依赖 `scripts/device.py`）、`measure-auto-private.py`（内置探针各阶段）、`stack-private.py`（停住取栈再 detach，不杀进程）及历次证据。脚本按可执行名 `DeepSeekHarness` 找进程；r28 及以前的构建叫 `HarnessCandidateApp`。
 - Lima `ubuntu` 内可构建 guest 和跑 Linux 验收，只用隔离盘，不读 iPad 原盘。
 - 旧 App 与原型的历史资产：`build/maintenance19/`、`build/prototypes/`、`build/issue39-*`、`build/acceptance-archive/`，可按需清理。
 

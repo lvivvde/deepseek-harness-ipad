@@ -47,6 +47,8 @@ python3 runtime/app/build.py --sdk iphoneos --signing-file build/my-signing.json
 xcrun devicectl device install app --device <设备> build/app/ipad-signed/derived/Build/Products/Release-iphoneos/DeepSeekHarness.app
 ```
 
+签名的 iPad 构建还会写出 `build/app/ipad-signed/DeepSeekHarness.ipa`，只给自己装（比如用 Xcode 的 Devices 窗口拖进去），不要公开发布。
+
 新 bundle ID 第一次用命令行签名会报 "No Accounts"：先用 Xcode 打开生成的 `build/app/ipad-signed/project/DeepSeekHarness.xcodeproj`，选上团队运行一次，生成描述文件，之后命令行就能复用。构建收据在输出目录的 `build-safe.json`。
 
 ## 使用

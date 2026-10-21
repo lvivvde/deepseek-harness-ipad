@@ -32,6 +32,7 @@ FILES = ('Image', 'initramfs.gz', 'system.raw')
 GIT_SCRIPTS = ('native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js')
 BUNDLE_ID = 'org.lvivvde.harness.candidate'
 NAME = 'DeepSeekHarness'  # not the package module's name
+VERSION = '1.0.0'
 PRODUCTS = ('HarnessCore', 'ModelGateway')
 
 
@@ -148,7 +149,7 @@ def project(output, sdk):
     info = {
         'CFBundleDisplayName': 'DeepSeek Harness', 'CFBundleExecutable': '$(EXECUTABLE_NAME)',
         'CFBundleIdentifier': '$(PRODUCT_BUNDLE_IDENTIFIER)', 'CFBundleName': NAME,
-        'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.1.0', 'CFBundleVersion': '1',
+        'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': VERSION, 'CFBundleVersion': '1',
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
     }
     info.update({'LSMinimumSystemVersion': '$(MACOSX_DEPLOYMENT_TARGET)', 'NSPrincipalClass': 'NSApplication'} if mac else {
@@ -265,6 +266,15 @@ def main():
                                                   capture_output=True).returncode != 0:
             raise ValueError('SIGNATURE_REFUSED')
     signed = completed and signing is not None
+    ipa = output / (NAME + '.ipa') if signed and device else None
+    if ipa:
+        # Personal sideloading only; the IPA is never published (docs/design/distribution-components.md).
+        payload = output / 'ipa' / 'Payload'
+        shutil.rmtree(payload.parent, ignore_errors=True)
+        payload.mkdir(parents=True)
+        subprocess.run(['cp', '-cR', str(app), str(payload)], check=True)
+        subprocess.run(['ditto', '-c', '-k', '--norsrc', str(payload.parent), str(ipa)], check=True)
+        shutil.rmtree(payload.parent)
     receipt = {'completed': completed, 'bundleId': bundle_id, 'platform': sdk, 'signed': signed, 'installed': False,
                'inputs': manifest['files'], 'leaseSourceSha256': manifest['leaseSourceSha256'],
                'web': {'harnessVersion': web_receipt.get('harnessVersion'), 'runtimeVersion': web_receipt.get('runtimeVersion'),
@@ -272,10 +282,11 @@ def main():
                'executor': executor,
                'appSourceSha256': {p.name: digest(p) for p in sorted(APP_SOURCES.glob('*.swift'))},
                'coreSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/Core').glob('*.swift'))},
-               'appBinarySha256': digest(binary) if completed else None}
+               'appBinarySha256': digest(binary) if completed else None,
+               'version': VERSION, 'ipaSha256': digest(ipa) if ipa else None}
     (output / 'build-safe.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps({'completed': completed, 'bundleId': bundle_id, 'platform': sdk, 'signed': signed, 'installed': False,
-                      'app': str(app.relative_to(REPO)), 'receipt': str((output / 'build-safe.json').relative_to(REPO))}))
+                      'app': str(app.relative_to(REPO)), 'ipa': str(ipa.relative_to(REPO)) if ipa else None, 'receipt': str((output / 'build-safe.json').relative_to(REPO))}))
     return 0 if completed else 1
 
 

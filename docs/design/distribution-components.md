@@ -1,9 +1,14 @@
 # 分发组件清单（给 #14 的材料）
 
-**状态：已按 iPad 候选构建收据核对（2026-10-11）。** 本文列出候选 App 随 IPA 分发的组件。核对用的是当前装在用户 iPad 上的签名构建 r9（与 main `021959c` 的源码一致）。iPad `.app` 约 1.1 GB：Linux 输入约 1.0 GB，执行器约 100 MB。
+**状态：已按 iPad 候选构建收据核对（2026-10-21，r28）。** 本文列出候选 App 随 IPA 分发的组件。核对用的是当前装在用户 iPad 上的签名构建 r28（与 main `7eb19c1` 的源码一致；之后的 main 只改了文档）。上一次核对是 2026-10-11 的 r9。iPad `.app` 约 1.1 GB：Linux 输入约 1.0 GB，执行器约 100 MB。给法律判断用的问题见 [许可证审查简报](license-review-brief.md)。
 
 - 组件集合与各文件 SHA256 以 iPad 构建收据（`build-safe.json` 的 `inputs`、`web`、`executor` 字段）为准。`executor` 记的是核对过的源闭包，即构建脚本剥离旧签名、重新签名之前的文件，所以与安装包内的二进制摘要不同。收据只留在忽略的 `build/`，公开时只记脱敏结果。
-- r9 收据与本表一致：22 个 framework（第 4 节），3 个 guest 输入（第 5 节），网页根目录 139 个文件，其中有 4 个原生 Git 脚本（第 2 节）、318 个 npm 包（第 3 节），以及 12 项适配。
+- r28 收据与本表一致：22 个 framework（第 4 节），3 个 guest 输入（第 5 节），网页根目录 139 个文件，其中有 4 个原生 Git 脚本（第 2 节）、318 个 npm 包（第 3 节），以及 22 项适配。
+- 自 r9 以来的变化：
+  - 适配从 12 项增加到 22 项：插件安装 9 项和终端辅助键 1 项（第 3 节第 9、10 条）。
+  - 新增 Swift 文件 `PackageStore.swift` 和 `CandidateKeyRow.swift`（第 1 节）。
+  - guest agent 加了开发服务器转发和 Git 配置隔离，因此 initramfs 的摘要变了（第 5 节）。
+  - 执行器、`Image`、`system.raw` 和两个锁文件都没变。
 - 许可证结论属于 #14，不在 #17 范围内。本表只记来源和链接方式；已知的许可证事实只是供 #14 核对的线索，不是判断。
 
 ## 1. App 自有 Swift 代码
@@ -18,11 +23,11 @@
 | `ModelGateway` | 模型请求的增量流式网关 |
 | `NativeTools` | 原生文件、搜索和图片工具，以及原生 Git 宿主 |
 | `UserDataMigration` | 隔离副本的迁入与核验 |
-| `HarnessCandidate` | 候选 App 的原生权威 `CandidateHost`、项目登记、VM 接口（iPad 上为进程内 `EmbeddedMachine`）与关口 1 探针 |
+| `HarnessCandidate` | 候选 App 的原生权威 `CandidateHost`、项目登记、VM 接口（iPad 上为进程内 `EmbeddedMachine`）、插件 tarball 存储 `PackageStore` 与测量探针 |
 
-候选 App 外壳在 `ios/HarnessApp/CandidateApp/Sources`，包括 SwiftUI 界面、WKWebView 宿主和回环资源服务。工程由 `runtime/candidate/build.py` 生成。
+候选 App 外壳在 `ios/HarnessApp/CandidateApp/Sources`，包括 SwiftUI 界面、WKWebView 宿主、回环资源服务和终端辅助键排。工程由 `runtime/candidate/build.py` 生成。
 
-仓库根目录目前没有 `LICENSE` 文件。[runtime-licensing.md](../research/runtime-licensing.md) 第 2 条的“MIT 并公开源码”仍只是计划。
+仓库根目录目前没有 `LICENSE` 文件。[runtime-licensing.md](../research/runtime-licensing.md) 第 2 条的“MIT 并公开源码”仍只是计划，见[简报](license-review-brief.md)问题 6。
 
 ## 2. 原生只读 Git（新增）
 
@@ -32,8 +37,8 @@
 | --- | --- | --- |
 | `native-git.js` | 派生自 git | GPLv2 |
 | `native-git-match.js` | git 的 `wildmatch.c`、`dir.c`、`attr.c`、`quote.c` | GPLv2 |
-| `native-git-xdiff.js` | git 自带的 LibXDiff（`xdiffi.c`、`xprepare.c`、`xutils.c`） | LGPL（LibXDiff，Davide Libenzi） |
-| `native-git-objects.js` | 按 git 的对象和 pack 格式自写 | 待 #14 核对 |
+| `native-git-xdiff.js` | git 自带的 LibXDiff（`xdiffi.c`、`xprepare.c`、`xutils.c`） | LGPL-2.1-or-later（LibXDiff，Davide Libenzi） |
+| `native-git-objects.js` | 按 git v2.54.0 的对象和 pack 格式自写 | 文件头没有许可证声明，只说明按 git 的格式读写（2026-10-21 核对） |
 
 文件现在位于 `runtime/prototypes/plan500-ipad/web/`。候选 App 的网页根目录由 `runtime/candidate/prepare.mjs` 从这里复制，并按哈希收据核对。选型理由见 [native-read-only-git.md](native-read-only-git.md)。
 
@@ -77,6 +82,9 @@
    - 项目内的交互式终端在 guest 的 pty 上运行 `/bin/bash -i`，输出经长轮询读回，交给官方终端控制器。只接受 `/bin/bash -i`。
 
    - 会话恢复 module 等官方 flush 后采集 home，并等待原生耐久确认；新增保存帧用于手动重试和前后台保存尝试。恢复受阻时不启动官方树。
+9. **插件安装**（`candidate-pnpm.js`、`prepare.mjs`，#23）：Worker 里的虚拟 `pnpm` 回答官方插件管理器；补上 `execa`、`events.once`、home 内模块解析和插件元数据解析；插件模块按需降级；卸载锚点改到 `config/candidate-installation.json`；入口静态导入 Worker 没有的内置模块时拒绝安装。官方 web 预览保留 profile 自己的 `package.json`。
+   - 插件是用户在 App 里自己从 npm 源下载的，不随 IPA 分发；IPA 里只有安装器。
+10. **终端辅助键**（`prepare.mjs` 的 `patchTerminalClient`，#23）：在 `dsh-client-ui-sidebar-terminal` 的副本里给终端窗格加一个输入入口，原生辅助键排经它写入。
 
 网页收据 `candidate-receipt.json` 的 `adaptations` 字段逐项列出上述改动。
 
@@ -91,11 +99,11 @@
 | 文件 | 内容 | 来源 |
 | --- | --- | --- |
 | `Image` | 内核 Alpine `6.18.52-0-virt` | Alpine 3.23 netboot，见 [miniguest-build-sources.md](../prototypes/miniguest-build-sources.md) |
-| `initramfs.gz` | 写租约 initramfs：BusyBox、补入的 9P 等模块、租约 `/init` 和 guest agent | 见下文“initramfs” |
+| `initramfs.gz` | 写租约 initramfs：BusyBox、补入的 9P 等模块、租约 `/init` 和 guest agent | 见下文“initramfs”；r28 的 SHA256 以 `5ab1acf5` 开头 |
 | `system.raw` | 1 GiB 只读 ext4 系统盘，含 Debian 13 用户态、Node `24.21.0` 和 Git `2.47.3` | 见下文“system.raw” |
-| guest agent | 租约、取消和撤销协议 | `runtime/prototypes/plan500-lease/agent.cjs`，打进 initramfs |
+| guest agent | 租约、取消和撤销协议，开发服务器转发（4501），guest 命令的 Git 配置隔离 | `runtime/prototypes/plan500-lease/agent.cjs`，打进 initramfs |
 
-各输入的 SHA256 记在 [plan500-darwin.md](../research/plan500-darwin.md) 的输入表里。
+`Image` 和 `system.raw` 的 SHA256 记在 [plan500-darwin.md](../research/plan500-darwin.md) 的输入表里。表中的 initramfs 是更早的探针版本；之后 guest agent 每改一次（例如 #23 加开发服务器转发），initramfs 就重新生成一次，所以以构建收据为准。
 
 研究 App 和候选 App 构建时都会逐个核对这些文件的 SHA256，见 `runtime/prototypes/plan500-ipad/build.py` 和 `runtime/candidate/build.py`。候选构建还要求 initramfs 中的 guest agent 与已提交的 `agent.cjs`、`init.sh` 一致。用户盘不随 IPA 分发，也不会被覆盖。
 

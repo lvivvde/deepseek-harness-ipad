@@ -25,6 +25,7 @@
 | 官方界面安装 `@jonathanleelx/dsh-balance`，启用 | 通过 | 通过（2026-10-20）：store 有 1 个 tarball，锁文件和 `dependencies` 记录 0.1.0，`bundles` 含该插件 |
 | 重启 App 后插件仍在、仍启用 | 通过 | 通过 |
 | 官方界面卸载（`dsh-free-search`），store 同步清理 | 通过，store 剩 1 个 tarball | 未测（与 macOS 同一份 Worker 代码） |
+| 模型通过插件查询余额（用户在设备上输入真实 Key） | — | 通过（2026-10-21，r28，用户报告，未拉取证据） |
 | 安装 `dsh-balance`（无 scope，0.2.7）被官方兼容检查拒绝：同级依赖 `@deepseek-ai/dsh-credentials` 不在 DSH 0.2.0-rc.2 里 | — | 通过，界面显示不兼容原因 |
 | 安装 `dsh-free-search` 被拒，界面显示原因，什么都不改 | 通过：`ERR_PNPM_UNSUPPORTED_PLATFORM dsh-free-search needs node:https, which the plugin Worker does not provide` | — |
 
@@ -40,4 +41,5 @@
 ## 未验证
 
 - iPad 上的卸载与拒绝 `node:https` 插件：只在 macOS 测过。
-- 模型通过插件调用工具（例如 dsh-balance 的余额查询），需要用户在设备上输入真实 Key。
+- 需要 Linux 的社区插件：还没有找到能装进来的样例，没测。
+- 升级：见上面“限制”。

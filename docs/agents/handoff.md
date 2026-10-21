@@ -114,7 +114,7 @@
 - 候选 App 接入 `UserDataMigrator`（`BackupImport`、设置页“Import backup…”、`HARNESS_CANDIDATE_IMPORT=1`）；合成备份真机导入 `passed`，旧 home 经 Worker 恢复并入一次。
 - 已验证（macOS，最后一次代码改动 `1bf5b71` 之后，2026-10-11）：`make test-app` 全量 8 个测试包共 224 项，无失败、跳过或警告（候选宿主 19、导入 7、测量 6 项）；`make check`、`make test-candidate`（恢复 9、桥接 20、构建 15）通过。
 - 顺带修正 `QemuMachineTests` 读取未写完参数文件的时序窗口（替身脚本改为写临时文件后 rename）。
-- #14 组件清单已按 iPad r28 收据重新核对（2026-10-21；上次是 r9），并记下 `system.raw` 构建配方，见 [分发组件](../design/distribution-components.md)。需要法律判断的六个问题（R1、R3、策略 A 与 MIT 外壳，以及新发现的 App 内 GPLv2/LGPL Git JS、官方包改动、仓库缺 `LICENSE`）整理在 [许可证审查简报](../design/license-review-brief.md)。本项目不下法律结论。
+- #14 组件清单已按 iPad r28 收据重新核对（2026-10-21；上次是 r9），并记下 `system.raw` 构建配方，见 [分发组件](../design/distribution-components.md)。需要法律判断的六个问题（R1、R3、策略 A 与 MIT 外壳，以及新发现的 App 内 GPLv2/LGPL Git JS、官方包改动、仓库缺 `LICENSE`）整理在 [许可证审查简报](../design/license-review-brief.md)。本项目不下法律结论。审查结果（2026-10-21，用户转述律师朋友的意见）：六个问题都没有问题；不发布 IPA，只公开源码。仓库本已公开，已补根目录 MIT `LICENSE`；为分发 IPA 准备的工程项（对应源码包、开源许可页、自建 QEMU）不做。
 - 缺 Key 改为 401 `authentication_error`（官方归为 AUTH，不重试；桥接测试已过，真机未在缺 Key 时发过一轮）；新增探针阶段 `imported`（`HARNESS_CANDIDATE_MEASURE=imported` + `HARNESS_CANDIDATE_MEASURE_PROJECT=<名字>`）。
 - 已验证（真机，2026-10-11，签名 r13，`build/candidate/ipad-signed-r13/`）：旧导出器生成的假凭据备份（`device/oldexport-fake/`，两个项目）经 `measure-auto-private.py import-old` 导入 `passed`。两个项目 Linux 就绪，guest 与原生条目数一致；工作区逐文件 `demo` 6/6、`演示` 4/4；home 并入一次、会话改键、无凭据。证据 `device/measure-auto-165653`，补查在 `device/ro-check-183446`。
 - 工具约束：`devicectl device info files --recurse` 会漏掉某个目录的内容（这次漏了 `demo/ro/inside.txt`，文件本身在设备上）。私有 `device-private.py pull` 已改为逐个目录列出（旧版为 `device-private.py.bak-*`），见 [真机自动化](../validation/ipad-device-automation.md)“读取 App 容器”。
@@ -147,7 +147,7 @@
 
 **下一步：**
 
-1. #14：等用户安排的审查人对[简报](../design/license-review-brief.md)的六个问题给出判断，结论记回简报或 #14。之后再做工程项：对应源码收集脚本（输出到 `build/`）、App 内开源许可页、根目录 `LICENSE`，R1 不可接受时自建 QEMU。不发布 GitHub Release。
+1. #14：审查已有结果，见[简报](../design/license-review-brief.md)。不发布 IPA 和 GitHub Release；以后要发布 IPA 须重新审查。是否关闭 #14 由用户决定。
 2. #23 已关闭（2026-10-21），未测项写在关闭评论里。测试仓库是否删除由用户决定。
 3. 可选后续：导入时保留会话文件的修改时间；查清修复前那次一直显示“Importing…”的原因（r16 上未复现）。
 4. 可选后续：桥接对 shell 执行也重试 `LEASE_BUSY`。
@@ -159,7 +159,7 @@
 | [#15 路线图](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) | 总入口；执行顺序 39→17→18→23→14。#1、#16、#17、#19、#32、#39 已关闭，作为历史保留。 |
 | [#18 Git 开发闭环验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/18) | 已关闭（2026-10-19）。6 步通过；发现 #63/#64 已修复并关闭（PR #62）。推送只用用户授权的测试远端。 |
 | [#23 插件/预览/键盘/前后台验收](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) | 已关闭（2026-10-21）。预览与 HMR 已在真机通过（r26），插件安装已在真机通过（r27），键盘、中文输入法、前后台、预览面板、模型调用插件、停止重发、项目切换已在真机通过（r28），未测项见交接。“重试”是重提任务，同进程不重启 QEMU；dev server 默认 `linux`；阈值已确认（2026-10-19）。仍带 `needs-triage`。 |
-| [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 当前任务。组件清单已按 r28 核对，见[分发组件](../design/distribution-components.md)；需法律判断的问题见[许可证审查简报](../design/license-review-brief.md)，由用户安排审查人。含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
+| [#14 许可证与对应源码审查](https://github.com/lvivvde/deepseek-harness-ipad/issues/14) | 审查已有结果（2026-10-21）：不发布 IPA，只公开源码，见[许可证审查简报](../design/license-review-brief.md)。组件清单已按 r28 核对，见[分发组件](../design/distribution-components.md)。含 Worker bundle、适配补丁、原生只读 Git 与原生搜索。不发布 GitHub Release。仍带 `needs-triage`。 |
 
 ## 已交付基线
 

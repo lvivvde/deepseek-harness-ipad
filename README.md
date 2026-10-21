@@ -1,8 +1,8 @@
 # DeepSeek Harness for iPad
 
-目标：探索将 DeepSeek Harness 做成可在普通未越狱 iPad 上本地完成项目生产的应用，并最终提供可供使用者自行签名安装的 IPA。
+目标：探索将 DeepSeek Harness 做成可在普通未越狱 iPad 上本地完成项目生产的应用。本项目只公开源码，不发布 IPA；想用的人从源码自行构建、签名安装（见[许可证审查简报](docs/design/license-review-brief.md)）。
 
-当前状态（2026-10-05）：正式 Harness App 的入口、内置 Linux 运行时、独立用户盘、备份恢复和存储工具已进入 main。最近验证的 iPad 安装基线为 `7956e8c`，包含导出中断修复；覆盖安装前后的 83 个文件一致，冷启动及重启后的首次导出复测通过。签名截止为 2026-10-12 15:49:52（北京时间），后续须按实际签名检查维护。完整开发闭环及未完成的真机验收见 [开发交接](docs/agents/handoff.md)。
+当前状态（2026-10-21）：完整功能在独立的候选 App（Harness Candidate，`make candidate-app`）里，已在 iPad 上验收 Linux 项目、Git 开发闭环、插件安装、预览与 HMR、键盘和前后台恢复。正式 App 仍停在基线 `7956e8c`，没有用上新架构。未测项和已知缺口见 [开发交接](docs/agents/handoff.md)。
 
 当前路线图由 [iPad 原生基础能力与 Linux 兼容插件 #15](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) 承载；#1 是历史规划归档。现有应用沿用官方界面，项目放在设备内持久化用户盘。新的“原生优先”候选仍处于方案500研究阶段，正式架构以现有 ADR 为准。
 
@@ -36,9 +36,7 @@ make check
 
 新会话先读 [开发交接](docs/agents/handoff.md)，其中列出主干/已安装包差异、开放任务、已验证和未完成项。真机连接、独立 runner 构建和页面检查使用 [真机自动化工具](docs/validation/ipad-device-automation.md)，本机设备/签名与证据保存在忽略的 `build/`。
 
-当前先推进现有版本维护 #19 与[方案500架构研究 #32](https://github.com/lvivvde/deepseek-harness-ipad/issues/32)。研究候选为官方实验 Worker + Swift 工作区桥 + Linux 能力网关：macOS Worker 持久化探针已通过，真实 Linux 的两种共享模式各通过 23 项协议检查，但跨域锁和文件通知等共享语义仍有缺口。详细结果见[可行性研究](docs/research/plan500-feasibility.md)与[共享工作区/RPC 报告](docs/research/plan500-sharing-rpc.md)，代码保存在[草稿 PR36](https://github.com/lvivvde/deepseek-harness-ipad/pull/36)。
-
-下一研究关口是统一写租约、版本冲突与变更通知/轮询，然后补 Darwin/iPad 和真实模型路径。#17 实现仍等待 #32 的架构决定；开发闭环 #18、交互验收 #23 和发布审查 #14 按依赖推进。用户取消的锁屏/8 小时测试继续取消，公开发布仍待对应源码与许可证审查。
+架构以 [ADR 0003](docs/adr/0003-native-worker-with-project-linux.md) 为准：官方实验 Worker + Swift 原生权威 + 项目级 Linux。路线图 #15 的 #39、#17、#18、#23 已完成，许可证审查 #14 已有结果。用户取消的锁屏/8 小时测试继续取消。
 
 ## 参考资料
 

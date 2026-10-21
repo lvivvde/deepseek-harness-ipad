@@ -6,7 +6,7 @@ import {PassThrough} from 'node:stream';
 import path from 'node:path';
 import {existsSync, readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {candidateIndex, patchWorker} from './prepare.mjs';
+import {candidateIndex, patchTerminalClient, patchWorker} from './prepare.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridge = 'const EXECUTABLES = new Map();\n' + ['candidate-bridge.js', 'candidate-pnpm.js', 'session-recovery.js']
@@ -405,6 +405,15 @@ test('every Worker anchor occurs exactly once in the fixed official Worker', {sk
 });
 
 
+
+const terminalClient = path.join(here, '../../build/test-dependencies/harness/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js');
+test('the terminal pane exposes key row input while mounted', {skip: !existsSync(terminalClient) && 'official packages not prepared'}, () => {
+  const patched = patchTerminalClient(readFileSync(terminalClient, 'utf8'));
+  assert.ok(patched.indexOf('xterm.open(node);') < patched.indexOf('harnessTerminalInput = data'));
+  assert.ok(patched.indexOf('delete xterm.element.harnessTerminalInput') < patched.indexOf('xterm.dispose();'));
+  assert.match(patched, /if \(current\.current\.state\.writable\) model\.write\(data\)/);
+  assert.throws(() => patchTerminalClient('xterm.open(node);'), /Upstream anchor changed/);
+});
 test('official flush rejects a memory-only native acknowledgement', async () => {
   const {self, map} = load(body => body.operation === 'restore' ? {snapshot: null, worker: 'w'}
     : body.operation === 'checkpoint-begin' ? {capture: 'c', worker: 'w'}

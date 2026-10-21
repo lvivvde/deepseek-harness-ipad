@@ -1,6 +1,6 @@
 # #23 插件安装验收
 
-对应 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) 中的插件能力。真机证据只来自独立 bundle ID 的候选 App，macOS 只算回归证据。预览与 HMR 见 [预览与 HMR 验收](issue23-preview-hmr.md)；模型调用插件、键盘与中文输入法、前后台保持另行记录。
+对应 [#23](https://github.com/lvivvde/deepseek-harness-ipad/issues/23) 中的插件能力。真机证据只来自独立 bundle ID 的候选 App，macOS 只算回归证据。预览与 HMR 见 [预览与 HMR 验收](issue23-preview-hmr.md)；键盘与前后台见 [键盘与前后台验收](issue23-keyboard.md)；模型调用插件另行记录。
 
 ## 方案（用户 2026-10-19 选定“原生 JS 安装”）
 

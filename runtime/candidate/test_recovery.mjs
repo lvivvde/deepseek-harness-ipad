@@ -12,7 +12,7 @@ import {patchWorker} from './prepare.mjs';
 
 const repo = resolve(import.meta.dirname, '../..');
 const probe = process.env.HOME_RECOVERY_PROBE ?? join(repo, 'ios/HarnessApp/.build/debug/home-recovery-probe');
-const official = readFileSync(join(repo, 'build/prototypes/plan500-worker/dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib/worker.js'), 'utf8');
+const official = readFileSync(join(repo, 'build/worker-dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib/worker.js'), 'utf8');
 const image = gunzipSync(readFileSync(join(repo, 'build/candidate/CandidateWeb/vfs-image.tar.gz')));
 const bridge = ['candidate-bridge.js', 'candidate-pnpm.js', 'session-recovery.js']
   .map(name => readFileSync(join(import.meta.dirname, name), 'utf8')).join('\n');

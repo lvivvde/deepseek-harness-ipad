@@ -309,7 +309,7 @@ test('plugin metadata resolves through the Worker loader and reports misses as m
   assert.throws(() => exposed.candidateResolveResource('absent/locale/en.json', 'file:///dsh/home/package.json'), error => error.code === 'MODULE_NOT_FOUND');
 });
 
-const workerDependencies = path.join(here, '../../build/prototypes/plan500-worker/dependencies');
+const workerDependencies = path.join(here, '../../build/worker-dependencies');
 const loweringSkip = !existsSync(path.join(workerDependencies, 'node_modules/acorn')) && 'official worker runtime not installed';
 test('installed ES modules are lowered for the Worker loader; the stored tarball stays as published', {skip: loweringSkip}, async () => {
   const {loweringSource} = await import('./prepare.mjs');

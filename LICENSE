@@ -23,6 +23,6 @@ SOFTWARE.
 ---
 
 Files whose header states a different licence are under that licence instead.
-For example, runtime/prototypes/plan500-ipad/web/native-git.js and
+For example, runtime/native-git/native-git.js and
 native-git-match.js are derived from git and licensed under GPLv2, and
 native-git-xdiff.js is a port of LibXDiff under LGPL-2.1-or-later.

@@ -198,23 +198,6 @@ final class MeasureProbeTests: XCTestCase {
         XCTAssertEqual(try saved("background-idle")["done"] as? Bool, true)
     }
 
-    func testImportedWaitsForTheProjectThenSeesEveryEntryAndWrites() throws {
-        let host = try host(readyAfter: 0.2)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-            guard let project = try? host.registry.create(name: "demo", pluginEnabled: true) else { return }
-            let workspace = host.registry.workspace(project)
-            try? FileManager.default.createDirectory(atPath: workspace + "/src", withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: workspace + "/src/a.txt", contents: Data("a".utf8))
-            try? FileManager.default.createSymbolicLink(atPath: workspace + "/link", withDestinationPath: "missing")
-        }
-        let record = MeasureProbe.run(.imported, host: host, project: "demo", timing: timing())
-        XCTAssertEqual(record["passed"] as? Bool, true, "\(record)")
-        XCTAssertEqual(record["pluginEnabled"] as? Bool, true)
-        XCTAssertGreaterThanOrEqual(record["guestEntries"] as? Int ?? 0, 3)
-        XCTAssertEqual(MeasureProbe.run(.imported, host: try self.host(readyAfter: 0), project: "absent", timing: {
-            var short = timing(); short.ready = 0.2; return short }())["failure"] as? String, "PROJECT_UNKNOWN")
-    }
-
     func testExecutionSettlesCancelsTerminalLeasesAndAVMExit() throws {
         let record = MeasureProbe.run(.execution, host: try host(readyAfter: 0), timing: timing())
         XCTAssertEqual(record["passed"] as? Bool, true, "\(record)")

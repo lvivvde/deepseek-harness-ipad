@@ -395,7 +395,7 @@ test('the index runs the connector before the official entry', () => {
   assert.throws(() => candidateIndex('<head></head>'), /Upstream anchor changed/);
 });
 
-const official = path.join(here, '../../build/prototypes/plan500-worker/dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib/worker.js');
+const official = path.join(here, '../../build/worker-dependencies/node_modules/@deepseek-ai/dsh-experimental-webworker-runtime/lib/worker.js');
 test('every Worker anchor occurs exactly once in the fixed official Worker', {skip: !existsSync(official) && 'official Worker not prepared'}, () => {
   const patched = patchWorker(readFileSync(official, 'utf8'), '// bridge');
   for (const hook of ['candidateRestore?.(mounted)', 'candidateInstall?.(ctx, loader, mounted)', 'self.candidateFsRoute(name, args, base)',

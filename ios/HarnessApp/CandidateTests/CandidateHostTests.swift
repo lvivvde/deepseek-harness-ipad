@@ -108,7 +108,7 @@ final class CandidateHostTests: XCTestCase {
 
     static func gitScripts() throws -> [(name: String, source: String)] {
         let web = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("../../../runtime/prototypes/plan500-ipad/web").standardized
+            .appendingPathComponent("../../../runtime/native-git").standardized
         return try CandidateHost.gitScriptNames.map { ($0, try String(contentsOf: web.appendingPathComponent($0), encoding: .utf8)) }
     }
 

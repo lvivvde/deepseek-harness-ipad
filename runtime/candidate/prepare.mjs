@@ -141,7 +141,7 @@ function main() {
     return resolve(index < 0 ? fallback : process.argv[index + 1]);
   };
   const harness = option('--harness', join(repo, 'build/test-dependencies/harness'));
-  const workerDependencies = option('--worker-dependencies', join(repo, 'build/prototypes/plan500-worker/dependencies'));
+  const workerDependencies = option('--worker-dependencies', join(repo, 'build/worker-dependencies'));
   const out = option('--out', join(repo, 'build/candidate/CandidateWeb'));
   const scratch = join(dirname(out), 'scratch');
   rmSync(scratch, {recursive: true, force: true});
@@ -221,7 +221,7 @@ function main() {
   for (const name of readdirSync(dist)) if (name !== 'index.html') cpSync(join(dist, name), join(out, name), {recursive: true});
   writeFileSync(join(out, 'index.html'), candidateIndex(readFileSync(join(dist, 'index.html'), 'utf8')));
   // Native git runs in the App's JavaScriptCore, not in the Worker; the App loads these from the bundle.
-  const git = join(repo, 'runtime/prototypes/plan500-ipad/web');
+  const git = join(repo, 'runtime/native-git');
   for (const name of gitScripts) cpSync(join(git, name), join(out, name));
 
   const version = path => JSON.parse(readFileSync(path, 'utf8')).version;

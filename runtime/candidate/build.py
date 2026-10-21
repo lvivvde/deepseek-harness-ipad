@@ -23,8 +23,8 @@ SOURCE = Path(__file__).resolve().parent
 REPO = SOURCE.parents[1]
 PACKAGE = REPO / 'ios/HarnessApp'
 APP_SOURCES = PACKAGE / 'CandidateApp/Sources'
-LEASE = REPO / 'runtime/prototypes/plan500-lease'
-EXECUTOR = REPO / 'ios/LinuxPrototype/.runtime'
+LEASE = REPO / 'runtime/guest-agent'
+EXECUTOR = REPO / 'build/executor'
 QEMU = 'qemu-aarch64-softmmu.framework'
 SIGNING = {'DEVELOPMENT_TEAM', 'CODE_SIGN_STYLE', 'PROVISIONING_PROFILE_SPECIFIER'}
 FILES = ('Image', 'initramfs.gz', 'system.raw')
@@ -211,7 +211,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk', choices=['macosx', 'iphoneos'], default='macosx')
     parser.add_argument('--web', type=Path, default=REPO / 'build/candidate/CandidateWeb')
-    parser.add_argument('--inputs', type=Path, default=REPO / 'build/prototypes/plan500-darwin/inputs')
+    parser.add_argument('--inputs', type=Path, default=REPO / 'build/guest')
     parser.add_argument('--executor', type=Path, default=EXECUTOR, help='iPad: prepared QEMU framework closure')
     parser.add_argument('--signing-file', type=Path, help='iPad: private JSON with the team (and style, profile)')
     parser.add_argument('--output', type=Path)

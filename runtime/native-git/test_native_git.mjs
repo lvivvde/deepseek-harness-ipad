@@ -11,7 +11,7 @@ const GIT = '/usr/bin/git';
 const skip = spawnSync(GIT, ['--version']).status === 0 ? false : 'no /usr/bin/git';
 const context = createContext({TextEncoder, TextDecoder});
 for (const name of ['native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js']) {
-  runInContext(fs.readFileSync(new URL(`./web/${name}`, import.meta.url), 'utf8'), context, {filename: name});
+  runInContext(fs.readFileSync(new URL(`./${name}`, import.meta.url), 'utf8'), context, {filename: name});
 }
 const native = context.DshNativeGit.run;
 

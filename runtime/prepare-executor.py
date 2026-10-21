@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Throwaway staging tool for the pinned official ios-tci-arm64 sysroot.
+"""Stage the iPad executor (QEMU and its framework closure) from the pinned UTM SE ios-tci-arm64 sysroot.
 
-Usage: python3 scripts/prepare-runtime.py /path/to/sysroot-iOS-TCI-arm64
-Does not download, redistribute, or certify component license compliance.
+Usage: python3 runtime/prepare-executor.py /path/to/sysroot-iOS-TCI-arm64
+Output goes to ignored build/executor, which `make ipad` embeds. Does not download anything.
 """
 import hashlib
 import json
@@ -14,7 +14,7 @@ import sys
 
 sysroot = Path(sys.argv[1]).resolve()
 frameworks = sysroot / "Frameworks"
-destination = Path(__file__).resolve().parents[1] / ".runtime"
+destination = Path(__file__).resolve().parents[1] / "build/executor"
 pending = ["qemu-aarch64-softmmu"]
 selected = set()
 while pending:
@@ -43,7 +43,7 @@ platform = subprocess.check_output(["xcrun", "vtool", "-show-build", str(qemu)],
 if not re.search(r"platform\s+IOS\b", platform):
     raise SystemExit("QEMU is not a device iOS binary")
 
-destination.mkdir(exist_ok=True)
+destination.mkdir(parents=True, exist_ok=True)
 output = destination / "Frameworks"
 if output.exists():
     shutil.rmtree(output)  # Generated scratch staging, never the source sysroot.
@@ -69,4 +69,4 @@ if firmware.exists():
     "platformInspection": platform,
     "frameworks": records,
 }, indent=2) + "\n")
-print(f"Staged {len(selected)} framework(s); source/digest inventory stays in ignored .runtime/frameworks.json")
+print(f"Staged {len(selected)} framework(s); source/digest inventory stays in ignored build/executor/frameworks.json")

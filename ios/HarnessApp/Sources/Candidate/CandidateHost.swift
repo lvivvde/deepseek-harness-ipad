@@ -448,20 +448,6 @@ public final class CandidateHost: @unchecked Sendable {
                          readyTimeout: readyTimeout, pollInterval: pollInterval).launch(id)
     }
 
-    /// Imports the old App's full backup (`BackupImport`). Only the App's own importer calls this; the
-    /// Worker has no operation for it. The old home reaches the Worker at its next restore.
-    public func importBackup(archive: String, checksum: String) -> [String: Any] {
-        do {
-            var value = Self.json(try BackupImport.run(archive: archive, checksum: checksum, registry: registry)) as? [String: Any] ?? [:]
-            value["projectsNow"] = projects()
-            return value
-        } catch let error as CandidateError {
-            return ["error": error.code]
-        } catch {
-            return ["error": "IMPORT_FAILED"]
-        }
-    }
-
     /// How many times this process booted the VM; the contract allows at most one (`MeasureProbe`).
     public var bootCount: Int { lock.lock(); defer { lock.unlock() }; return boots }
 

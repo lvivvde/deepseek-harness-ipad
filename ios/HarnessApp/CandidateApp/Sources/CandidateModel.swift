@@ -64,7 +64,6 @@ final class CandidateModel: ObservableObject {
     @Published private(set) var sessionDiagnosis: String?
     @Published private(set) var sessionFailure: String?
     @Published private(set) var sessionSavedAt: Date?
-    @Published private(set) var importStatus: String?
     /// Ports listening in the guest, and the forwarded preview address while one is open (#23).
     @Published private(set) var previewPorts: [Int] = []
     @Published private(set) var previewURL: URL?
@@ -118,21 +117,6 @@ final class CandidateModel: ObservableObject {
             let project = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_PROJECT"]
             let remote = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_REMOTE"]
             Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle, project: project, remote: remote) }
-        }
-        // The scripted migration drill imports `<root>/incoming/HarnessBackup.tar` before anything opens;
-        // the serial queue keeps the open below behind it. The reply goes to `<root>/probe/import.json`.
-        if ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_IMPORT"] == "1", let host {
-            let incoming = root.appendingPathComponent("incoming/HarnessBackup.tar").path
-            let probe = root.appendingPathComponent("probe")
-            background.async {
-                let started = Date()
-                var reply = host.importBackup(archive: incoming, checksum: incoming + ".sha256")
-                reply["elapsedMs"] = Int(Date().timeIntervalSince(started) * 1000)
-                try? FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
-                if let data = try? JSONSerialization.data(withJSONObject: reply, options: [.sortedKeys]) {
-                    try? data.write(to: probe.appendingPathComponent("import.json"), options: .atomic)
-                }
-            }
         }
         // A device acceptance launch may open one project by name, so the Worker restores the session without a tap.
         if let name = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_OPEN"] {
@@ -200,36 +184,6 @@ final class CandidateModel: ObservableObject {
         call(["operation": "writer-release", "id": id]) { [weak self] reply in
             if let status = reply["status"] as? String, status != "RELEASED" { self?.failure = status }
             self?.refresh()
-        }
-    }
-
-    /// The old App's backup picked in Files: the archive and its `.sha256`, read in place while the
-    /// picker's access lasts. Sessions join at the Worker's next restore, so a running page needs a relaunch.
-    func importBackup(_ urls: [URL]) {
-        failure = nil
-        guard let host, let picked = BackupImport.pick(urls)
-        else { importStatus = "Pick one backup .tar and one .sha256 together."; return }
-        let (archive, checksum) = picked
-        importStatus = "Importing…"
-        let relaunch = webStarted
-        background.async {
-            let scoped = [archive, checksum].map { $0.startAccessingSecurityScopedResource() }
-            nonisolated(unsafe) let reply = host.importBackup(archive: archive.path, checksum: checksum.path)
-            for (url, held) in zip([archive, checksum], scoped) where held { url.stopAccessingSecurityScopedResource() }
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    if let code = reply["error"] as? String {
-                        self.importStatus = "Import refused: " + code
-                    } else {
-                        let names = (reply["projects"] as? [String] ?? []).joined(separator: ", ")
-                        let sessions = reply["sessions"] as? Int ?? 0
-                        let again = reply["alreadyImported"] as? Bool == true ? "Already imported. " : ""
-                        self.importStatus = again + "Projects: \(names.isEmpty ? "none" : names) · sessions: \(sessions)"
-                            + (relaunch ? " · Close and reopen the App to load the sessions." : "")
-                    }
-                    self.refresh()
-                }
-            }
         }
     }
 

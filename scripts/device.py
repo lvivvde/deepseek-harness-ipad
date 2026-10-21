@@ -25,7 +25,8 @@ def select_device(records, preferred=None):
         if (hardware.get('deviceType') == 'iPad'
                 and hardware.get('reality') == 'physical'
                 and connection.get('pairingState') == 'paired'
-                and state == 'connected'
+                # A cabled iPad lists as disconnected until devicectl first opens its tunnel.
+                and (state == 'connected' or connection.get('transportType') == 'wired')
                 and isinstance(item.get('identifier'), str)):
             candidates.append(item)
     if preferred:

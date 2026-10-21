@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "HarnessRuntime",
+    name: "DeepSeekHarness",
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "NativeWorkspace", targets: ["NativeWorkspace"]),
@@ -10,7 +10,7 @@ let package = Package(
         .library(name: "ModelGateway", targets: ["ModelGateway"]),
         .library(name: "NativeTools", targets: ["NativeTools"]),
         .library(name: "HarnessHost", targets: ["HarnessHost"]),
-        .library(name: "HarnessCandidate", targets: ["HarnessCandidate"])
+        .library(name: "HarnessCore", targets: ["HarnessCore"])
     ],
     targets: [
         .target(name: "NativeWorkspace", path: "Sources/Workspace"),
@@ -26,9 +26,9 @@ let package = Package(
         .testTarget(name: "NativeToolsTests", dependencies: ["NativeTools"], path: "NativeToolsTests"),
         .target(name: "HarnessHost", dependencies: ["NativeWorkspace", "LinuxPlugin"], path: "Sources/Host"),
         .testTarget(name: "HarnessHostTests", dependencies: ["HarnessHost", "NativeWorkspace", "LinuxPlugin"], path: "HostTests"),
-        .target(name: "HarnessCandidate", dependencies: ["HarnessHost", "NativeWorkspace", "NativeTools", "LinuxPlugin", "ModelGateway"],
-                path: "Sources/Candidate"),
-        .executableTarget(name: "home-recovery-probe", dependencies: ["HarnessCandidate", "NativeWorkspace"], path: "Tools/HomeRecoveryProbe"),
-        .testTarget(name: "HarnessCandidateTests", dependencies: ["HarnessCandidate", "HarnessHost", "LinuxPlugin"], path: "CandidateTests")
+        .target(name: "HarnessCore", dependencies: ["HarnessHost", "NativeWorkspace", "NativeTools", "LinuxPlugin", "ModelGateway"],
+                path: "Sources/Core"),
+        .executableTarget(name: "home-recovery-probe", dependencies: ["HarnessCore", "NativeWorkspace"], path: "Tools/HomeRecoveryProbe"),
+        .testTarget(name: "HarnessCoreTests", dependencies: ["HarnessCore", "HarnessHost", "LinuxPlugin"], path: "CoreTests")
     ]
 )

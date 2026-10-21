@@ -41,7 +41,7 @@ class ClientBridgeTests(unittest.TestCase):
             subprocess.run(['node', '-e', script], check=True)
 
     def test_terminal_auxiliary_input_preserves_ime_and_uses_actual_model_input(self):
-        swift = (ROOT.parent / 'ios/HarnessApp/Sources/Native/TerminalKeyRow.swift').read_text()
+        swift = (ROOT.parent / 'ios/HarnessApp/App/Sources/TerminalKeyRow.swift').read_text()
         bridge = swift.split('static let bridgeScript = """', 1)[1].split('"""', 1)[0]
         script = """
             const assert = require('node:assert/strict');

@@ -819,7 +819,7 @@ globalThis.fetch = async (input, options = {}) => {
   // No Key in memory (the App restarted) is an authentication failure, which the adapter reports
   // once instead of retrying it as a lost connection.
   if (opened.failure === 'MODEL_KEY_REQUIRED') {
-    return new Response(JSON.stringify({type: 'error', error: {type: 'authentication_error', message: 'MODEL_KEY_REQUIRED: enter the DeepSeek API key under Model key in the projects sidebar'}}),
+    return new Response(JSON.stringify({type: 'error', error: {type: 'authentication_error', message: 'MODEL_KEY_REQUIRED: 请在“设置 → 模型”中填写 DeepSeek API Key（App 重启后需重新填写）'}}),
       {status: 401, headers: {'content-type': 'application/json'}});
   }
   if (opened.failure) throw failed(opened.failure);
@@ -847,16 +847,98 @@ self.candidateRestore = mounted => candidateRecovery.restore(mounted);
 const candidateRegistered = new Set();
 let candidateEarlyProjects = [];
 let candidateRegister = project => { candidateEarlyProjects.push(project); };
+// The registry's own `create`, kept once the official one is wrapped below.
+let candidateCreateWorkspace = (registry, mount, name) => registry.create(mount, name);
 async function candidateRegisterProject(ctx, project) {
   if (!project?.open || !candidateInside(project.mount) || candidateRegistered.has(project.mount)) return;
   candidateRegistered.add(project.mount);
   // The VFS directory only lists the project under /dsh/workspace; its contents are native.
   candidateVfsMkdir(project.mount, {recursive: true});
   const registry = ctx.get('workspaceRegistry');
-  if (!(await registry.resolveByPath(project.mount))) await registry.create(project.mount, project.name);
+  if (!(await registry.resolveByPath(project.mount))) await candidateCreateWorkspace(registry, project.mount, project.name);
 }
 // The page forwards a project the user just opened natively.
 self.candidateProjectOpened = project => candidateRegister(project);
+
+// MARK: Official surfaces routed to Swift
+
+const candidatePlaceholder = 'candidate-native-placeholder';
+const candidateKeyRef = 'DEEPSEEK_API_KEY';
+// The Models settings page writes the key through `credentials`; Swift keeps it in memory and the
+// Worker keeps only the placeholder, so the provider still sends and the gateway adds the real key.
+function candidateInstallCredentials(ctx) {
+  const credentials = ctx.get('credentials');
+  const {set, unset, describe} = credentials;
+  credentials.set = async (ref, value) => {
+    if (String(ref) !== candidateKeyRef || value === candidatePlaceholder) return set.call(credentials, ref, value);
+    await candidateNative('model-key', {value});
+    return set.call(credentials, ref, candidatePlaceholder);
+  };
+  if (unset) credentials.unset = async ref => {
+    if (String(ref) !== candidateKeyRef) return unset.call(credentials, ref);
+    await candidateNative('model-key', {value: ''});
+  };
+  if (describe) credentials.describe = async ref => {
+    if (String(ref) !== candidateKeyRef) return describe.call(credentials, ref);
+    const {configured} = await candidateNative('model-key-state');
+    return {configured: configured === true, writable: true};
+  };
+}
+
+// Workspaces are native projects. The directory picker opens at /dsh/workspace and lists every project;
+// a new folder there is a new project with the Linux plugin, and a workspace elsewhere is refused.
+const candidateWorkspaceRoot = candidateWorkspace.slice(0, -1);
+function candidateInstallWorkspaces(ctx) {
+  const registry = ctx.get('workspaceRegistry');
+  const create = registry.create;
+  candidateCreateWorkspace = (target, mount, name) => create.call(target, mount, name);
+  // The official create resolves first, and a project not open yet has nothing to resolve: it is new.
+  const resolveByPath = registry.resolveByPath;
+  registry.resolveByPath = async path => {
+    try {
+      return await resolveByPath.call(registry, path);
+    } catch (error) {
+      if (candidateInside(String(path).replace(/\/+$/, '')) && !candidateRegistered.has(String(path).replace(/\/+$/, ''))) return undefined;
+      throw error;
+    }
+  };
+  registry.create = async (path, title) => {
+    const target = String(path).replace(/\/+$/, '');
+    const name = target.slice(candidateWorkspace.length);
+    if (!candidateInside(target) || name.includes('/')) throw new Error('工作区只能是 /dsh/workspace 下的项目');
+    const {projects} = await candidateNative('projects');
+    const project = projects.find(item => item.mount === target);
+    if (!project) throw new Error(`没有名为“${name}”的项目`);
+    if (!project.open) await candidateNative('project-open', {id: project.id});
+    candidateRegistered.add(project.mount);
+    candidateVfsMkdir(project.mount, {recursive: true});
+    return create.call(registry, project.mount, title ?? project.name);
+  };
+  const picker = ctx.get('directoryPicker')?.capability?.();
+  if (picker?.kind !== 'browse') return;
+  picker.list = async path => {
+    const target = path === undefined ? candidateWorkspaceRoot : String(path).replace(/\/+$/, '');
+    if (target !== candidateWorkspaceRoot) {
+      if (candidateInside(target)) return {path: target, home: candidateWorkspaceRoot, entries: [], truncated: false,
+        crumbs: [{name: '/', path: '/', hidden: false}, {name: 'dsh', path: '/dsh', hidden: false},
+          {name: 'workspace', path: candidateWorkspaceRoot, hidden: false}, {name: target.slice(candidateWorkspace.length), path: target, hidden: false}]};
+      throw Object.assign(new Error(`cannot list ${target}: 只能选择 /dsh/workspace 下的项目`), {code: 'directory-unreadable', path: target});
+    }
+    const {projects} = await candidateNative('projects');
+    return {path: target, home: target, truncated: false,
+      crumbs: [{name: '/', path: '/', hidden: false}, {name: 'dsh', path: '/dsh', hidden: false}, {name: 'workspace', path: target, hidden: false}],
+      entries: projects.map(project => ({name: project.name, path: project.mount, hidden: false}))
+        .sort((a, b) => a.name.localeCompare(b.name))};
+  };
+  picker.createDirectory = async (path, name) => {
+    if (String(path).replace(/\/+$/, '') !== candidateWorkspaceRoot) {
+      throw Object.assign(new Error('只能在 /dsh/workspace 下新建项目'), {code: 'directory-create-failed', path});
+    }
+    const {project} = await candidateNative('project-create', {name, pluginEnabled: true});
+    candidateVfsMkdir(project.mount, {recursive: true});
+    return project.mount;
+  };
+}
 
 // The install hook: runs in `start` once the tree is active, before the tunnel serves the page.
 self.candidateInstall = async (ctx, loader, vfs) => {
@@ -874,11 +956,13 @@ self.candidateInstall = async (ctx, loader, vfs) => {
   candidateInstallGuard(vfs, posix);
   // Terminals an earlier Worker left open would hold guest slots, and a lease, nothing reads any more.
   await candidateNative('terminals-reset').catch(error => candidateLog({event: 'terminals-reset-failed', code: error.code ?? String(error)}));
-  // The provider needs a key to send; the real one is added by Swift and never enters the Worker.
-  await ctx.get('credentials').set('DEEPSEEK_API_KEY', 'candidate-native-placeholder');
+  // The provider needs a key to send; the Worker holds only a placeholder and Swift adds the real one.
+  await ctx.get('credentials').set(candidateKeyRef, candidatePlaceholder);
+  candidateInstallCredentials(ctx);
   const {projects} = await candidateNative('projects');
   for (const project of [...projects, ...candidateEarlyProjects]) await candidateRegisterProject(ctx, project);
   candidateEarlyProjects = [];
+  candidateInstallWorkspaces(ctx);
   candidateRegister = project => candidateRegisterProject(ctx, project)
     .catch(error => candidateLog({event: 'project-register-failed', code: error.code ?? String(error)}));
   candidateRecovery.install(ctx, vfs);

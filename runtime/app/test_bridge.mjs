@@ -490,3 +490,64 @@ test('a failed manual flush retries periodically even when no new events arrive'
   for (let i = 0; i < 5; i++) await tick();
   assert.equal(attempts, 3, 'failure retries without a later event');
 });
+
+test('the settings key goes to Swift and the Worker keeps only the placeholder', async () => {
+  let held = '';
+  const {self, native, map} = load(body => {
+    if (body.operation === 'model-key') { held = body.value; return {configured: held !== ''}; }
+    if (body.operation === 'model-key-state') return {configured: held !== ''};
+    return host()(body);
+  });
+  const {ctx, loader, calls, table} = services(map);
+  table.credentials.unset = async ref => calls.credentials.push(['unset', ref]);
+  table.credentials.describe = async ref => ({configured: false, source: 'file', writable: true, ref});
+  const vfs = memoryVfs();
+  await self.candidateRestore(vfs);
+  await self.candidateInstall(ctx, loader, vfs);
+  assert.deepEqual({...await table.credentials.describe('DEEPSEEK_API_KEY')}, {configured: false, writable: true});
+  await table.credentials.set('DEEPSEEK_API_KEY', 'sk-fake');
+  assert.equal(held, 'sk-fake');
+  assert.deepEqual(calls.credentials.at(-1), ['DEEPSEEK_API_KEY', 'candidate-native-placeholder']);
+  assert.ok(!JSON.stringify(calls.credentials).includes('sk-fake'));
+  assert.deepEqual({...await table.credentials.describe('DEEPSEEK_API_KEY')}, {configured: true, writable: true});
+  await table.credentials.unset('DEEPSEEK_API_KEY');
+  assert.equal(held, '');
+  // Other refs pass through untouched.
+  await table.credentials.set('OTHER', 'x');
+  assert.deepEqual(calls.credentials.at(-1), ['OTHER', 'x']);
+  assert.ok(native().some(x => x.operation === 'model-key-state'));
+});
+
+test('the workspace picker lists native projects and a new folder is a new project', async () => {
+  const projects = [{id: 'a', name: 'Alpha', mount: '/dsh/workspace/Alpha', open: true}];
+  const {self, native, map} = load(body => {
+    if (body.operation === 'project-create') {
+      const project = {id: 'n', name: body.name, mount: '/dsh/workspace/' + body.name, open: false};
+      projects.push(project);
+      return {project};
+    }
+    if (body.operation === 'project-open') return {project: {...projects.find(x => x.id === body.id), open: true}};
+    return host(projects)(body);
+  });
+  const {ctx, loader, calls, table} = services(map);
+  const picker = {kind: 'browse', list: async () => 'home', createDirectory: async () => 'host'};
+  table.directoryPicker = {capability: () => picker};
+  table.workspaceRegistry.resolveByPath = async path => {
+    if (path === '/dsh/workspace/Beta') throw new Error('ENOENT: no open project');
+  };
+  const vfs = memoryVfs();
+  await self.candidateRestore(vfs);
+  await self.candidateInstall(ctx, loader, vfs);
+  const root = await picker.list(undefined);
+  assert.equal(root.path, '/dsh/workspace');
+  assert.deepEqual(root.entries.map(x => x.path), ['/dsh/workspace/Alpha']);
+  await assert.rejects(picker.list('/Users'), error => error.code === 'directory-unreadable');
+  assert.equal(await picker.createDirectory('/dsh/workspace', 'Beta'), '/dsh/workspace/Beta');
+  assert.deepEqual(native().at(-1), {operation: 'project-create', name: 'Beta', pluginEnabled: true});
+  // The official create resolves first; an unopened project fails realpath and counts as new.
+  assert.equal(await table.workspaceRegistry.resolveByPath('/dsh/workspace/Beta'), undefined);
+  await table.workspaceRegistry.create('/dsh/workspace/Beta', undefined);
+  assert.deepEqual(native().at(-1), {operation: 'project-open', id: 'n'});
+  assert.deepEqual(calls.workspaces.at(-1), ['/dsh/workspace/Beta', 'Beta']);
+  await assert.rejects(table.workspaceRegistry.create('/tmp/x'), /工作区只能是/);
+});

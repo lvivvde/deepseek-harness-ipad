@@ -23,6 +23,9 @@ public final class AppHost: @unchecked Sendable {
     private let machine: GuestMachine
     private let gitScripts: [(name: String, source: String)]
     private let model: ModelGateway?
+    /// Where the official Models page's key goes: sets it (empty clears) and answers whether one is held.
+    /// Without it the operations report no key.
+    private let modelKey: ((String?) -> Bool)?
     private let readyTimeout: TimeInterval
     private let pollInterval: TimeInterval
     private(set) var plugin: LinuxPlugin!
@@ -42,11 +45,11 @@ public final class AppHost: @unchecked Sendable {
     private var boots = 0
 
     public init(registry: ProjectRegistry, machine: GuestMachine, availability: LinuxAvailability = .detect(),
-                gitScripts: [(name: String, source: String)], model: ModelGateway? = nil,
+                gitScripts: [(name: String, source: String)], model: ModelGateway? = nil, modelKey: ((String?) -> Bool)? = nil,
                 readyTimeout: TimeInterval = 600, pollInterval: TimeInterval = 0.25, recoveryFault: FaultHook? = nil) {
         recovery = SessionRecovery(root: registry.root, fault: recoveryFault)
         packages = PackageStore(root: registry.root)
-        self.registry = registry; self.machine = machine; self.gitScripts = gitScripts; self.model = model
+        self.registry = registry; self.machine = machine; self.gitScripts = gitScripts; self.model = model; self.modelKey = modelKey
         self.readyTimeout = readyTimeout; self.pollInterval = pollInterval
         let record = registry.root + "/" + Self.diagnosticRecord
         diagnostic = FileManager.default.contents(atPath: record).flatMap { try? JSONDecoder().decode(LinuxPlugin.Diagnostic.self, from: $0) }
@@ -105,6 +108,10 @@ public final class AppHost: @unchecked Sendable {
             case "writer-release":
                 guard let id = body["id"] as? String, let gateway = opened(id)?.gateway else { throw AppError("PROJECT_UNKNOWN") }
                 return ["status": Self.name(gateway.releaseUnknownWriter())]
+            case "model-key":
+                guard let value = body["value"] as? String else { throw AppError("MODEL_KEY_REFUSED") }
+                return ["configured": modelKey?(value) ?? false]
+            case "model-key-state": return ["configured": modelKey?(nil) ?? false]
             case "model-open": return modelOpen(body)
             case "model-read": return modelRead(body)
             case "model-cancel":

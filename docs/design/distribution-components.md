@@ -27,7 +27,7 @@
 
 候选 App 外壳在 `ios/HarnessApp/CandidateApp/Sources`，包括 SwiftUI 界面、WKWebView 宿主、回环资源服务和终端辅助键排。工程由 `runtime/candidate/build.py` 生成。
 
-仓库根目录目前没有 `LICENSE` 文件。[runtime-licensing.md](../research/runtime-licensing.md) 第 2 条的“MIT 并公开源码”仍只是计划，见[简报](license-review-brief.md)问题 6。
+仓库根目录的 `LICENSE` 为 MIT（2026-10-21 添加），文件头另有声明的文件除外，见[简报](license-review-brief.md)问题 6 和审查结果。
 
 ## 2. 原生只读 Git（新增）
 

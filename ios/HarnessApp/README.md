@@ -53,9 +53,10 @@ xcrun devicectl device install app --device <设备> build/app/ipad-signed/deriv
 
 ## 使用
 
-- 左侧栏：新建项目（可选启用 Linux 插件）、打开项目、输入 DeepSeek API Key、会话保存状态、Linux 状态、预览开发服务器，以及当前项目的能力声明。
-- Key 只留在内存，App 重启后重新输入。
-- 打开项目后右侧是官方 Harness 界面；终端、文件面板和插件管理都在官方界面里。
+- 整个窗口就是官方 Harness 界面：左侧栏有新会话、插件和工作区列表，下方输入框选模型和工作区内修改；终端、文件面板和插件管理也都在里面。
+- 第一次启动自动建好“默认工作区”（启用 Linux 插件）。在工作区选择器里点“新建文件夹”再打开，就是一个新项目。
+- API Key 在官方的首次提示或“设置 → 模型”里输入。Key 只交给 Swift、只留在内存，App 重启后重新输入。
+- 右下角的小圆按钮（macOS 也可以用菜单“运行状态…”，⌘⇧I）打开运行状态：会话保存、Linux 状态、开发服务器预览和每个项目的能力声明。需要处理时按钮变成橙色警示。
 - 数据在 App 自己的 Application Support 下；`HARNESS_CANDIDATE_ROOT` 启动环境变量可以把数据根指到别处（只用于验证）。
 
 已验证和未验证的项目见 [开发交接](../../docs/agents/handoff.md)。

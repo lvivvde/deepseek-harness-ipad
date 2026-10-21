@@ -1,120 +1,56 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import WebKit
 
 @main
 struct DeepSeekHarnessApp: App {
     @StateObject private var model = AppModel()
+    @State private var showingStatus = false
 
     var body: some Scene {
         WindowGroup("DeepSeek Harness") {
             #if os(macOS)
-            AppView(model: model).frame(minWidth: 960, minHeight: 640)
+            // The official sidebar folds away below 1024 points of page width.
+            AppView(model: model, showingStatus: $showingStatus).frame(minWidth: 1100, minHeight: 680)
             #else
-            AppView(model: model)
+            AppView(model: model, showingStatus: $showingStatus)
             #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1320, height: 860)
+        .commands {
+            CommandGroup(after: .toolbar) {
+                Button("运行状态…") { showingStatus = true }.keyboardShortcut("i", modifiers: [.command, .shift])
+            }
+        }
+        #endif
     }
 }
 
+/// The official Harness page fills the window. What only Swift knows (Linux, preview, session
+/// recovery, capabilities) sits in a status sheet behind one small button.
 struct AppView: View {
     @ObservedObject var model: AppModel
-    @State private var name = ""
-    @State private var pluginEnabled = true
-    @State private var key = ""
-    @State private var selected: String?
-    @State private var confirmingFresh = false
+    @Binding var showingStatus: Bool
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $selected) {
-                Section("Projects") {
-                    ForEach(model.projects) { project in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(project.name)
-                                Text(project.pluginEnabled ? "Linux · \(project.phase)" : "Native only")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if project.open { Image(systemName: "checkmark.circle").foregroundStyle(.secondary) }
-                            else { Button("Open") { model.open(project.id) } }
-                        }.tag(project.id)
-                    }
-                }
-                Section("New project") {
-                    TextField("Name", text: $name)
-                    Toggle("Linux plugin", isOn: $pluginEnabled)
-                    Button("Create") { model.create(name: name, pluginEnabled: pluginEnabled); name = "" }
-                        .disabled(name.isEmpty)
-                }
-                Section("Model key") {
-                    SecureField("DeepSeek API key", text: $key)
-                        .onChange(of: key) { model.setKey($0) }
-                    Text("Held in memory only; enter it again after the App restarts.").font(.caption).foregroundStyle(.secondary)
-                    if let held = model.keyHint { Text(held).font(.caption.monospaced()) }
-                }
-                Section("Session") {
-                    Text(sessionStatus).foregroundStyle(model.sessionPhase == "BLOCKED" || model.sessionPhase == "UNSAVED" ? .orange : .secondary)
-                    if let date = model.sessionSavedAt { Text("Last saved: " + date.formatted()).font(.caption) }
-                    if model.sessionDiagnosis == "CHECKPOINT_FALLBACK" {
-                        Text("Restored the previous checkpoint. Newer session content could not be restored.").font(.caption)
-                    } else if model.sessionDiagnosis == "LEGACY_CHECKPOINT" {
-                        Text("Restored a legacy checkpoint. Workspace comparison is unavailable.").font(.caption)
-                    } else if let diagnosis = model.sessionDiagnosis { Text(diagnosis).font(.caption) }
-                    if let failure = model.sessionFailure { Text(failure).font(.caption) }
-                    if model.sessionPhase == "BLOCKED" {
-                        Button("Start a new session…") { confirmingFresh = true }
-                            .confirmationDialog("Start a new session?", isPresented: $confirmingFresh) {
-                                Button("Start new session", role: .destructive) { model.freshSession() }
-                            } message: {
-                                Text("Old checkpoint evidence is preserved. Project files, drafts and unknown calls remain as they are.")
-                            }
-                    } else if model.webStarted {
-                        Button("Save / retry") { model.saveSession() }
-                    }
-                }
-                Section("Linux") {
-                    LabeledContent("Availability", value: model.linux)
-                    LabeledContent("Bound project", value: model.projects.first { $0.id == model.boundProject }?.name ?? "—")
-                    if let diagnostic = model.diagnostic {
-                        LabeledContent("Last failure", value: diagnostic)
-                        Text("Linux stays off until the App is closed and reopened.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let event = model.lastEvent { LabeledContent("Worker", value: event) }
-                    if let failure = model.failure { Text(failure).foregroundStyle(.red) }
-                }
-                Section("Preview") {
-                    Button("Find dev servers") { model.scanPreviewPorts() }
-                        .disabled(model.boundProject == nil)
-                    ForEach(model.previewPorts, id: \.self) { port in
-                        Button("Open port \(port)") { model.openPreview(port: port) }
-                    }
-                    if model.previewURL != nil { Button("Close preview") { model.closePreview() } }
-                    Text("Shown only inside this App. Closing it leaves the server running.").font(.caption).foregroundStyle(.secondary)
-                }
-                if let project = model.projects.first(where: { $0.id == selected }), project.open {
-                    CapabilitySection(project: project) { model.releaseWriter(project.id) }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 280, ideal: 320)
-        } detail: {
-            GeometryReader { size in
-                // Landscape keeps the official page and the preview side by side; portrait gives the preview the screen.
-                if let url = model.previewURL, size.size.width <= size.size.height {
-                    PreviewPane(url: url) { model.closePreview() }
-                } else {
-                    HStack(spacing: 0) {
-                        official
-                        if let url = model.previewURL {
-                            Divider()
-                            PreviewPane(url: url) { model.closePreview() }
-                        }
+        GeometryReader { size in
+            // Landscape keeps the official page and the preview side by side; portrait gives the preview the screen.
+            if let url = model.previewURL, size.size.width <= size.size.height {
+                PreviewPane(url: url) { model.closePreview() }
+            } else {
+                HStack(spacing: 0) {
+                    official
+                    if let url = model.previewURL {
+                        Divider()
+                        PreviewPane(url: url) { model.closePreview() }.frame(width: size.size.width * 0.42)
                     }
                 }
             }
         }
+        .overlay(alignment: .bottomTrailing) { statusButton }
+        .sheet(isPresented: $showingStatus) { StatusSheet(model: model) }
+        .onChange(of: model.sessionPhase) { phase in if phase == "BLOCKED" { showingStatus = true } }
         .onChange(of: scenePhase) { phase in if phase != .active { model.saveSession() } }
     }
 
@@ -126,17 +62,127 @@ struct AppView: View {
             WebView(view: web.view)
             #endif
         } else {
-            Text("Open a project to start.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 14) {
+                Text("DeepSeek Harness").font(.title2.weight(.semibold))
+                if let failure = model.failure {
+                    Text("启动失败：\(failure)").foregroundStyle(.red).font(.callout)
+                } else {
+                    ProgressView()
+                    Text("正在准备工作区…").foregroundStyle(.secondary).font(.callout)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Small and out of the way of the composer; tinted when something needs the user.
+    private var statusButton: some View {
+        Button { showingStatus = true } label: {
+            Image(systemName: attention ? "exclamationmark.triangle.fill" : "cpu")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(attention ? Color.orange : Color.secondary)
+                .frame(width: 30, height: 30)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .help("运行状态")
+        .padding(.trailing, 14)
+        .padding(.bottom, 150)
+        .opacity(model.webStarted ? 1 : 0)
+    }
+
+    private var attention: Bool {
+        model.sessionPhase == "BLOCKED" || model.diagnostic != nil || model.projects.contains { $0.writerUnknown }
+    }
+}
+
+/// Linux, preview, session recovery and capabilities: the native state the official page cannot show.
+struct StatusSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmingFresh = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("会话") {
+                    LabeledContent("状态") {
+                        Text(sessionStatus).foregroundStyle(model.sessionPhase == "BLOCKED" || model.sessionPhase == "UNSAVED" ? .orange : .secondary)
+                    }
+                    if let date = model.sessionSavedAt { LabeledContent("上次保存", value: date.formatted(date: .abbreviated, time: .standard)) }
+                    if model.sessionDiagnosis == "CHECKPOINT_FALLBACK" {
+                        Text("已恢复到上一个检查点，更新的会话内容无法恢复。").font(.caption)
+                    } else if model.sessionDiagnosis == "LEGACY_CHECKPOINT" {
+                        Text("已恢复旧格式检查点，无法比对工作区。").font(.caption)
+                    } else if let diagnosis = model.sessionDiagnosis { Text(diagnosis).font(.caption) }
+                    if let failure = model.sessionFailure { Text(failure).font(.caption) }
+                    if model.sessionPhase == "BLOCKED" {
+                        Button("开始新会话…") { confirmingFresh = true }
+                            .confirmationDialog("开始新会话？", isPresented: $confirmingFresh) {
+                                Button("开始新会话", role: .destructive) { model.freshSession() }
+                            } message: {
+                                Text("旧检查点证据会保留；项目文件、草稿和结果未知的调用保持原样。")
+                            }
+                    } else if model.webStarted {
+                        Button("立即保存") { model.saveSession() }
+                    }
+                }
+                Section {
+                    LabeledContent("状态", value: linuxStatus)
+                    LabeledContent("绑定工作区", value: model.projects.first { $0.id == model.boundProject }?.name ?? "—")
+                    if let diagnostic = model.diagnostic {
+                        LabeledContent("上次失败", value: diagnostic)
+                        Text("关闭并重新打开 App 之前，Linux 保持关闭。").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let failure = model.failure { Text(failure).foregroundStyle(.red).font(.caption) }
+                } header: { Text("Linux") } footer: {
+                    Text("Linux 绑定到第一个启用 Linux 插件的工作区。").font(.caption)
+                }
+                Section {
+                    Button("查找开发服务器") { model.scanPreviewPorts() }.disabled(model.boundProject == nil)
+                    ForEach(model.previewPorts, id: \.self) { port in
+                        Button("打开端口 \(port)") { model.openPreview(port: port); dismiss() }
+                    }
+                    if model.previewURL != nil { Button("关闭预览") { model.closePreview() } }
+                } header: { Text("预览") } footer: {
+                    Text("只在本 App 内显示；关闭预览不会停止服务器。").font(.caption)
+                }
+                ForEach(model.projects.filter(\.open)) { project in
+                    CapabilitySection(project: project) { model.releaseWriter(project.id) }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("运行状态")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+        #if os(macOS)
+        .frame(minWidth: 520, minHeight: 560)
+        #endif
+        .onAppear { model.refresh() }
     }
 
     private var sessionStatus: String {
         switch model.sessionPhase {
-        case "BLOCKED": return "Recovery blocked"
-        case "SAVING": return "Saving · not yet saved"
-        case "UNSAVED": return "Not yet saved"
-        case "SAVED": return "Saved"
-        default: return "Waiting for session"
+        case "BLOCKED": return "恢复受阻"
+        case "SAVING": return "正在保存"
+        case "UNSAVED": return "尚未保存"
+        case "SAVED": return "已保存"
+        default: return "等待会话"
+        }
+    }
+
+    /// The bound project's plugin phase once Linux can run at all.
+    private var linuxStatus: String {
+        guard model.linux == "AVAILABLE" else {
+            return model.linux == "LINUX_PRIVATE_SYMBOL_MISSING" ? "此系统不支持" : model.linux
+        }
+        switch model.projects.first(where: { $0.id == model.boundProject })?.phase {
+        case "READY": return "就绪"
+        case "PREPARING": return "正在启动"
+        case "FAILED": return "失败"
+        case nil: return "可用 · 未绑定"
+        case let phase?: return phase
         }
     }
 }
@@ -148,24 +194,24 @@ struct CapabilitySection: View {
     @State private var confirming = false
 
     var body: some View {
-        Section("Capabilities · \(project.name)") {
+        Section("能力 · \(project.name)") {
             if project.recoveryComparison == "CHANGED" {
-                Text("Workspace changed during or after this checkpoint was saved.").font(.caption)
+                Text("保存此检查点期间或之后，工作区有改动。").font(.caption)
             } else if project.recoveryComparison == "UNAVAILABLE" {
-                Text("Workspace comparison with this checkpoint is unavailable.").font(.caption)
+                Text("无法与此检查点比对工作区。").font(.caption)
             }
-            if project.unknownCalls > 0 { Text("Calls with unknown results: \(project.unknownCalls). They will not be replayed.").font(.caption) }
-            if project.drafts > 0 { Text("Retained drafts: \(project.drafts)").font(.caption) }
+            if project.unknownCalls > 0 { Text("结果未知的调用：\(project.unknownCalls)，不会重放。").font(.caption) }
+            if project.drafts > 0 { Text("保留的草稿：\(project.drafts)").font(.caption) }
             if let state = project.pluginState {
-                LabeledContent("Plugin", value: [state, project.reason].compactMap { $0 }.joined(separator: " · "))
+                LabeledContent("Linux 插件", value: [state, project.reason].compactMap { $0 }.joined(separator: " · "))
             }
             if project.writerUnknown {
-                Text("A Linux command may still be writing. Native edits are kept as drafts.").font(.caption)
-                Button("Release writer…") { confirming = true }
-                    .confirmationDialog("Release the unknown writer?", isPresented: $confirming) {
-                        Button("Release", role: .destructive, action: releaseWriter)
+                Text("可能仍有 Linux 命令在写入，原生编辑暂存为草稿。").font(.caption)
+                Button("释放写入者…") { confirming = true }
+                    .confirmationDialog("释放未知的写入者？", isPresented: $confirming) {
+                        Button("释放", role: .destructive, action: releaseWriter)
                     } message: {
-                        Text("Whatever the command left in the workspace is kept as it is, and held drafts are rebased onto it.")
+                        Text("命令留在工作区里的内容原样保留，暂存的草稿会合并到它之上。")
                     }
             }
             ForEach(project.capabilities, id: \.name) { item in
@@ -192,8 +238,8 @@ struct PreviewPane: View {
             HStack {
                 Text(url.absoluteString).font(.caption.monospaced()).lineLimit(1)
                 Spacer()
-                Button("Reload") { holder.view.reload() }
-                Button("Close", action: close)
+                Button("刷新") { holder.view.reload() }
+                Button("关闭", action: close)
             }.padding(8)
             WebView(view: holder.view).onAppear { holder.load(url) }.onChange(of: url) { holder.load($0) }
         }

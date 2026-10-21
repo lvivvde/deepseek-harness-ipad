@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-21，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程见 Git 历史（2026-10-21 之前的详细交接在提交 `111817f` 的本文件里）和验收记录。
+最后更新：2026-10-22，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程见 Git 历史（2026-10-21 之前的详细交接在提交 `111817f` 的本文件里）和验收记录。
 
 ## 开始工作
 
@@ -13,18 +13,17 @@
 
 只有一个 App：**DeepSeek Harness**，bundle ID `org.lvivvde.harness.candidate`（沿用，覆盖安装保留数据）。架构见 [ADR 0003](../adr/0003-native-worker-with-project-linux.md)：官方 Worker 在 WKWebView 中运行，Swift 是唯一权威，Linux 是项目级插件，在 App 进程内的 QEMU 里运行。结构和签名见 [App 说明](../../ios/HarnessApp/README.md)，构建输入见 [runtime/README.md](../../runtime/README.md)。
 
-[单一 App 方案](../design/single-app-plan.md)第 1 步在分支 `feat/single-app`：
+[单一 App 方案](../design/single-app-plan.md)第 1 步（分支 `feat/single-app`）已合并：删掉旧正式 App、研究 App 和原型，纯改名为 `HarnessCore`、`runtime/app`、`build/app`，版本 1.0.0。落盘或设备上的名字不改：bundle ID、`candidate-lock.json`、`config/candidate-installation.json`、`HARNESS_CANDIDATE_*` 启动环境变量、Worker 帧和挂接点的 `candidate*` 标识、guest 里的 `.plan500-identity` 和 `/run/plan500*`。`make` 只剩 `doctor`、`check`、`test`、`web`、`app`、`ipad`；设备工具只剩只读 `scripts/device.py probe`。
 
-- 删除旧正式 App（`org.lvivvde.harness.ipad`）、旧数据迁移与备份导入、研究 App 和原型；构建还在用的文件挪到 `runtime/native-git`、`runtime/guest-agent`、`runtime/worker-dependencies`、`runtime/prepare-guest.py`、`runtime/prepare-executor.py`。
-- 纯改名：模块 `HarnessCandidate` → `HarnessCore`，`CandidateApp` → `App`，`runtime/candidate` → `runtime/app`，`build/candidate` → `build/app`，网页根目录 `CandidateWeb` → `Web`，界面名 DeepSeek Harness。
-- 落盘或设备上的名字不改：bundle ID、`candidate-lock.json`、`config/candidate-installation.json`、`HARNESS_CANDIDATE_*` 启动环境变量、Worker 帧和挂接点的 `candidate*` 标识、guest 里的 `.plan500-identity` 和 `/run/plan500*`。
-- 私有签名文件可以设 `PRODUCT_BUNDLE_IDENTIFIER`，给从源码自建的人用。
-- `make` 只剩 `doctor`、`check`、`test`、`web`、`app`、`ipad`。
-- 已验证（macOS）：`make check`、`make test` 通过（Swift 全部测试包无失败；Worker 恢复 9、桥接 21、插件 11 + 1 项需联网的跳过、原生 Git 10；构建闸门 15；镜像构建 16，7 项缺依赖跳过）。
-- 版本号 1.0.0；签名的 iPad 构建同时写出自用的 `DeepSeekHarness.ipa`（不发布）。
-- 设备工具只剩只读 `scripts/device.py probe`，私有脚本导入它的 `Session`；接线的 iPad 在通道建立前也算已连接。
-- iPad：1.0.0 的 IPA 已覆盖安装并启动（可执行名 `DeepSeekHarness`）；旧正式 App 和研究 App 已不在设备上。用户决定不做冒烟测试，先出成品。
-- 待做：PR 合并。
+正式界面（分支 `feat/official-ui`）：用户要求和 Mac 上的 DeepSeek Harness 一样的正式界面。
+
+- 整窗就是官方网页界面（左侧栏新会话、插件、工作区列表；输入框带模型选择和“工作区内修改”）。自建的 SwiftUI 侧栏删掉，运行状态（会话保存、Linux、预览、能力声明）挪到右下角小圆按钮的表单里，macOS 菜单“运行状态…”（⌘⇧I）。界面文字中文。
+- 第一次启动自动建“默认工作区”（启用 Linux），启动时打开全部项目再显示网页。
+- 官方工作区选择器的浏览后端被包装：根是 `/dsh/workspace`，列出原生项目；“新建文件夹”就新建一个原生项目（启用 Linux）。`registry.resolveByPath` 对还没打开的项目返回 undefined，否则官方会报 `ENOENT: no open project, realpath`。
+- 官方首次提示和“设置 → 模型”写 Key 时经 `credentials.set` 交给 Swift（`model-key`），Worker 只留占位值，见 ADR 0003。
+- 官方侧栏在页面宽度小于 1024 px 时收成图标条；macOS 窗口被遮挡时 CSS 动画暂停，后台截图里侧栏文字是空的，前置窗口就正常，不是缺陷。
+- 已验证（macOS）：`make app` 通过，桥接测试 23/23；窗口前置后侧栏完整，自动建默认工作区，选择器列出项目，新建文件夹后不用重启就能打开，重启后项目都在，运行状态表单正常、Linux 绑定到项目。Key 输入框是安全输入框，自动化打不进去，Key 路径只由单元测试覆盖。
+- iPad：签名构建 `build/app/ipad-signed-r30` 已出；本次 probe 时 iPad 锁屏且 App 显示未安装，安装待 iPad 解锁后用私有脚本完成。
 
 第 2 步（去掉 `system.raw` 里约 537 MB 的 `/opt/harness`，需重建镜像并重跑 Linux 验收）以后再做。
 
@@ -42,7 +41,7 @@
 
 **下一步：**
 
-1. 合并第 1 步的 PR（见上）。
+1. 在 iPad 上装 r30 并看一眼界面；合并 `feat/official-ui` 的 PR。
 2. 可选：第 2 步精简系统盘。
 3. 可选：桥接对 shell 执行也重试 `LEASE_BUSY`。
 

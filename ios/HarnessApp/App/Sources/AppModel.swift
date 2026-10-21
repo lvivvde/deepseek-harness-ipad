@@ -5,8 +5,8 @@ import Foundation
 import HarnessCore
 import ModelGateway
 
-/// The model key, typed by the user in this process. Read only where a model request is built; never
-/// stored, logged or given to the Worker.
+/// The model key, typed by the user in the official settings page and handed straight to Swift. Read only
+/// where a model request is built; never stored or logged, and the Worker keeps only a placeholder.
 final class KeyBox: @unchecked Sendable {
     private let lock = NSLock()
     private var key = ""
@@ -57,8 +57,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var boundProject: String?
     @Published private(set) var diagnostic: String?
     @Published private(set) var failure: String?
-    /// The last characters and length of the key in memory, so the user can check it against the console.
-    @Published private(set) var keyHint: String?
     @Published private(set) var webStarted = false
     @Published private(set) var lastEvent: String?
     @Published private(set) var sessionPhase = "NOT_STARTED"
@@ -96,8 +94,13 @@ final class AppModel: ObservableObject {
                 (name: $0, source: try String(contentsOf: webRoot.appendingPathComponent($0), encoding: .utf8))
             }
             let box = key
+            // A pasted key often carries a space or line break, which the gateway would refuse as missing.
             let host = AppHost(registry: registry, machine: machine, gitScripts: scripts,
-                                     model: ModelGateway(key: { box.value }))
+                               model: ModelGateway(key: { box.value }),
+                               modelKey: { value in
+                                   if let value { box.set(value.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                                   return box.value != nil
+                               })
             made = (host, WebHost(host: host, webRoot: webRoot, logs: logs))
         } catch let error as AppError {
             failure = error.code
@@ -119,12 +122,10 @@ final class AppModel: ObservableObject {
             let remote = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_MEASURE_REMOTE"]
             Thread.detachNewThread { MeasureProbe.run(phase, host: host, bundle: bundle, project: project, remote: remote) }
         }
-        // A device acceptance launch may open one project by name, so the Worker restores the session without a tap.
-        if let name = ProcessInfo.processInfo.environment["HARNESS_CANDIDATE_OPEN"] {
-            call(["operation": "status"]) { [weak self] reply in
-                let rows = (reply["projects"] as? [[String: Any]] ?? []).compactMap(ProjectRow.init)
-                if let row = rows.first(where: { $0.name == name }) { self?.open(row.id) }
-            }
+        // A probe launch drives its own project; every other launch opens the projects and shows the page.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["HARNESS_CANDIDATE_GATE1"] == nil, environment["HARNESS_CANDIDATE_MEASURE"] == nil {
+            launch(only: environment["HARNESS_CANDIDATE_OPEN"])
         }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -152,31 +153,35 @@ final class AppModel: ObservableObject {
         #endif
     }
 
-    /// A pasted key often carries a space or line break, which the gateway would refuse as missing.
-    func setKey(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        key.set(trimmed)
-        keyHint = trimmed.isEmpty ? nil : "In use: …\(trimmed.suffix(4)), \(trimmed.count) characters"
-    }
-
-    func create(name: String, pluginEnabled: Bool) {
-        failure = nil
-        call(["operation": "project-create", "name": name, "pluginEnabled": pluginEnabled]) { [weak self] _ in self?.refresh() }
-    }
-
-    /// Opening never waits for Linux. The first open loads the page; later ones are forwarded to it.
-    func open(_ id: String) {
-        failure = nil
-        call(["operation": "project-open", "id": id]) { [weak self] reply in
-            guard let self, let project = reply["project"] as? [String: Any], let web else { return }
-            if webStarted {
-                web.projectOpened(project)
+    /// Opens every project as a workspace of the official page, then loads it. A first launch makes a
+    /// default project with Linux, so the page never falls back to a workspace of its own.
+    private func launch(only name: String?) {
+        call(["operation": "status"]) { [weak self] reply in
+            guard let self else { return }
+            let rows = (reply["projects"] as? [[String: Any]] ?? []).compactMap(ProjectRow.init)
+            if rows.isEmpty {
+                call(["operation": "project-create", "name": Self.defaultProject, "pluginEnabled": true]) { [weak self] reply in
+                    guard let id = (reply["project"] as? [String: Any])?["id"] as? String else { return }
+                    self?.openAll([id])
+                }
             } else {
-                webStarted = true
-                web.start { [weak self] in self?.failure = $0 }
+                openAll(rows.filter { name == nil || $0.name == name }.map(\.id))
             }
-            refresh()
         }
+    }
+
+    static let defaultProject = "默认工作区"
+
+    private func openAll(_ ids: [String]) {
+        guard let id = ids.first else { return startWeb() }
+        call(["operation": "project-open", "id": id]) { [weak self] _ in self?.openAll(Array(ids.dropFirst())) }
+    }
+
+    private func startWeb() {
+        guard let web, !webStarted else { return }
+        webStarted = true
+        web.start { [weak self] in self?.failure = $0 }
+        refresh()
     }
 
     /// Only after the user confirmed: whatever the lost writer left in the workspace is kept as is.

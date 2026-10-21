@@ -23,7 +23,7 @@
 - 官方首次提示和“设置 → 模型”写 Key 时经 `credentials.set` 交给 Swift（`model-key`），Worker 只留占位值，见 ADR 0003。
 - 官方侧栏在页面宽度小于 1024 px 时收成图标条；macOS 窗口被遮挡时 CSS 动画暂停，后台截图里侧栏文字是空的，前置窗口就正常，不是缺陷。
 - 已验证（macOS）：`make app` 通过，桥接测试 23/23；窗口前置后侧栏完整，自动建默认工作区，选择器列出项目，新建文件夹后不用重启就能打开，重启后项目都在，运行状态表单正常、Linux 绑定到项目。Key 输入框是安全输入框，自动化打不进去，Key 路径只由单元测试覆盖。
-- iPad：签名构建 `build/app/ipad-signed-r30` 已出；本次 probe 时 iPad 锁屏且 App 显示未安装，安装待 iPad 解锁后用私有脚本完成。
+- iPad：r30 已安装并启动，进程在运行。之前 App 已被删掉，重装后要在“设置 → 通用 → VPN 与设备管理”里重新信任开发者才能打开。
 
 第 2 步（去掉 `system.raw` 里约 537 MB 的 `/opt/harness`，需重建镜像并重跑 Linux 验收）以后再做。
 
@@ -41,7 +41,7 @@
 
 **下一步：**
 
-1. 在 iPad 上装 r30 并看一眼界面；合并 `feat/official-ui` 的 PR。
+1. 用户在 iPad 上看界面；合并 `feat/official-ui` 的 PR。
 2. 可选：第 2 步精简系统盘。
 3. 可选：桥接对 shell 执行也重试 `LEASE_BUSY`。
 

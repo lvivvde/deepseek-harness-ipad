@@ -132,13 +132,19 @@ class Guards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'EXECUTOR_HASH_MISMATCH'):
             build.validate_executor(executor)
 
-    def testSigningSettingsAreLimitedToTheTeamAndProfile(self):
+    def testSigningSettingsAreLimitedToTheTeamProfileAndBundleId(self):
         path = Path(self.temporary.name) / 'signing.json'
         path.write_text(json.dumps({'DEVELOPMENT_TEAM': 'TEAM'}))
         self.assertEqual(build.signing_settings(path), ['DEVELOPMENT_TEAM=TEAM'])
-        path.write_text(json.dumps({'DEVELOPMENT_TEAM': 'TEAM', 'OTHER_LDFLAGS': '-x'}))
-        with self.assertRaisesRegex(ValueError, 'SIGNING_SETTINGS_REFUSED'):
-            build.signing_settings(path)
+        path.write_text(json.dumps({'DEVELOPMENT_TEAM': 'TEAM', 'PRODUCT_BUNDLE_IDENTIFIER': 'com.example.harness'}))
+        self.assertEqual(build.signing_settings(path),
+                         ['DEVELOPMENT_TEAM=TEAM', 'PRODUCT_BUNDLE_IDENTIFIER=com.example.harness'])
+        for refused in ({'DEVELOPMENT_TEAM': 'TEAM', 'OTHER_LDFLAGS': '-x'},
+                        {'DEVELOPMENT_TEAM': 'TEAM', 'PRODUCT_BUNDLE_IDENTIFIER': 'harness'},
+                        {'DEVELOPMENT_TEAM': 'TEAM', 'PRODUCT_BUNDLE_IDENTIFIER': 'com.example.$(X)'}):
+            path.write_text(json.dumps(refused))
+            with self.assertRaisesRegex(ValueError, 'SIGNING_SETTINGS_REFUSED'):
+                build.signing_settings(path)
 
 
 if __name__ == '__main__':

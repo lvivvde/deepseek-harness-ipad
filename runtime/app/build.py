@@ -4,7 +4,8 @@
 The Xcode project is generated under ignored build/ and links the Swift package in ios/HarnessApp.
 The bundle carries the prepared web root (`make web`) and the
 verified Linux guest inputs. No user disk input. The iPad bundle also embeds the verified in-process
-QEMU framework closure; it is signed only with a private `--signing-file` (team, signing style and profile).
+QEMU framework closure; it is signed only with a private `--signing-file` (team, signing style, profile and, for a
+different developer account, the bundle ID).
 Usage: python3 runtime/app/build.py [--sdk macosx|iphoneos] [--web DIR]
        [--inputs DIR] [--executor DIR] [--signing-file JSON] [--output DIR]
 """
@@ -26,7 +27,7 @@ APP_SOURCES = PACKAGE / 'App/Sources'
 LEASE = REPO / 'runtime/guest-agent'
 EXECUTOR = REPO / 'build/executor'
 QEMU = 'qemu-aarch64-softmmu.framework'
-SIGNING = {'DEVELOPMENT_TEAM', 'CODE_SIGN_STYLE', 'PROVISIONING_PROFILE_SPECIFIER'}
+SIGNING = {'DEVELOPMENT_TEAM', 'CODE_SIGN_STYLE', 'PROVISIONING_PROFILE_SPECIFIER', 'PRODUCT_BUNDLE_IDENTIFIER'}
 FILES = ('Image', 'initramfs.gz', 'system.raw')
 GIT_SCRIPTS = ('native-git-objects.js', 'native-git-match.js', 'native-git-xdiff.js', 'native-git.js')
 BUNDLE_ID = 'org.lvivvde.harness.candidate'
@@ -95,10 +96,12 @@ def validate_executor(executor):
 
 
 def signing_settings(path):
-    """Private signing settings as xcodebuild arguments: the team, and optionally style and profile."""
+    """Private signing settings as xcodebuild arguments: the team, and optionally style, profile and bundle ID."""
     settings = json.loads(path.read_text())
     if (not isinstance(settings, dict) or not settings.get('DEVELOPMENT_TEAM') or set(settings) - SIGNING
             or not all(isinstance(value, str) and value for value in settings.values())):
+        raise ValueError('SIGNING_SETTINGS_REFUSED')
+    if not re.fullmatch(r'[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+', settings.get('PRODUCT_BUNDLE_IDENTIFIER', BUNDLE_ID)):
         raise ValueError('SIGNING_SETTINGS_REFUSED')
     return [key + '=' + value for key, value in sorted(settings.items())]
 
@@ -213,7 +216,7 @@ def main():
     parser.add_argument('--web', type=Path, default=REPO / 'build/app/Web')
     parser.add_argument('--inputs', type=Path, default=REPO / 'build/guest')
     parser.add_argument('--executor', type=Path, default=EXECUTOR, help='iPad: prepared QEMU framework closure')
-    parser.add_argument('--signing-file', type=Path, help='iPad: private JSON with the team (and style, profile)')
+    parser.add_argument('--signing-file', type=Path, help='iPad: private JSON with the team (and style, profile, bundle ID)')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     mac, sdk = args.sdk == 'macosx', args.sdk
@@ -228,6 +231,7 @@ def main():
     signing = signing_settings(args.signing_file) if args.signing_file else None
     if signing is not None and not device:
         raise ValueError('SIGNING_ONLY_FOR_IPAD')
+    bundle_id = next((s.split('=', 1)[1] for s in signing or [] if s.startswith('PRODUCT_BUNDLE_IDENTIFIER=')), BUNDLE_ID)
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
@@ -248,7 +252,7 @@ def main():
     binary = (app / 'Contents/MacOS' if mac else app) / NAME
     completed = code == 0 and binary.is_file()
     if completed:
-        if plistlib.loads((app / ('Contents/Info.plist' if mac else 'Info.plist')).read_bytes())['CFBundleIdentifier'] != BUNDLE_ID:
+        if plistlib.loads((app / ('Contents/Info.plist' if mac else 'Info.plist')).read_bytes())['CFBundleIdentifier'] != bundle_id:
             raise ValueError('APP_IDENTITY_REFUSED')
         for name in FILES:
             if digest(bundled / 'LinuxInputs' / name) != manifest['files'][name]:
@@ -261,7 +265,7 @@ def main():
                                                   capture_output=True).returncode != 0:
             raise ValueError('SIGNATURE_REFUSED')
     signed = completed and signing is not None
-    receipt = {'completed': completed, 'bundleId': BUNDLE_ID, 'platform': sdk, 'signed': signed, 'installed': False,
+    receipt = {'completed': completed, 'bundleId': bundle_id, 'platform': sdk, 'signed': signed, 'installed': False,
                'inputs': manifest['files'], 'leaseSourceSha256': manifest['leaseSourceSha256'],
                'web': {'harnessVersion': web_receipt.get('harnessVersion'), 'runtimeVersion': web_receipt.get('runtimeVersion'),
                        'configSha256': web_receipt.get('configSha256'), 'files': len(web_receipt['files'])},
@@ -270,7 +274,7 @@ def main():
                'coreSha256': {p.name: digest(p) for p in sorted((PACKAGE / 'Sources/Core').glob('*.swift'))},
                'appBinarySha256': digest(binary) if completed else None}
     (output / 'build-safe.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    print(json.dumps({'completed': completed, 'bundleId': BUNDLE_ID, 'platform': sdk, 'signed': signed, 'installed': False,
+    print(json.dumps({'completed': completed, 'bundleId': bundle_id, 'platform': sdk, 'signed': signed, 'installed': False,
                       'app': str(app.relative_to(REPO)), 'receipt': str((output / 'build-safe.json').relative_to(REPO))}))
     return 0 if completed else 1
 

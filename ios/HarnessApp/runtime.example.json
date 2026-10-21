@@ -1,8 +1,0 @@
-{
-  "formatVersion": 1,
-  "kernel": "Image",
-  "initramfs": "initramfs.gz",
-  "systemDisk": "system.raw",
-  "userDiskSeed": "user-seed.raw",
-  "memoryMiB": 2048
-}

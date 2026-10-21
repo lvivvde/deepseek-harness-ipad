@@ -1,6 +1,6 @@
 import Foundation
 import Darwin
-import HarnessCandidate
+import HarnessCore
 import HarnessHost
 import LinuxPlugin
 import NativeWorkspace
@@ -23,8 +23,8 @@ let hook: FaultHook = { point in
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
     }
 }
-func makeHost() throws -> CandidateHost {
-    CandidateHost(registry: try ProjectRegistry(root: root), machine: NoMachine(), availability: .unavailable(.privateSymbolMissing),
+func makeHost() throws -> AppHost {
+    AppHost(registry: try ProjectRegistry(root: root), machine: NoMachine(), availability: .unavailable(.privateSymbolMissing),
                   gitScripts: [], recoveryFault: hook)
 }
 var host = try makeHost()

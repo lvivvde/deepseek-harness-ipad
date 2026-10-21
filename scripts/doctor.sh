@@ -44,6 +44,24 @@ else
   fi
 fi
 
+if command -v node >/dev/null 2>&1; then
+  pass "Node $(node --version)"
+else
+  fail "Node；make web 和 make test 需要它。"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  pass "$(python3 --version)"
+else
+  fail "Python 3；App 构建脚本需要它。"
+fi
+
+if command -v qemu-system-aarch64 >/dev/null 2>&1; then
+  pass "qemu-system-aarch64（make app 的 macOS 版用它跑 Linux）"
+else
+  printf '[可选] macOS 版 App 的 Linux 插件需要 Homebrew 的 qemu；iPad 版不需要。\n'
+fi
+
 if command -v gh >/dev/null 2>&1; then
   pass "GitHub CLI 已安装；登录状态可通过 gh auth status 检查。"
 else

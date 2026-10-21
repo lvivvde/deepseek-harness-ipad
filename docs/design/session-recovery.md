@@ -12,8 +12,8 @@
 
 ## 当前证据
 
-- `runtime/candidate/candidate-bridge.js` 的检查点文件条目使用 `base64`；`CandidateHostTests.swift` 的夹具使用 `data` 且只核对路径。需要真实 Worker → Swift 保存 → Worker 恢复的字节往返验证。
-- `CandidateHost` 独立替换根目录下的 `worker-home.json`，没有保留上一份、校验封装或专门的损坏隔离；读取失败与文件不存在都可能返回空检查点。
+- `runtime/app/worker-bridge.js` 的检查点文件条目使用 `base64`；`AppHostTests.swift` 的夹具使用 `data` 且只核对路径。需要真实 Worker → Swift 保存 → Worker 恢复的字节往返验证。
+- `AppHost` 独立替换根目录下的 `worker-home.json`，没有保留上一份、校验封装或专门的损坏隔离；读取失败与文件不存在都可能返回空检查点。
 - 官方持久化 flush 在候选 Worker 中只把已接收事件写进内存 VFS；Swift 耐久保存的确认才代表原生存储完成。现有桥接没有检查返回的 `durable: true`。
 - 当前保存失败只有会被后续事件覆盖的 Worker 事件文字，不是持续的保存状态。
 - 每个已打开项目已有代际、草稿和未知调用恢复记录；尚未打开的项目没有活跃网关。调用账本的操作 id 尚未关联官方会话或其中的具体工具调用。
@@ -36,7 +36,7 @@
 逻辑上的“会话检查点与恢复”是一个 deep module，跨两种语言共同拥有 implementation：
 
 - Worker 部分封装官方持久化 flush、home 采集和恢复、事件合并、周期保存及失败重试。官方启动的 restore/install 两个挂接点保持现有顺序，由启动 adapter 接入 module。
-- Swift 部分封装检查点格式验证、耐久存储、恢复选择、采集基线和持久可见的保存状态。`CandidateHost` 只把相应原生请求交给它。
+- Swift 部分封装检查点格式验证、耐久存储、恢复选择、采集基线和持久可见的保存状态。`AppHost` 只把相应原生请求交给它。
 - 原生 UI 读取专门的会话保存/恢复状态。它不解释检查点文件或 Worker 日志，后续 Linux、终端或 Worker 事件也不能覆盖保存失败状态。
 
 调用方的概念 interface 如下，表示责任与行为，不锁定实现中的命名：
@@ -51,7 +51,7 @@
 
 文件和 VFS 属于 local-substitutable 依赖。内部采用原生耐久文件与可注入故障的临时文件 adapter、真实 Worker VFS 与内存 VFS adapter；生产桥接和测试往返都执行同一个合同。保留现有 SwiftPM 目标，暂不为单一实现增加通用存储或调度抽象。
 
-拟收拢的位置：Worker home 逻辑由 `runtime/candidate/candidate-bridge.js` 收进专属实现文件；Swift 从 `CandidateHost` 收进 `Sources/Candidate` 的恢复 module。`WorkspaceStore` 和 `ProjectGateway` 只补必要的项目恢复事实读取，不重复实现耐久写租约。
+拟收拢的位置：Worker home 逻辑由 `runtime/app/worker-bridge.js` 收进专属实现文件；Swift 从 `AppHost` 收进 `Sources/Core` 的恢复 module。`WorkspaceStore` 和 `ProjectGateway` 只补必要的项目恢复事实读取，不重复实现耐久写租约。
 
 ## 保存顺序与项目提示
 

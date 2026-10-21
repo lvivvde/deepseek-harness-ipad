@@ -1,5 +1,7 @@
 # 从旧 App 备份迁入用户数据（#39 关口 6）
 
+> 2026-10-21：文中的研究 App 和原型代码（`runtime/prototypes/`、`ios/LinuxPrototype` 等）已随[单一 App 方案](single-app-plan.md)删除，可在提交 `111817f` 及以前的 Git 历史中查看。 旧 App 已退役，旧数据不再迁入，`UserDataMigrator` 和 App 的备份导入一并删除。
+
 依据：[ADR 0003](../adr/0003-native-worker-with-project-linux.md)，[#39](https://github.com/lvivvde/deepseek-harness-ipad/issues/39) 关口 6。2026-10-08 创建。
 
 ## 规则

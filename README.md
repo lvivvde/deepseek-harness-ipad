@@ -2,41 +2,44 @@
 
 目标：探索将 DeepSeek Harness 做成可在普通未越狱 iPad 上本地完成项目生产的应用。本项目只公开源码，不发布 IPA；想用的人从源码自行构建、签名安装（见[许可证审查简报](docs/design/license-review-brief.md)）。
 
-当前状态（2026-10-21）：完整功能在独立的候选 App（Harness Candidate，`make candidate-app`）里，已在 iPad 上验收 Linux 项目、Git 开发闭环、插件安装、预览与 HMR、键盘和前后台恢复。正式 App 仍停在基线 `7956e8c`，没有用上新架构。未测项和已知缺口见 [开发交接](docs/agents/handoff.md)。
+当前状态（2026-10-21）：只有一个 App，**DeepSeek Harness**。已在 iPad 上验收 Linux 项目、Git 开发闭环、插件安装、预览与 HMR、键盘和前后台恢复；未测项和已知缺口见 [开发交接](docs/agents/handoff.md)。旧的正式 App 和研究原型已退役，代码在 Git 历史里（[合并方案](docs/design/single-app-plan.md)）。
 
-当前路线图由 [iPad 原生基础能力与 Linux 兼容插件 #15](https://github.com/lvivvde/deepseek-harness-ipad/issues/15) 承载；#1 是历史规划归档。现有应用沿用官方界面，项目放在设备内持久化用户盘。新的“原生优先”候选仍处于方案500研究阶段，正式架构以现有 ADR 为准。
+架构见 [ADR 0003](docs/adr/0003-native-worker-with-project-linux.md)：官方 Harness 的实验 Web Worker 在 WKWebView 里运行，沿用官方界面；Swift 原生层是项目文件、只读 Git 和模型请求的唯一权威；Linux 是项目级插件，在 App 进程内的 QEMU（无 JIT）里运行 shell、Git 写操作和开发服务器。Harness 是智能体运行框架，App 不包含 DeepSeek 模型权重，模型经网络调用。
 
-## 开始开发
+## 从源码构建
+
+需要 macOS、完整 Xcode 和 Node。先检查环境：
 
 ```sh
 git clone https://github.com/lvivvde/deepseek-harness-ipad.git
 cd deepseek-harness-ipad
 make doctor
-make check
 ```
 
-完整环境准备步骤见 [开发环境说明](docs/development.md)。仅安装 Command Line Tools 时，`make doctor` 会提示补齐完整 Xcode。
+| 命令 | 作用 |
+| --- | --- |
+| `make web` | 从固定的官方包生成 App 的网页根目录 |
+| `make app` | 构建未签名的 macOS App（用本机 Homebrew QEMU） |
+| `make ipad` | 构建 iPad App，嵌入 QEMU 执行器 |
+| `make test` | 运行全部无需设备的测试 |
+| `make check` | 检查脚本语法和空白错误 |
 
-## 移植约束与待验证路线
+`make web` 和 `make ipad` 需要先准备依赖、Linux guest 和 QEMU 执行器，步骤见 [Linux 运行时与 App 构建输入](runtime/README.md)；签名和安装见 [App 说明](ios/HarnessApp/README.md)。完整环境准备见 [开发环境说明](docs/development.md)。
 
-2026-10-02 已确认：项目文件操作、Git、命令、验证和受支持插件执行均须在 iPad 本地完成；允许联网调用模型。首版可以限定项目类型与插件兼容范围，但必须完成项目获取、修改、验证与提交的本地开发闭环。
+## 约束
 
-已选完整 Linux 系统软件模拟作为原型验证方向，保留官方 Harness 运行方式与 Web 界面；分层、语言及验证门槛见 [架构基线](docs/design/architecture-candidates.md)。远端执行客户端不满足当前约束。
-
-执行层和界面桥接已由 [无 JIT 自签 IPA 原型](https://github.com/lvivvde/deepseek-harness-ipad/issues/11) 真机验证；正式入口、内置运行时、独立用户盘及核心恢复已进入 main。代码完成与真实验收分开记录，最新状态见 [开发交接](docs/agents/handoff.md)。Harness 是智能体运行框架；打包应用不等于将 DeepSeek 模型权重放进 iPad。
+项目文件操作、Git、命令、验证和受支持插件都在 iPad 本地完成；只有模型请求联网。首版限定了项目类型和插件兼容范围，见 [能力声明](docs/design/capability-declaration.md)。
 
 ## 目录
 
-- `ios/`：iPad 应用工程与代码。
-- `upstream/`：预留给上游 Harness 源码。
-- `docs/`：可行性分析、设计和调试记录。
-- `scripts/`：构建与开发辅助脚本。
+- `ios/HarnessApp/`：Swift 包和 App 外壳。
+- `runtime/`：网页根目录生成、App 构建、Linux guest 和执行器的构建脚本。
+- `docs/`：架构决策、设计、验收记录和研究报告。
+- `scripts/`：开发环境检查。
 
-## 后续步骤
+## 后续开发
 
-新会话先读 [开发交接](docs/agents/handoff.md)，其中列出主干/已安装包差异、开放任务、已验证和未完成项。真机连接、独立 runner 构建和页面检查使用 [真机自动化工具](docs/validation/ipad-device-automation.md)，本机设备/签名与证据保存在忽略的 `build/`。
-
-架构以 [ADR 0003](docs/adr/0003-native-worker-with-project-linux.md) 为准：官方实验 Worker + Swift 原生权威 + 项目级 Linux。路线图 #15 的 #39、#17、#18、#23 已完成，许可证审查 #14 已有结果。用户取消的锁屏/8 小时测试继续取消。
+新会话先读 [开发交接](docs/agents/handoff.md)。真机连接和容器读取见 [真机自动化工具](docs/validation/ipad-device-automation.md)，本机设备、签名和证据都放在忽略的 `build/`。
 
 ## 参考资料
 

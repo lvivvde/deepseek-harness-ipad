@@ -1,5 +1,0 @@
-.runtime/
-build/
-*.xcuserstate
-xcuserdata/
-Signing.local.xcconfig

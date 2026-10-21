@@ -9,7 +9,7 @@ import NativeWorkspace
 final class GitHostTests: XCTestCase {
     static let mount = "/dsh/workspace/演示"
     static let web = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .appendingPathComponent("../../../runtime/prototypes/plan500-ipad/web").standardized
+        .appendingPathComponent("../../../runtime/native-git").standardized
     var root = "", workspace = "", scratch = ""
     var busy = false
 

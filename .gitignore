@@ -30,6 +30,3 @@ node_modules/
 __pycache__/
 *.pyc
 *.log
-
-# Optional local checkout of the upstream project
-upstream/deepseek-harness/

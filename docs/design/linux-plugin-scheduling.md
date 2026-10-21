@@ -146,15 +146,15 @@ macOS 单元测试：`swift test --package-path ios/HarnessApp --filter 'LinuxPl
   - VM 退出时释放（`GUEST_TERMINATED`）
   - 重启后和在线 guest 撤销 fence 后的显式释放
 
-guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写租约研究中的 `runtime/prototypes/plan500-lease/agent.cjs`，这里只测网关对它的调用合同。
+guest agent 本身（`/bind`、`/execute`、`/cancel`、`/revoke`）用的是写租约研究中的 `runtime/guest-agent/agent.cjs`，这里只测网关对它的调用合同。
 
 ## 候选 App（macOS 与 iPad）
 
 正式候选 App 的 bundle ID 为 `org.lvivvde.harness.candidate`，与正式 App 分开。代码在正式源码树中：
 
-- `ios/HarnessApp/Sources/Candidate`（模块 `HarnessCandidate`）：`CandidateHost` 是 Worker 唯一的原生权威，负责项目、文件、子进程、Linux 执行与取消、模型流和 Worker home 检查点。VM 接口 `GuestMachine` 有两个实现：macOS 上的 `QemuMachine` 是子进程；iPad 上的 `EmbeddedMachine` 把随包的 QEMU framework 载入 App 进程，在单独线程上运行。两者共用同一组 guest 参数（`GuestArguments`）。
-- `ios/HarnessApp/CandidateApp/Sources`：SwiftUI 外壳，以及装载官方页面的 WKWebView 与回环资源服务。
-- `runtime/candidate`：`prepare.mjs` 从固定官方包生成网页根目录，在副本中给官方 Worker 加挂接点；`candidate-bridge.js` 把官方服务接到原生调用；`build.py` 核对输入后生成独立 Xcode 工程（`--sdk macosx` 或 `iphoneos`）。iPad 构建先按 `frameworks.json` 核对执行器闭包的集合与 SHA256，再嵌入 `Frameworks/`；只有提供私有 `--signing-file` 时才签名，签名设置只接受开发团队、签名方式和描述文件三项。正式 App 的工程不改。
+- `ios/HarnessApp/Sources/Core`（模块 `HarnessCore`）：`AppHost` 是 Worker 唯一的原生权威，负责项目、文件、子进程、Linux 执行与取消、模型流和 Worker home 检查点。VM 接口 `GuestMachine` 有两个实现：macOS 上的 `QemuMachine` 是子进程；iPad 上的 `EmbeddedMachine` 把随包的 QEMU framework 载入 App 进程，在单独线程上运行。两者共用同一组 guest 参数（`GuestArguments`）。
+- `ios/HarnessApp/App/Sources`：SwiftUI 外壳，以及装载官方页面的 WKWebView 与回环资源服务。
+- `runtime/app`：`prepare.mjs` 从固定官方包生成网页根目录，在副本中给官方 Worker 加挂接点；`candidate-bridge.js` 把官方服务接到原生调用；`build.py` 核对输入后生成独立 Xcode 工程（`--sdk macosx` 或 `iphoneos`）。iPad 构建先按 `frameworks.json` 核对执行器闭包的集合与 SHA256，再嵌入 `Frameworks/`；只有提供私有 `--signing-file` 时才签名，签名设置只接受开发团队、签名方式和描述文件三项。正式 App 的工程不改。
 
 接线行为：
 

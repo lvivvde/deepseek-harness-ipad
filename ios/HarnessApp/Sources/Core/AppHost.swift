@@ -1,0 +1,524 @@
+import Foundation
+import HarnessHost
+import LinuxPlugin
+import ModelGateway
+import NativeTools
+import NativeWorkspace
+
+/// The App's single authority behind the official Worker: projects, their native tools, the
+/// Linux plugin bound to one project, the model stream and the Worker home checkpoint. `handle` takes
+/// one bridge request and answers with a JSON object: `{"error": code}` for a refusal, `{"failure":
+/// {code, detail}}` for a tool error the Worker maps, otherwise the operation's own fields.
+public final class AppHost: @unchecked Sendable {
+    public static let gitScriptNames = ["native-git-objects.js", "native-git-match.js", "native-git-xdiff.js", "native-git.js"]
+    public static let homeCheckpoint = "worker-home.json"
+    public static let diagnosticRecord = "linux-diagnostic.json"
+    static let maxCommandTimeoutMs = 600_000
+    static let workerCredentials = "/dsh/home/.credentials.yaml"
+
+    public let registry: ProjectRegistry
+    private let recovery: SessionRecovery
+    /// Plugin tarballs the Worker's native pnpm installed (#23).
+    private let packages: PackageStore
+    private let machine: GuestMachine
+    private let gitScripts: [(name: String, source: String)]
+    private let model: ModelGateway?
+    private let readyTimeout: TimeInterval
+    private let pollInterval: TimeInterval
+    private(set) var plugin: LinuxPlugin!
+    private var execution: LinuxExecution!
+
+    private struct Open { let project: AppProject; let gateway: ProjectGateway; let tools: ProjectTools }
+    /// Guards `open`, `stopping` and `diagnostic`. Never held while a
+    /// gateway, the plugin or the guest is called.
+    private let lock = NSLock()
+    /// Only one opener constructs a project's durable store; a second recovery must not journal
+    /// against a store that another opener has already made live.
+    private let openingLock = NSLock()
+    private var open: [String: Open] = [:]
+    /// The launcher stopped the VM itself; its exit must not replace the preparation failure's cause.
+    private var stopping = false
+    private var diagnostic: LinuxPlugin.Diagnostic?
+    private var boots = 0
+
+    public init(registry: ProjectRegistry, machine: GuestMachine, availability: LinuxAvailability = .detect(),
+                gitScripts: [(name: String, source: String)], model: ModelGateway? = nil,
+                readyTimeout: TimeInterval = 600, pollInterval: TimeInterval = 0.25, recoveryFault: FaultHook? = nil) {
+        recovery = SessionRecovery(root: registry.root, fault: recoveryFault)
+        packages = PackageStore(root: registry.root)
+        self.registry = registry; self.machine = machine; self.gitScripts = gitScripts; self.model = model
+        self.readyTimeout = readyTimeout; self.pollInterval = pollInterval
+        let record = registry.root + "/" + Self.diagnosticRecord
+        diagnostic = FileManager.default.contents(atPath: record).flatMap { try? JSONDecoder().decode(LinuxPlugin.Diagnostic.self, from: $0) }
+        plugin = LinuxPlugin(availability: availability, launcher: { [weak self] in
+            guard let self else { throw LinuxPlugin.LaunchFailure("HOST_CLOSED") }
+            try launch($0)
+        }, diagnostics: { [weak self] in self?.save($0) })
+        execution = LinuxExecution(plugin: plugin, rpc: machine.rpc)
+        machine.onExit = { [weak self] in self?.vmExited($0) }
+    }
+
+    public func handle(_ body: [String: Any]) -> [String: Any] {
+        do {
+            switch body["operation"] as? String {
+            case "projects": return ["projects": projects()]
+            case "project-create":
+                guard let name = body["name"] as? String, let enabled = body["pluginEnabled"] as? Bool else { throw AppError("PROJECT_REFUSED") }
+                return ["project": entry(try registry.create(name: name, pluginEnabled: enabled))]
+            case "project-open":
+                guard let id = body["id"] as? String, let project = registry.project(id) else { throw AppError("PROJECT_UNKNOWN") }
+                return ["project": entry(try openProject(project))]
+            case "status": return status()
+            case "fs": return try tool { try tools(at: argument(body, "path"), missing: "FS_NOT_FOUND").file(body["method"] as? String ?? "", arguments(body)) }
+            case "path": return try tool { try tools(at: argument(body, "path"), missing: "ENOENT").path(body["method"] as? String ?? "", arguments(body)) }
+            case "spawn": return try tool { try tools(at: argument(body, "cwd"), missing: "ENOENT").spawn(arguments(body)) }
+            case "image": return try tool { try ProjectTools.image(body["method"] as? String ?? "", arguments(body)) }
+            case "execute": return try execute(body)
+            case "cancel":
+                guard let id = body["operationId"] as? String else { throw AppError("ID_REFUSED") }
+                return ["status": cancel(id)]
+            case "terminal-open": return try terminalOpen(body)
+            case "terminal-write": return try terminalWrite(body)
+            case "terminal-read": return try terminalRead(body)
+            case "terminal-resize":
+                let (id, gateway) = try terminal(body)
+                try terminalCall { try gateway.resizeTerminal(id, cols: body["cols"] as? Int ?? 0, rows: body["rows"] as? Int ?? 0) }
+                return [:]
+            case "terminal-signal":
+                let (id, gateway) = try terminal(body)
+                return ["processGroupId": try terminalCall { try gateway.signalTerminal(id, signal: body["signal"] as? String ?? "") }]
+            case "terminal-inspect":
+                let (id, gateway) = try terminal(body)
+                let inspected = try terminalCall { try gateway.inspectTerminal(id) }
+                return ["foreground": inspected.foreground.map { ["processGroupId": $0.processGroupId, "inputWaiting": $0.inputWaiting] } as Any? ?? NSNull(),
+                        "activity": Self.activity(inspected.activity)]
+            case "terminal-close": return try terminalClose(body)
+            case "terminals-reset": return terminalsReset()
+            case "service-start": return try serviceStart(body)
+            case "service-read": return try guest("/service/read", ["id": try serviceId(body)])
+            case "service-stop": return try guest("/service/stop", ["id": try serviceId(body)])
+            case "preview-ports": return try previewPorts()
+            case "preview-open": return try previewOpen(body)
+            case "preview-close":
+                _ = try guest("/preview", ["port": NSNull()])
+                return ["closed": true]
+            case "writer-release":
+                guard let id = body["id"] as? String, let gateway = opened(id)?.gateway else { throw AppError("PROJECT_UNKNOWN") }
+                return ["status": Self.name(gateway.releaseUnknownWriter())]
+            case "model-open": return modelOpen(body)
+            case "model-read": return modelRead(body)
+            case "model-cancel":
+                if let id = body["streamId"] as? String { model?.cancel(id) }
+                return ["cancelled": true]
+            case "checkpoint": return try recovery.save(body)
+            case "checkpoint-begin": return try recovery.begin(body, sample: captureBaselines)
+            case "session-changed": return try recovery.changed(body)
+            case "session-fresh": return try recovery.fresh()
+            case "restore": return try recovery.restore()
+            case "package-put": return try packages.put(body)
+            case "package-get": return try packages.get(body)
+            case "package-keep": return try packages.keep(body)
+            default: throw AppError("OPERATION_REFUSED")
+            }
+        } catch let error as AppError {
+            return ["error": error.code]
+        } catch {
+            return ["error": "HOST_FAILED"]
+        }
+    }
+
+    // MARK: Projects
+
+    private func opened(_ id: String) -> Open? { lock.lock(); defer { lock.unlock() }; return open[id] }
+
+    /// Opening never waits for Linux: a plugin project starts its preparation in the background.
+    private func openProject(_ project: AppProject) throws -> AppProject {
+        openingLock.lock()
+        do {
+            defer { openingLock.unlock() }
+            if opened(project.id) == nil {
+                let store = try WorkspaceStore(workspace: registry.workspace(project), state: registry.state(project))
+                let gateway = ProjectGateway(project: project.id, store: store, plugin: plugin, rpc: machine.rpc, execution: execution)
+                let tools = try ProjectTools(gateway: gateway, workspace: registry.workspace(project), mount: project.mount,
+                                             scratch: registry.scratch, gitScripts: gitScripts)
+                lock.lock()
+                if open[project.id] == nil { open[project.id] = Open(project: project, gateway: gateway, tools: tools) }
+                lock.unlock()
+            }
+        }
+        plugin.open(project: project.id, pluginEnabled: project.pluginEnabled)
+        return project
+    }
+
+    private func projects() -> [[String: Any]] { registry.projects.map(entry) }
+
+    /// `writerUnknown`: a Linux writer this project cannot confirm stopped holds the lease, so native
+    /// writes become drafts until the user releases it (`writer-release`).
+    private func entry(_ project: AppProject) -> [String: Any] {
+        let gateway = opened(project.id)?.gateway
+        let isOpen = gateway != nil
+        var value: [String: Any] = ["id": project.id, "name": project.name, "pluginEnabled": project.pluginEnabled,
+                                    "mount": project.mount, "open": isOpen, "writerUnknown": gateway?.lease?.state == .writerUnknown]
+        if let gateway {
+            let facts = gateway.withStore { ($0.generation, $0.recoveryComparable, $0.unknownToolCalls.count, $0.draftList.count) }
+            value["recovery"] = ["comparison": recovery.comparison(project.id, generation: facts.0, available: facts.1),
+                                 "unknownCalls": facts.2, "drafts": facts.3]
+        }
+        let phase = plugin.phase(of: project.id)
+        value["phase"] = Self.name(phase)
+        switch phase {
+        case .failed(let reason), .unavailable(let reason): value["reason"] = reason
+        default: break
+        }
+        if isOpen { value["capabilities"] = Self.gapDeclaration(plugin.declaration(project: project.id)) }
+        return value
+    }
+
+    /// Where the App falls short of the formal scope, declared instead of hidden. A narrower path
+    /// qualifies an item that is available; hooks run on Linux, but the official web profile loads no hook plugin.
+    /// Shell commands in one project are not queued: while one holds the write lease the others are refused.
+    static let narrower = ["git.write": "SHELL_ONLY", "subprocess": "BASH_C_ONLY", "hook.command": "NO_OFFICIAL_CALLER",
+                           "shell": "ONE_COMMAND_AT_A_TIME"]
+
+    static func gapDeclaration(_ declaration: CapabilityDeclaration) -> [String: Any] {
+        var value = json(declaration) as? [String: Any] ?? [:]
+        var items = value["items"] as? [[String: Any]] ?? []
+        for index in items.indices {
+            if let narrower = narrower[items[index]["name"] as? String ?? ""], items[index]["available"] as? Bool == true {
+                items[index]["reason"] = narrower
+            }
+        }
+        // The terminal runs where shell commands run; it holds the write lease only while a command runs in it.
+        if var terminal = items.first(where: { $0["name"] as? String == "shell" }) {
+            terminal["name"] = "terminal"
+            if terminal["available"] as? Bool == true { terminal["reason"] = "WRITE_LEASE_WHILE_BUSY" }
+            items.append(terminal)
+        }
+        value["items"] = items
+        return value
+    }
+
+    private func status() -> [String: Any] {
+        lock.lock(); let record = diagnostic; lock.unlock()
+        let availability: String
+        switch plugin.availability {
+        case .available: availability = "AVAILABLE"
+        case .unavailable(let reason): availability = reason.rawValue
+        }
+        return ["linux": availability, "boundProject": plugin.boundProject as Any? ?? NSNull(),
+                "session": recovery.status(), "projects": projects(), "diagnostic": record.map(Self.json) ?? NSNull()]
+    }
+
+    static func name(_ phase: LinuxPlugin.Phase) -> String {
+        switch phase {
+        case .disabled: return "DISABLED"
+        case .preparing: return "PREPARING"
+        case .ready: return "READY"
+        case .failed: return "FAILED"
+        case .unavailable: return "UNAVAILABLE"
+        }
+    }
+
+    // MARK: Native tools
+
+    /// The open project whose mount holds `path`. The shared scratch and the directories above the
+    /// mounts are served by any open project's path space.
+    private func tools(at path: String, missing: String) throws -> ProjectTools {
+        lock.lock(); defer { lock.unlock() }
+        if let match = open.values.first(where: { path == $0.project.mount || path.hasPrefix($0.project.mount + "/") }) { return match.tools }
+        guard !path.hasPrefix("/dsh/workspace/"), let any = open.values.min(by: { $0.project.name < $1.project.name }) else {
+            throw ToolError(missing, "no open project")
+        }
+        return any.tools
+    }
+
+    private func arguments(_ body: [String: Any]) -> [String: Any] { body["args"] as? [String: Any] ?? [:] }
+    private func argument(_ body: [String: Any], _ key: String) -> String { arguments(body)[key] as? String ?? "" }
+
+    private func tool(_ work: () throws -> Any) throws -> [String: Any] {
+        do { return ["value": try work()] } catch let error as ToolError {
+            return ["failure": ["code": error.code, "detail": error.detail]]
+        }
+    }
+
+    // MARK: Linux
+
+    /// Runs one command on Linux in the project whose mount holds `cwd`. The command is never retried,
+    /// here or natively.
+    private func execute(_ body: [String: Any]) throws -> [String: Any] {
+        guard let id = body["operationId"] as? String, (1...128).contains(id.utf8.count),
+              let command = body["command"] as? String, command.utf8.count <= 256 * 1024,
+              let cwd = body["cwd"] as? String,
+              let timeout = body["timeoutMs"] as? Int, (1...Self.maxCommandTimeoutMs).contains(timeout) else {
+            throw AppError("COMMAND_REFUSED")
+        }
+        let task: LinuxPlugin.Task
+        switch body["trigger"] as? String ?? "shell" {
+        case "shell": task = .shell(command)
+        case "hook": task = .hook(command)
+        case "git": task = .git(command)
+        default: throw AppError("COMMAND_REFUSED")
+        }
+        lock.lock()
+        guard let (target, guestCwd) = locate(cwd) else { lock.unlock(); return ["status": "REFUSED", "reason": "CWD_REFUSED"] }
+        lock.unlock()
+        switch target.gateway.execute(id, task: task, argv: ["/bin/sh", "-c", command], timeoutMs: timeout, cwd: guestCwd) {
+        case .completed(let result, _), .joined(let result): return Self.result(result).merging(["status": "COMPLETED"]) { $1 }
+        case .refused(let code): return ["status": "REFUSED", "reason": code]
+        case .cancelledBeforeDispatch: return ["status": "CANCELLED_BEFORE_DISPATCH"]
+        case .writerUnknown(let result): return (result.map(Self.result) ?? [:]).merging(["status": "WRITER_UNKNOWN"]) { $1 }
+        }
+    }
+
+    // MARK: Terminal
+
+    /// Opens a pty shell in the project whose mount holds `cwd`. Its view of the workspace is read-only
+    /// until a line is run in it.
+    private func terminalOpen(_ body: [String: Any]) throws -> [String: Any] {
+        guard let id = body["terminalId"] as? String, (1...128).contains(id.utf8.count),
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
+              let cwd = body["cwd"] as? String, let argv = body["argv"] as? [String], !argv.isEmpty,
+              let cols = body["cols"] as? Int, let rows = body["rows"] as? Int else { throw AppError("TERMINAL_REFUSED") }
+        lock.lock()
+        guard let (target, guestCwd) = locate(cwd) else { lock.unlock(); throw AppError("CWD_REFUSED") }
+        lock.unlock()
+        do {
+            return ["pid": try target.gateway.openTerminal(id, argv: argv, cwd: guestCwd, cols: cols, rows: rows,
+                                                           env: body["env"] as? [String: String] ?? [:],
+                                                           terminalType: body["terminalType"] as? String)]
+        } catch let error as TerminalError {
+            throw AppError(error.code)
+        }
+    }
+
+    private func terminalWrite(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        guard let text = body["data"] as? String, let data = Data(base64Encoded: text), data.count <= 48 * 1024 else {
+            throw AppError("WRITE_REFUSED")
+        }
+        switch try terminalCall({ try gateway.writeTerminal(id, data) }) {
+        case .written(let leased): return ["status": "WRITTEN", "leased": leased]
+        case .refused(let code): return ["status": "REFUSED", "reason": code]
+        case .writerUnknown: return ["status": "WRITER_UNKNOWN"]
+        }
+    }
+
+    /// Long-polls output; `released` says the terminal's lease ended with this read.
+    private func terminalRead(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        let wait = min(max(body["waitMs"] as? Int ?? 0, 0), 20_000)
+        let read = try terminalCall { try gateway.readTerminal(id, offset: body["offset"] as? Int ?? 0, waitMs: wait) }
+        return ["data": read.data.base64EncodedString(), "next": read.next, "dropped": read.dropped,
+                "exited": read.exited.map { ["code": $0.code as Any? ?? NSNull(), "signal": $0.signal as Any? ?? NSNull()] } as Any? ?? NSNull(),
+                "activity": Self.activity(read.activity), "leased": read.leased, "released": read.release != nil]
+    }
+
+    /// The terminal stays tracked when the guest cannot confirm its lease ended.
+    private func terminalClose(_ body: [String: Any]) throws -> [String: Any] {
+        let (id, gateway) = try terminal(body)
+        let release = try terminalCall { try gateway.closeTerminal(id, graceMs: min(max(body["graceMs"] as? Int ?? 1000, 0), 5000)) }
+        return ["closed": true, "released": release != nil]
+    }
+
+    /// A new Worker closes the terminals an earlier one left open; `remaining` could not be closed yet.
+    private func terminalsReset() -> [String: Any] {
+        let reset = execution.resetTerminals()
+        return ["closed": reset.closed, "remaining": reset.remaining]
+    }
+
+    private func terminal(_ body: [String: Any]) throws -> (String, LinuxExecution) {
+        guard let id = body["terminalId"] as? String, execution.hasTerminal(id) else {
+            throw AppError("TERMINAL_NOT_FOUND")
+        }
+        return (id, execution)
+    }
+
+    private func terminalCall<T>(_ work: () throws -> T) throws -> T {
+        do { return try work() } catch let error as TerminalError { throw AppError(error.code) }
+    }
+
+    private static func activity(_ activity: TerminalActivity) -> [String: Any] {
+        ["state": activity.state, "revision": activity.revision]
+    }
+
+    // MARK: Services and preview (#23)
+
+    /// Starts a long-running Linux command, such as a dev server, in the project whose mount holds `cwd`.
+    /// It runs read-only on the workspace and holds no write lease, so native edits land while it runs;
+    /// it ends on `service-stop` or with the VM.
+    private func serviceStart(_ body: [String: Any]) throws -> [String: Any] {
+        let id = try serviceId(body)
+        guard let command = body["command"] as? String, !command.isEmpty, command.utf8.count <= 16 * 1024,
+              let cwd = body["cwd"] as? String else { throw AppError("SERVICE_REFUSED") }
+        lock.lock(); let located = locate(cwd); lock.unlock()
+        guard let (target, guestCwd) = located else { throw AppError("CWD_REFUSED") }
+        try requireReady(target.project.id)
+        return try guest("/service/start", ["id": id, "projectId": target.project.id, "argv": ["/bin/sh", "-c", command], "cwd": guestCwd])
+    }
+
+    private func serviceId(_ body: [String: Any]) throws -> String {
+        guard let id = body["serviceId"] as? String, (1...64).contains(id.utf8.count),
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+            throw AppError("SERVICE_REFUSED")
+        }
+        return id
+    }
+
+    /// The ports listening in the bound project's guest, for the preview picker.
+    private func previewPorts() throws -> [String: Any] {
+        guard let bound = plugin.boundProject else { throw AppError("LINUX_NOT_READY") }
+        try requireReady(bound)
+        return try guest("/ports", [:])
+    }
+
+    /// Points the guest's preview forwarder at `port` and answers the loopback URL that reaches it. Only
+    /// this device reaches it; closing the preview stops no service.
+    private func previewOpen(_ body: [String: Any]) throws -> [String: Any] {
+        guard let port = body["port"] as? Int, (1...65535).contains(port) else { throw AppError("PORT_REFUSED") }
+        guard let local = machine.previewPort else { throw AppError("PREVIEW_UNAVAILABLE") }
+        guard let bound = plugin.boundProject else { throw AppError("LINUX_NOT_READY") }
+        try requireReady(bound)
+        _ = try guest("/preview", ["port": port])
+        return ["port": port, "url": "http://127.0.0.1:\(local)/"]
+    }
+
+    private func requireReady(_ project: String) throws {
+        guard plugin.boundProject == project, case .ready = plugin.phase(of: project) else { throw AppError("LINUX_NOT_READY") }
+    }
+
+    /// One guest call; a guest refusal passes through only as a fixed code.
+    private func guest(_ route: String, _ body: [String: Any]) throws -> [String: Any] {
+        do { return try machine.rpc.call(route, body) } catch GuestRPCError.refused(let code) {
+            guard let code, code.range(of: "^[A-Z_]{1,64}$", options: .regularExpression) != nil else { throw AppError("GUEST_REFUSED") }
+            throw AppError(code)
+        } catch { throw AppError("GUEST_UNREACHABLE") }
+    }
+
+    /// Caller holds `lock`. Maps a Worker path inside an open project to the guest's `/workspace`.
+    private func locate(_ cwd: String) -> (Open, String)? {
+        for candidate in open.values {
+            let mount = candidate.project.mount
+            if cwd == mount { return (candidate, "/workspace") }
+            if cwd.hasPrefix(mount + "/") { return (candidate, "/workspace" + cwd.dropFirst(mount.count)) }
+        }
+        return nil
+    }
+
+    private static func result(_ result: CommandResult) -> [String: Any] {
+        ["exitCode": result.exitCode as Any? ?? NSNull(), "signal": result.signal as Any? ?? NSNull(),
+         "stdout": result.stdout, "stderr": result.stderr, "timedOut": result.timedOut, "cancelled": result.cancelled]
+    }
+
+    private func cancel(_ id: String) -> String {
+        switch execution.cancel(id) {
+        case .cancelledBeforeDispatch: return "CANCELLED_BEFORE_DISPATCH"
+        case .requested: return "CANCEL_REQUESTED"
+        case .writerUnknown: return "WRITER_UNKNOWN"
+        case .finished: return "FINISHED"
+        }
+    }
+
+    static func name(_ release: UnknownWriterRelease) -> String {
+        switch release {
+        case .released: return "RELEASED"
+        case .stillRunning: return "STILL_RUNNING"
+        case .unreachable: return "UNREACHABLE"
+        case .noUnknownWriter: return "NO_UNKNOWN_WRITER"
+        case .storeFailed: return "STORE_FAILED"
+        }
+    }
+
+    /// The plugin's launcher: marks the native workspace with the project identity, then boots, proves ready,
+    /// binds and checks the mount. Any failure stops the VM.
+    private func launch(_ id: String) throws {
+        guard let target = opened(id) else { throw LinuxPlugin.LaunchFailure("PROJECT_NOT_OPEN") }
+        let workspace = registry.workspace(target.project)
+        do { try Self.writeIdentity(id, workspace) } catch { throw LinuxPlugin.LaunchFailure("IDENTITY_WRITE_FAILED") }
+        let rpc = machine.rpc
+        try LinuxBringUp(rpc: rpc, boot: { [self] _ in
+                             lock.lock(); boots += 1; lock.unlock()
+                             try machine.boot(workspace: workspace)
+                         },
+                         exited: { [machine] in machine.exited }, attach: target.gateway.attach,
+                         check: MountCheck(rpc: rpc, workspace: workspace, project: id).verify,
+                         stop: { [self] in
+                             lock.lock(); stopping = true; lock.unlock()
+                             machine.stop()
+                         },
+                         readyTimeout: readyTimeout, pollInterval: pollInterval).launch(id)
+    }
+
+    /// How many times this process booted the VM; the contract allows at most one (`MeasureProbe`).
+    public var bootCount: Int { lock.lock(); defer { lock.unlock() }; return boots }
+
+    /// Stops the VM the way an unexpected exit would reach the host: not marked as stopping, so it is
+    /// recorded as a Linux failure. Only the lifecycle measurement calls this.
+    func stopVMUnexpectedly() { machine.stop() }
+
+    /// The App is quitting: the VM must not outlive it, and its exit is not a Linux failure.
+    public func shutdown() {
+        lock.lock(); stopping = true; lock.unlock()
+        machine.stop()
+    }
+
+    /// The guest agent's identity: `/workspace/.plan500-identity`, readable by its unprivileged reader.
+    static func writeIdentity(_ id: String, _ workspace: String) throws {
+        let path = workspace + "/" + String(decoding: WorkspaceFiles.guestIdentity, as: UTF8.self)
+        try ProjectRegistry.durableWrite(Data(id.utf8), to: path, mode: 0o644)
+    }
+
+    private func vmExited(_ status: Int32?) {
+        lock.lock(); let ignore = stopping; lock.unlock()
+        guard !ignore else { return }
+        execution.guestExited(status: status)
+    }
+
+    /// Saved before the failure is published, so the record survives the App being closed at once.
+    private func save(_ record: LinuxPlugin.Diagnostic) {
+        if let data = try? JSONEncoder().encode(record) {
+            try? ProjectRegistry.durableWrite(data, to: registry.root + "/" + Self.diagnosticRecord)
+        }
+        lock.lock(); diagnostic = record; lock.unlock()
+    }
+
+    // MARK: Model
+
+    private static func failure(_ error: Error) -> [String: Any] {
+        ["failure": (error as? ModelFailure)?.rawValue ?? ModelFailure.transport.rawValue]
+    }
+
+    /// Opens one streamed request. Failures come back as fixed codes so the Worker's own error path classifies them.
+    private func modelOpen(_ body: [String: Any]) -> [String: Any] {
+        guard let model, let id = body["streamId"] as? String, (1...64).contains(id.utf8.count), let url = body["url"] as? String,
+              let text = body["body"] as? String, text.utf8.count <= 8 << 20 else {
+            return ["failure": "MODEL_REQUEST_REFUSED"]
+        }
+        let headers = (body["headers"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        do {
+            let head = try model.open(id: id, url: url, headers: headers, body: Data(text.utf8))
+            return ["status": head.status, "headers": head.headers]
+        } catch { return Self.failure(error) }
+    }
+
+    private func modelRead(_ body: [String: Any]) -> [String: Any] {
+        guard let model, let id = body["streamId"] as? String else { return ["failure": ModelFailure.unknownStream.rawValue] }
+        do {
+            switch try model.read(id) {
+            case .chunk(let data): return ["chunk": data.base64EncodedString()]
+            case .end: return ["done": true]
+            }
+        } catch { return Self.failure(error) }
+    }
+
+    // Project locks are acquired individually; no cross-project transaction or eager project open.
+    private func captureBaselines() -> [String: SessionRecovery.Baseline] {
+        lock.lock(); let entries = open; lock.unlock()
+        return entries.mapValues { entry in
+            entry.gateway.withStore { SessionRecovery.Baseline(generation: $0.generation, available: $0.recoveryComparable) }
+        }
+    }
+
+    static func json<T: Encodable>(_ value: T) -> Any {
+        (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(value))) ?? NSNull()
+    }
+}

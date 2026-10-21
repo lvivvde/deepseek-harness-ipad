@@ -7,7 +7,7 @@
 有界源码核对发现两个失败路径，均已通过失败测试复现并修正。
 
 1. `ProjectGateway.execute` 取得独立写租约后，`toolStarted` 写入失败，catch 只撤销并入成员，没有释放独立取得的租约。guest 尚未收到 `/execute`，却可能残留 ACTIVE 租约，后续返回 LEASE_BUSY。终端首次写入的相同路径已有撤销逻辑。见 `ios/HarnessApp/Sources/Host/ProjectGateway.swift:202–230`、`359–408`。
-2. `CandidateHost.execute` 消费先到的取消记录后直接返回，没有保留该 ID 的终结事实。同 ID 再提交可能被派发。现有 `ProjectGatewayTests` 明确要求取消后同 ID 不运行，宿主测试只覆盖第一次提交。见 `ios/HarnessApp/Sources/Candidate/CandidateHost.swift:235–240`，`HostTests/ProjectGatewayTests.swift:171–183`，`CandidateTests/CandidateHostTests.swift:304–309`。
+2. `AppHost.execute` 消费先到的取消记录后直接返回，没有保留该 ID 的终结事实。同 ID 再提交可能被派发。现有 `ProjectGatewayTests` 明确要求取消后同 ID 不运行，宿主测试只覆盖第一次提交。见 `ios/HarnessApp/Sources/Core/AppHost.swift:235–240`，`HostTests/ProjectGatewayTests.swift:171–183`，`CandidateTests/AppHostTests.swift:304–309`。
 
 另有已用受控日志写入顺序复现并修正的状态窗口：准入返回 ready 后、取得租约前 VM 退出，退出处理可能先看见无租约，随后执行仍取得租约并请求已退出的 guest。命令和终端均在持久准备后与进程退出事实核对，再进入可能已派发状态；不以重复 phase 检查代替同步所有权。
 
@@ -31,7 +31,7 @@
 
 ## 推荐 module 与 seam
 
-在 `HarnessHost` 内增加进程级 `LinuxExecution` module。CandidateHost 为所有打开的项目共享同一实例；独立网关测试可使用独立实例。内部集中保存全局操作 ID、取消事实、终端归属、每个 fence 的本进程所有权、并入成员和结算状态。
+在 `HarnessHost` 内增加进程级 `LinuxExecution` module。AppHost 为所有打开的项目共享同一实例；独立网关测试可使用独立实例。内部集中保存全局操作 ID、取消事实、终端归属、每个 fence 的本进程所有权、并入成员和结算状态。
 
 建议的同步 interface 形状如下，具体参数结构在实施时贴合现有类型：
 
@@ -49,7 +49,7 @@ guestExited(status: Int32?)
 
 ProjectGateway 继续是项目原生工作区的唯一权威，其现有执行与终端 interface 可委托给该 module。访问 WorkspaceStore 使用现有串行机制；不得另建一把互不协调的锁。原生操作与 Linux 租约、ledger 访问共用同一 storeLock；RPC 和等待准入期间不持有 storeLock。进程登记锁也不得跨越阻塞 RPC。
 
-CandidateHost 删除 operations、pendingCancels 和 terminals 的生命周期编排，由 module 记录；宿主保留输入验证、项目路径映射、JSON 转换和原生工具。Gateway 删除分散的 operations/cancelled/dispatched 与 terminal lease/join/releasing 编排，将规则收进同一 implementation。保留 LinuxPlugin 的绑定、phase、admit，以及 LinuxBringUp 的 ready proof、bind、mount check、失败 stop 顺序，不整体合并。
+AppHost 删除 operations、pendingCancels 和 terminals 的生命周期编排，由 module 记录；宿主保留输入验证、项目路径映射、JSON 转换和原生工具。Gateway 删除分散的 operations/cancelled/dispatched 与 terminal lease/join/releasing 编排，将规则收进同一 implementation。保留 LinuxPlugin 的绑定、phase、admit，以及 LinuxBringUp 的 ready proof、bind、mount check、失败 stop 顺序，不整体合并。
 
 依赖类别：运行状态是进程内依赖；WorkspaceStore 是本地依赖，测试用真实临时目录；guest 是自有远端依赖，已有 GuestRPC seam 的生产 HTTP adapter 和测试 fake adapter 足够。无需新增 WorkspaceStore port 或通用调度抽象。
 
@@ -78,7 +78,7 @@ CandidateHost 删除 operations、pendingCancels 和 terminals 的生命周期�
 
 ## 实现说明
 
-`LinuxExecution` 的私有项目 implementation 集中命令、终端与 fence 结算；进程实例保存全局 ID 终结事实、先到取消、终端归属和退出事实。ProjectGateway 的原生读写与 withStore 继续使用同一项目 storeLock，其同步执行和终端 interface 保留为兼容入口；CandidateHost 的三张执行路由/取消/终端状态表已删除。
+`LinuxExecution` 的私有项目 implementation 集中命令、终端与 fence 结算；进程实例保存全局 ID 终结事实、先到取消、终端归属和退出事实。ProjectGateway 的原生读写与 withStore 继续使用同一项目 storeLock，其同步执行和终端 interface 保留为兼容入口；AppHost 的三张执行路由/取消/终端状态表已删除。
 
 尚未发送的独立租约及 guest 明确拒绝的派发用同一 releaseUnsent 结算；存储恢复后可重试该清理，不重发原命令。并入失败仅撤销成员。VM 退出先记录进程事实，随后保存既有诊断并结算本进程写者；若该结算因存储失败未提交，用户显式释放仍使用 VM 退出证明及 GUEST_TERMINATED 的 epoch 规则。
 
@@ -96,7 +96,7 @@ Gateway 的全部终端兼容入口现在校验同一进程登记及项目归属
 
 ### 同步 main 后的组合复验
 
-用户询问合并条件时，main 已合入会话恢复 PR #54（`021959c`）。本项以 merge 同步 main，仅交接文档发生冲突，已保留两项记录并更新合并状态；CandidateHost 及测试自动合并，LinuxExecution/Gateway 保持已审查实现。组合两轴审查无新发现，Host 基线采集仍通过同一 Gateway.storeLock，Host 锁不跨存储或恢复调用。
+用户询问合并条件时，main 已合入会话恢复 PR #54（`021959c`）。本项以 merge 同步 main，仅交接文档发生冲突，已保留两项记录并更新合并状态；AppHost 及测试自动合并，LinuxExecution/Gateway 保持已审查实现。组合两轴审查无新发现，Host 基线采集仍通过同一 Gateway.storeLock，Host 锁不跨存储或恢复调用。
 
 组合后 `make check`、`make test-app` 全量测试通过（网关 35、候选宿主 20 项）；`make test-candidate` 恢复合同 9、桥接 20、构建闸门 15 项全通过，无跳过。重新生成固定依赖网页，macOS/iPad 未签名构建复验成功；脱敏收据在忽略的 `build/candidate/linux-execution-{mac,ipad}-integrated/build-safe.json`。未安装、未上真机。用户已具体授权将本 PR 转为待合并并用 merge commit 合入 main。
 

@@ -1,6 +1,6 @@
 # 开发交接
 
-最后更新：2026-10-22，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程见 Git 历史（2026-10-21 之前的详细交接在提交 `111817f` 的本文件里）和验收记录。
+最后更新：2026-10-23，北京时间。此文件是接手入口，只记当前状态、约束和资产入口；GitHub Issues 是任务状态源，过往过程见 Git 历史（2026-10-21 之前的详细交接在提交 `111817f` 的本文件里）和验收记录。
 
 ## 开始工作
 
@@ -15,7 +15,7 @@
 
 [单一 App 方案](../design/single-app-plan.md)第 1 步（分支 `feat/single-app`）已合并：删掉旧正式 App、研究 App 和原型，纯改名为 `HarnessCore`、`runtime/app`、`build/app`，版本 1.0.0。落盘或设备上的名字不改：bundle ID、`candidate-lock.json`、`config/candidate-installation.json`、`HARNESS_CANDIDATE_*` 启动环境变量、Worker 帧和挂接点的 `candidate*` 标识、guest 里的 `.plan500-identity` 和 `/run/plan500*`。`make` 只剩 `doctor`、`check`、`test`、`web`、`app`、`ipad`；设备工具只剩只读 `scripts/device.py probe`。
 
-正式界面（分支 `feat/official-ui`）：用户要求和 Mac 上的 DeepSeek Harness 一样的正式界面。
+正式界面（分支 `feat/official-ui`，[PR #73](https://github.com/lvivvde/deepseek-harness-ipad/pull/73) 已于 2026-10-21 合并）：用户要求和 Mac 上的 DeepSeek Harness 一样的正式界面。
 
 - 整窗就是官方网页界面（左侧栏新会话、插件、工作区列表；输入框带模型选择和“工作区内修改”）。自建的 SwiftUI 侧栏删掉，运行状态（会话保存、Linux、预览、能力声明）挪到右下角小圆按钮的表单里，macOS 菜单“运行状态…”（⌘⇧I）。界面文字中文。
 - 第一次启动自动建“默认工作区”（启用 Linux），启动时打开全部项目再显示网页。
@@ -39,11 +39,9 @@
 
 仍未测：外接硬件键盘、语音输入法切换、需要 Linux 的社区插件、iPad 上卸载插件、网页进程被系统结束后的重新加载、断电与系统崩溃。
 
-**下一步：**
+**下一步：** 用户在 iPad 上看 r30 的界面。
 
-1. 用户在 iPad 上看界面；合并 `feat/official-ui` 的 PR。
-2. 可选：第 2 步精简系统盘。
-3. 可选：桥接对 shell 执行也重试 `LEASE_BUSY`。
+以后可选：第 2 步精简系统盘；桥接对 shell 执行也重试 `LEASE_BUSY`。
 
 ## 开放任务
 
